@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -25,19 +24,19 @@ func getLeafInfo(filepath string) Leaf {
 			"modTime": fileInfo.ModTime(),
 			"sys":     fileInfo.Sys(),
 		},
-		Children: []Leaf{},
+		Children: []*Leaf{},
 		Parent:   nil,
 	}
 }
 
-func buildFileTree(path string) Leaf {
+func buildFileTree(path string) *Leaf {
 	rootNode := getLeafInfo(path)
 
 	if rootNode.Type == "dir" {
 		buildChildren(&rootNode, path)
 	}
 
-	return rootNode
+	return &rootNode
 }
 
 func buildChildren(parent *Leaf, dirPath string) {
@@ -52,22 +51,11 @@ func buildChildren(parent *Leaf, dirPath string) {
 		childNode := getLeafInfo(childPath)
 
 		childNode.Parent = parent
-		parent.Children = append(parent.Children, childNode)
+		parent.Children = append(parent.Children, &childNode)
 
 		if childNode.Type == "dir" {
-			childPtr := &parent.Children[len(parent.Children)-1]
+			childPtr := parent.Children[len(parent.Children)-1]
 			buildChildren(childPtr, childPath)
 		}
-	}
-}
-
-func PrintFileTree(node Leaf, indent string) {
-	if node.Type == "dir" {
-		fmt.Println(indent + node.Name + "/")
-		for _, child := range node.Children {
-			PrintFileTree(child, indent+"  ")
-		}
-	} else {
-		fmt.Println(indent + node.Name)
 	}
 }

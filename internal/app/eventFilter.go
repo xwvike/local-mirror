@@ -2,18 +2,19 @@ package app
 
 import (
 	"filetranslate/pkg/utils"
+	"fmt"
 	"strings"
 
 	"github.com/fsnotify/fsnotify"
 )
 
-var ignoreFileList = []string{".DS_Store"}
 var (
 	create string = "CREATE"
 	remove string = "REMOVE"
 )
 
-func eventFilter(event fsnotify.Event, treeList []Leaf) []Leaf {
+func eventFilter(event fsnotify.Event, node *Leaf) {
+	fmt.Println(node.Path, "create", event)
 	opStr := event.Op.String()
 	filepath := event.Name
 	hasIgnore := false
@@ -25,7 +26,7 @@ func eventFilter(event fsnotify.Event, treeList []Leaf) []Leaf {
 		}
 	}
 	if hasIgnore {
-		return treeList
+
 	}
 
 	if os == "darwin" {
@@ -36,26 +37,26 @@ func eventFilter(event fsnotify.Event, treeList []Leaf) []Leaf {
 	} else if os == "windows" {
 
 	} else {
-		return treeList
+
 	}
 	if opStr == create {
-		has := false
-		for _, v := range treeList {
-			if v.Path == filepath {
-				has = true
-				break
-			}
-		}
-		if !has {
-			treeList = append(treeList, getLeafInfo(filepath))
-		}
+
+		// has := false
+		// for _, v := range treeList {
+		// 	if v.Path == filepath {
+		// 		has = true
+		// 		break
+		// 	}
+		// }
+		// if !has {
+		// 	treeList = append(treeList, getLeafInfo(filepath))
+		// }
 	} else if opStr == remove {
-		for i, v := range treeList {
-			if v.Path == filepath {
-				treeList = append(treeList[:i], treeList[i+1:]...)
-				break
-			}
-		}
+		// for i, v := range treeList {
+		// 	if v.Path == filepath {
+		// 		treeList = append(treeList[:i], treeList[i+1:]...)
+		// 		break
+		// 	}
+		// }
 	}
-	return treeList
 }
