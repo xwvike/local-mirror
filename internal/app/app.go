@@ -58,6 +58,23 @@ func (l *Leaf) RemoveChild(child *Leaf) {
 		}
 	}
 }
+func (l *Leaf) GetChild(path string) *Leaf {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Check if the current leaf matches the path
+	if l.Path == path {
+		return l
+	}
+
+	// Recursively search in children
+	for _, child := range l.Children {
+		if result := child.GetChild(path); result != nil {
+			return result
+		}
+	}
+	return nil
+}
 func (l *Leaf) GetAllDirs() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -79,7 +96,7 @@ func App() {
 	}
 	defer watcher.Close()
 	osInfo := utils.BaseOSInfo()
-	root := buildFileTree(osInfo.UserHomeDir + "/TEST")
+	root := buildFileTree(osInfo.UserHomeDir + "/test")
 	WatchFile(watcher, root)
 	fmt.Println(osInfo)
 	sigChan := make(chan os.Signal, 1)

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"log"
 	"strings"
 
@@ -10,39 +9,33 @@ import (
 
 var ignoreFileList = []string{".mirror", ".DS_Store"}
 
-func WatchFile(watcher *fsnotify.Watcher, node *Leaf) {
-	for _, v := range ignoreFileList {
-		if strings.Contains(node.Path, v) {
-			return
+func WatchFile(watcher *fsnotify.Watcher, root *Leaf) {
+	for _, dir := range root.GetAllDirs() {
+		for _, v := range ignoreFileList {
+			if strings.Contains(dir, v) {
+				continue
+			}
 		}
-	}
-	if node.Type == "dir" {
-		err := watcher.Add(node.Path)
+		err := watcher.Add(dir)
 		if err != nil {
 			log.Fatal(err)
 		}
-
-		go func() {
-			fmt.Println(node.Path, node.Type)
-			for {
-				select {
-				case event, ok := <-watcher.Events:
-					if !ok {
-						return
-					}
-					eventFilter(event, node)
-				case err, ok := <-watcher.Errors:
-					if !ok {
-						return
-					}
-					log.Println("error:", err)
-				}
-			}
-		}()
-		for _, child := range node.Children {
-			WatchFile(watcher, child)
-		}
-	} else {
-		return
 	}
+	go func() {
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+
+				eventFilter(event, watcher, root)
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Println("error:", err)
+			}
+		}
+	}()
 }
