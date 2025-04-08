@@ -34,7 +34,7 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher, root *Leaf) {
 	os := utils.BaseOSInfo().OS
 	if os == "darwin" {
 		create = "CREATE"
-		remove = "RENAME"
+		remove = "REMOVE"
 	} else if os == "linux" {
 
 	} else if os == "windows" {
@@ -42,6 +42,7 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher, root *Leaf) {
 	} else {
 
 	}
+	fmt.Println("Event:", event.Name, "Operation:", opStr)
 	if opStr == create {
 		isDir, err := utils.IsDir(event.Name)
 		if err != nil {
@@ -83,11 +84,11 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher, root *Leaf) {
 			fmt.Println("Added file", event.Name)
 		}
 	} else if opStr == remove {
-		// for i, v := range treeList {
-		// 	if v.Path == filepath {
-		// 		treeList = append(treeList[:i], treeList[i+1:]...)
-		// 		break
-		// 	}
-		// }
+		children := fatherNode.GetChild(event.Name)
+		if children == nil {
+			return
+		}
+		fatherNode.RemoveChild(children)
 	}
+	fmt.Println("all watched dirs:", watcher.WatchList())
 }
