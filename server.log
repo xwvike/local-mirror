@@ -1,0 +1,14 @@
+main init
+{xiazhikedeMac-mini.local /Users/xiazhike darwin arm64 8}
+mode: realServer started on :52345
+Client connected: 10.8.0.8:41318
+Received from client: hello form client 1
+Received from client: hello form client 2
+Received from client: hello form client 3
+Received from client: hello form client 4
+Received from client: hello form client 5
+Received from client: hello form client 6
+Received from client: hello form client 7
+Received from client: hello form client 8
+Received from client: {"UserHomeDir":"/home/xwvike","OS":"linux","Architecture":"amd64","NumCPU":4}
+Client disconnected: 10.8.0.8:41318

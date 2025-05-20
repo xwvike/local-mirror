@@ -1,8 +1,8 @@
 package app
 
 import (
-	"filetranslate/pkg/utils"
 	"fmt"
+	"local-mirror/pkg/utils"
 	"path/filepath"
 	"strings"
 

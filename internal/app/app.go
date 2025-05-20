@@ -1,8 +1,8 @@
 package app
 
 import (
-	"filetranslate/pkg/utils"
 	"fmt"
+	"local-mirror/pkg/utils"
 	"log"
 	"os"
 	"os/signal"
@@ -99,6 +99,7 @@ func App() {
 	root := buildFileTree(osInfo.UserHomeDir + "/test")
 	WatchFile(watcher, root)
 	fmt.Println(osInfo)
+	baseTrans()
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan

@@ -1,11 +1,13 @@
 package main
 
 import (
-	"filetranslate/internal/app"
+	"flag"
 	"fmt"
+	"local-mirror/internal/app"
 )
 
 func main() {
 	fmt.Println("main init")
+	flag.Parse()
 	app.App()
 }

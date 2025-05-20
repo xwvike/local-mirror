@@ -1,4 +1,4 @@
-module filetranslate
+module local-mirror
 
 go 1.23.1
 

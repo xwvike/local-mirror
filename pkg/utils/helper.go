@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/json"
 	"os"
 	"runtime"
 )
@@ -30,6 +31,15 @@ func BaseOSInfo() OSInfo {
 		NumCPU:       runtime.NumCPU(),
 	}
 }
+
+func StructToJson(data interface{}) (string, error) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	return string(jsonData), nil
+}
+
 func GetSize(path string) (int64, error) {
 	fileInfo, err := os.Stat(path)
 	if err != nil {
