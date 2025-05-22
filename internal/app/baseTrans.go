@@ -30,7 +30,7 @@ func handleConnection(conn net.Conn) {
 
 func baseTrans() {
 	fmt.Print("mode: ", *config.Mode)
-	if *config.Mode == "real" {
+	if *config.Mode == "reality" {
 		listerns, err := net.Listen("tcp", ":52345")
 		if err != nil {
 			fmt.Println("Error starting server:", err)

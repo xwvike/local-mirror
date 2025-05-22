@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"runtime"
@@ -68,3 +70,19 @@ func IsDir(path string) (bool, error) {
 	}
 	return fileInfo.IsDir(), nil
 }
+func GenerateRandomNum() uint32 {
+	b := make([]byte, 4)
+	_, err := rand.Read(b)
+	if err != nil {
+		panic("failed to generate random instance ID: " + err.Error())
+	}
+	return binary.BigEndian.Uint32(b)
+}
+
+// func ensureFileCanBeCreated(localPath string) (*os.File, error) {
+//     dir := filepath.Dir(localPath)
+//     if err := os.MkdirAll(dir, 0755); err != nil {
+//         return nil, err
+//     }
+//     return os.Create(localPath)
+// }

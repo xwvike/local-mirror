@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"local-mirror/config"
 	"local-mirror/pkg/utils"
 	"log"
 	"os"
@@ -99,7 +100,22 @@ func App() {
 	root := buildFileTree(osInfo.UserHomeDir + "/test")
 	WatchFile(watcher, root)
 	fmt.Println(osInfo)
-	baseTrans()
+	if *config.Mode == "reality" {
+		fileServer := NewFileServer("0.0.0.0:52345")
+		if err := fileServer.Start(); err != nil {
+			log.Fatal("Error starting file server:", err)
+			os.Exit(1)
+		}
+	} else if *config.Mode == "mirror" {
+		fileClient := NewFileClient("10.8.0.9:52345")
+		conn, err := fileClient.Connect()
+		if err != nil {
+			log.Fatal("Error connecting to file server:", err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan

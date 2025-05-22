@@ -18,7 +18,7 @@ const (
 	sshKeyPath    = "/Users/xiazhike/.ssh/debian_xwvike" // SSH私钥路径，根据实际情况修改
 
 	// 本地配置
-	localBuildPath = "./tcp-server" // 本地构建路径
+	localBuildPath = "./dist/local-mirror" // 本地构建路径
 )
 
 func main() {
@@ -87,7 +87,7 @@ func startRemoteServer() error {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}
 	// 使用 SSH 远程启动服务器，添加密钥参数
-	sshCmd := fmt.Sprintf("chmod +x %s && nohup %s -mode=mirror > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
+	sshCmd := fmt.Sprintf("chmod +x %s && nohup %s -mode=mirror -logLevel=debug > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
 	fmt.Println("sshCmd:", sshCmd)
 	cmd := exec.Command("ssh", "-p", remotePort, "-i", sshKeyPath, fmt.Sprintf("%s@%s", remoteUser, remoteHost), sshCmd)
 	cmd.Stdout = logFile
@@ -101,7 +101,7 @@ func runLocalClient() error {
 	if err != nil {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}
-	cmd := exec.Command("go", "run", "./cmd/main/main.go", "-mode=real")
+	cmd := exec.Command("go", "run", "./cmd/main/main.go", "-mode=reality", "-logLevel=debug")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	return cmd.Start()
