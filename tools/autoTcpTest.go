@@ -50,7 +50,7 @@ func main() {
 
 	// 等待服务器启动
 	log.Println("等待服务器就绪...")
-	time.Sleep(3 * time.Second)
+	time.Sleep(20 * time.Second)
 
 	// 5. 停止远程服务并清理
 	if err := stopAndCleanup(); err != nil {

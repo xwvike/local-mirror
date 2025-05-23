@@ -113,6 +113,7 @@ func App() {
 			log.Fatal("Error connecting to file server:", err)
 			os.Exit(1)
 		}
+		fileClient.DownloadFile(conn, "./ds.mp4")
 		defer conn.Close()
 	}
 
