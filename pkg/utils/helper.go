@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"github.com/zeebo/blake3"
 	"os"
 	"runtime"
 )
@@ -77,6 +78,23 @@ func GenerateRandomNum() uint32 {
 		panic("failed to generate random instance ID: " + err.Error())
 	}
 	return binary.BigEndian.Uint32(b)
+}
+
+func CalcBlake3(path string) ([32]byte, error) {
+	var result [32]byte
+	f, err := os.Open(path)
+	if err != nil {
+		return result, err
+	}
+	defer f.Close()
+
+	hash := blake3.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return result, err
+	}
+
+	copy(result[:], hash.Sum(nil))
+	return result, nil
 }
 
 // func ensureFileCanBeCreated(localPath string) (*os.File, error) {
