@@ -1,6 +1,8 @@
 package app
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"io"
@@ -60,6 +62,19 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 		}
 
 		switch msgType {
+		case MsgTypeTreeRequest:
+			if err := s.handleTreeRequest(conn, bodyBytes); err != nil {
+				log.Error("Error handling tree request:", err)
+				errorMsg := ErrorMessage{
+					ErrorCode:    StatusInternalError,
+					MessageLen:   uint16(len(err.Error())),
+					ErrorMessage: err.Error(),
+				}
+				errorBytes := encodeErrorMessage(errorMsg)
+				if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
+					log.Error("Error sending error message:", err)
+				}
+			}
 		case MsgTypeFileRequest:
 			if err := s.handleFileRequest(conn, bodyBytes); err != nil {
 				log.Error("Error handling file request:", err)
@@ -94,6 +109,48 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 
 	}
 
+}
+
+func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
+	treeRequest, err := decodeTreeRequest(bodyBytes)
+	if err != nil {
+		log.Error("Error decoding tree request message:", err)
+		return err
+	}
+	log.Infof("Received tree request for path: %s", treeRequest.RootPath)
+	fullTreePath := filepath.Join(config.StartPath, treeRequest.RootPath)
+	treeLeaf := rootLeaf.GetChild(fullTreePath)
+	if treeLeaf == nil {
+		log.Errorf("Tree path not found: %s", fullTreePath)
+		errorMsg := ErrorMessage{
+			ErrorCode:    StatusTreeNotFound,
+			MessageLen:   uint16(len("Path not found")),
+			ErrorMessage: "Path not found",
+		}
+		errorBytes := encodeErrorMessage(errorMsg)
+		if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
+			log.Error("Error sending error message:", err)
+		}
+		return fmt.Errorf("path not found: %s", fullTreePath)
+	}
+	treeData, err := json.Marshal(treeLeaf)
+	if err != nil {
+		log.Error("Error marshalling tree leaf to JSON:", err)
+		return err
+	}
+	treeResponse := TreeResponseMessage{
+		Status:     StatusOK,
+		RootPath:   treeLeaf.Path,
+		DataLength: uint32(len(treeData)),
+		Data:       []byte(treeData),
+	}
+	responseBytes := encodeTreeResponse(treeResponse)
+	if err := sendMessage(conn, MsgTypeTreeResponse, responseBytes); err != nil {
+		log.Error("Error sending tree response message:", err)
+		return err
+	}
+	log.Infof("Sent tree response for path: %s, data length: %d bytes", treeLeaf.Path, len(treeData))
+	return nil
 }
 
 func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {

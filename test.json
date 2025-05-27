@@ -1,0 +1,351 @@
+{
+    "name": "local-mirror",
+    "path": ".",
+    "type": "dir",
+    "children": [
+        {
+            "name": "client.log",
+            "path": "./client.log",
+            "type": "file",
+            "children": [],
+            "metadata": {
+                "modTime": "2025-05-27T11:10:48.428573769+08:00",
+                "size": 0
+            }
+        },
+        {
+            "name": "cmd",
+            "path": "./cmd",
+            "type": "dir",
+            "children": [
+                {
+                    "name": "main",
+                    "path": "./cmd/main",
+                    "type": "dir",
+                    "children": [
+                        {
+                            "name": "main.go",
+                            "path": "./cmd/main/main.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-26T14:05:38.437528304+08:00",
+                                "size": 781
+                            }
+                        }
+                    ],
+                    "metadata": {
+                        "modTime": "2025-04-18T16:13:21.356090825+08:00",
+                        "size": 96
+                    }
+                }
+            ],
+            "metadata": {
+                "modTime": "2025-04-18T16:13:21.356022033+08:00",
+                "size": 96
+            }
+        },
+        {
+            "name": "config",
+            "path": "./config",
+            "type": "dir",
+            "children": [
+                {
+                    "name": "config.go",
+                    "path": "./config/config.go",
+                    "type": "file",
+                    "children": [],
+                    "metadata": {
+                        "modTime": "2025-05-23T15:21:16.517095383+08:00",
+                        "size": 636
+                    }
+                }
+            ],
+            "metadata": {
+                "modTime": "2025-05-19T13:53:11.116543706+08:00",
+                "size": 96
+            }
+        },
+        {
+            "name": "dist",
+            "path": "./dist",
+            "type": "dir",
+            "children": [
+                {
+                    "name": "local-mirror",
+                    "path": "./dist/local-mirror",
+                    "type": "file",
+                    "children": [],
+                    "metadata": {
+                        "modTime": "2025-05-27T11:35:15.442507497+08:00",
+                        "size": 4846771
+                    }
+                }
+            ],
+            "metadata": {
+                "modTime": "2025-05-27T11:35:15.442761375+08:00",
+                "size": 96
+            }
+        },
+        {
+            "name": "ds.mp4",
+            "path": "./ds.mp4",
+            "type": "file",
+            "children": [],
+            "metadata": {
+                "modTime": "2025-05-23T15:17:32.79211685+08:00",
+                "size": 11464963
+            }
+        },
+        {
+            "name": "go.mod",
+            "path": "./go.mod",
+            "type": "file",
+            "children": [],
+            "metadata": {
+                "modTime": "2025-05-21T11:30:49.059528678+08:00",
+                "size": 269
+            }
+        },
+        {
+            "name": "go.sum",
+            "path": "./go.sum",
+            "type": "file",
+            "children": [],
+            "metadata": {
+                "modTime": "2025-05-21T11:30:49.060154177+08:00",
+                "size": 1612
+            }
+        },
+        {
+            "name": "internal",
+            "path": "./internal",
+            "type": "dir",
+            "children": [
+                {
+                    "name": "app",
+                    "path": "./internal/app",
+                    "type": "dir",
+                    "children": [
+                        {
+                            "name": "app.go",
+                            "path": "./internal/app/app.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-27T11:10:42.539091234+08:00",
+                                "size": 2581
+                            }
+                        },
+                        {
+                            "name": "buildFileTree.go",
+                            "path": "./internal/app/buildFileTree.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-27T10:54:57.206095438+08:00",
+                                "size": 1358
+                            }
+                        },
+                        {
+                            "name": "client.go",
+                            "path": "./internal/app/client.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-27T11:34:52.434808583+08:00",
+                                "size": 9008
+                            }
+                        },
+                        {
+                            "name": "discovery.go",
+                            "path": "./internal/app/discovery.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-26T10:20:28.87566378+08:00",
+                                "size": 12
+                            }
+                        },
+                        {
+                            "name": "eventFilter.go",
+                            "path": "./internal/app/eventFilter.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-27T10:39:34.268926124+08:00",
+                                "size": 2096
+                            }
+                        },
+                        {
+                            "name": "fileWatch.go",
+                            "path": "./internal/app/fileWatch.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-27T09:58:09.452119144+08:00",
+                                "size": 577
+                            }
+                        },
+                        {
+                            "name": "initLogger.go",
+                            "path": "./internal/app/initLogger.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-21T16:00:41.239040579+08:00",
+                                "size": 1313
+                            }
+                        },
+                        {
+                            "name": "protocol.go",
+                            "path": "./internal/app/protocol.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-26T15:13:59.717355024+08:00",
+                                "size": 12594
+                            }
+                        },
+                        {
+                            "name": "server.go",
+                            "path": "./internal/app/server.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-26T17:58:56.836327245+08:00",
+                                "size": 8821
+                            }
+                        }
+                    ],
+                    "metadata": {
+                        "modTime": "2025-05-26T15:56:46.627810331+08:00",
+                        "size": 352
+                    }
+                }
+            ],
+            "metadata": {
+                "modTime": "2025-04-18T16:13:21.3564442+08:00",
+                "size": 96
+            }
+        },
+        {
+            "name": "pkg",
+            "path": "./pkg",
+            "type": "dir",
+            "children": [
+                {
+                    "name": "jsonutil",
+                    "path": "./pkg/jsonutil",
+                    "type": "dir",
+                    "children": [
+                        {
+                            "name": "diffJson.go",
+                            "path": "./pkg/jsonutil/diffJson.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-27T11:34:52.434791542+08:00",
+                                "size": 2821
+                            }
+                        }
+                    ],
+                    "metadata": {
+                        "modTime": "2025-05-27T11:23:43.163290446+08:00",
+                        "size": 96
+                    }
+                },
+                {
+                    "name": "utils",
+                    "path": "./pkg/utils",
+                    "type": "dir",
+                    "children": [
+                        {
+                            "name": "helper.go",
+                            "path": "./pkg/utils/helper.go",
+                            "type": "file",
+                            "children": [],
+                            "metadata": {
+                                "modTime": "2025-05-26T10:20:40.017271115+08:00",
+                                "size": 2104
+                            }
+                        }
+                    ],
+                    "metadata": {
+                        "modTime": "2025-04-18T16:13:21.357137534+08:00",
+                        "size": 96
+                    }
+                }
+            ],
+            "metadata": {
+                "modTime": "2025-05-27T11:23:34.114755411+08:00",
+                "size": 128
+            }
+        },
+        {
+            "name": "server.log",
+            "path": "./server.log",
+            "type": "file",
+            "children": [],
+            "metadata": {
+                "modTime": "2025-05-27T11:35:16.324267095+08:00",
+                "size": 106
+            }
+        },
+        {
+            "name": "test.json",
+            "path": "./test.json",
+            "type": "file",
+            "children": [],
+            "metadata": {
+                "modTime": "2025-05-27T11:10:17.020322487+08:00",
+                "size": 11953
+            }
+        },
+        {
+            "name": "tools",
+            "path": "./tools",
+            "type": "dir",
+            "children": [
+                {
+                    "name": "autoTcpTest.go",
+                    "path": "./tools/autoTcpTest.go",
+                    "type": "file",
+                    "children": [],
+                    "metadata": {
+                        "modTime": "2025-05-27T10:42:44.330826892+08:00",
+                        "size": 3917
+                    }
+                },
+                {
+                    "name": "diffJson.go",
+                    "path": "./tools/diffJson.go",
+                    "type": "file",
+                    "children": [],
+                    "metadata": {
+                        "modTime": "2025-05-26T15:47:55.273417829+08:00",
+                        "size": 4435
+                    }
+                },
+                {
+                    "name": "test.go",
+                    "path": "./tools/test.go",
+                    "type": "file",
+                    "children": [],
+                    "metadata": {
+                        "modTime": "2025-05-27T10:54:39.188757782+08:00",
+                        "size": 147
+                    }
+                }
+            ],
+            "metadata": {
+                "modTime": "2025-05-27T10:53:09.868867046+08:00",
+                "size": 160
+            }
+        }
+    ],
+    "metadata": {
+        "modTime": "2025-05-27T10:18:56.596056391+08:00",
+        "size": 544
+    }
+}

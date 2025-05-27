@@ -4,42 +4,24 @@ import (
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/pkg/utils"
-	"log"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
 	"github.com/fsnotify/fsnotify"
+	log "github.com/sirupsen/logrus"
 )
 
 type Leaf struct {
-	Name     string
-	Path     string
-	Type     string
-	Children []*Leaf
-	Parent   *Leaf
-	Metadata map[string]interface{}
-	mu       sync.Mutex
-}
-
-func (l *Leaf) Format2JSON() map[string]interface{} {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	leaf := map[string]interface{}{
-		"name":     l.Name,
-		"path":     l.Path,
-		"type":     l.Type,
-		"children": []map[string]interface{}{},
-	}
-
-	for _, child := range l.Children {
-		childJSON := child.Format2JSON()
-		leaf["children"] = append(leaf["children"].([]map[string]interface{}), childJSON)
-	}
-
-	return leaf
+	Name         string                 `json:"name"`
+	Path         string                 `json:"-"`
+	RelativePath string                 `json:"path"` // Relative path from the start path
+	Type         string                 `json:"type"` // "file" or "dir"
+	Children     []*Leaf                `json:"children"`
+	Parent       *Leaf                  `json:"-"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"` // Additional metadata like size, mode, modTime, etc.
+	mu           sync.Mutex             `json:"-"`
 }
 
 func (l *Leaf) AddChild(child *Leaf) {
@@ -90,6 +72,11 @@ func (l *Leaf) GetAllDirs() []string {
 	return dirs
 }
 
+var (
+	rootLeaf       *Leaf
+	ignoreFileList = []string{".git", ".gitingore", ".github", ".local-mirror", ".DS_Store"}
+)
+
 func App() {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -97,8 +84,8 @@ func App() {
 	}
 	defer watcher.Close()
 	osInfo := utils.BaseOSInfo()
-	root := buildFileTree(osInfo.UserHomeDir + "/test")
-	WatchFile(watcher, root)
+	rootLeaf = buildFileTree(config.StartPath)
+	WatchFile(watcher)
 	fmt.Println(osInfo)
 	if *config.Mode == "reality" {
 		fileServer := NewFileServer("0.0.0.0:52345")
@@ -113,7 +100,22 @@ func App() {
 			log.Fatal("Error connecting to file server:", err)
 			os.Exit(1)
 		}
-		fileClient.DownloadFile(conn, "./ds.mp4")
+		treejson, err := fileClient.GetRealityTree(conn, ".")
+		if err != nil {
+			log.Fatal("Error getting reality tree:", err)
+			os.Exit(1)
+		}
+		Diff(treejson, rootLeaf)
+		for _, v := range diffQueue {
+			if v.Type == "file" && v.Action == "add" {
+				err := fileClient.DownloadFile(conn, v.Path)
+				if err != nil {
+					log.Errorf("Error downloading file %s: %v", v.Path, err)
+				} else {
+					log.Infof("File %s downloaded successfully", v.Path)
+				}
+			}
+		}
 		defer conn.Close()
 	}
 

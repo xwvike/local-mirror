@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/app"
 	"local-mirror/pkg/utils"
@@ -19,6 +20,7 @@ func init() {
 		log.Fatalf("获取当前执行文件路径失败: %v", err)
 		os.Exit(1)
 	}
+	fmt.Print(wd)
 	config.StartPath = wd
 }
 func main() {

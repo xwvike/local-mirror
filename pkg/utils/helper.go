@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"github.com/zeebo/blake3"
+	"io"
 	"os"
 	"runtime"
 )

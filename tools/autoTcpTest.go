@@ -57,6 +57,11 @@ func main() {
 		log.Fatalf("清理失败: %v", err)
 	}
 	log.Println("远程服务已停止，并完成清理")
+	// 6. 停止本地客户端
+	if err := stopLocalClient(); err != nil {
+		log.Fatalf("停止本地客户端失败: %v", err)
+	}
+	log.Println("本地客户端已停止")
 
 	log.Println("TCP 连接测试完成!")
 }
@@ -87,7 +92,7 @@ func startRemoteServer() error {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}
 	// 使用 SSH 远程启动服务器，添加密钥参数
-	sshCmd := fmt.Sprintf("chmod +x %s && nohup %s -mode=mirror -logLevel=debug > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
+	sshCmd := fmt.Sprintf(" cd ./test && chmod +x %s && nohup %s -mode=mirror -logLevel=debug > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
 	fmt.Println("sshCmd:", sshCmd)
 	cmd := exec.Command("ssh", "-p", remotePort, "-i", sshKeyPath, fmt.Sprintf("%s@%s", remoteUser, remoteHost), sshCmd)
 	cmd.Stdout = logFile
@@ -112,6 +117,14 @@ func stopAndCleanup() error {
 	sshCmd := fmt.Sprintf("pkill -f '%s'", filepath.Base(remoteBinPath))
 	fmt.Println("sshCmd:", sshCmd)
 	cmd := exec.Command("ssh", "-p", remotePort, "-i", sshKeyPath, fmt.Sprintf("%s@%s", remoteUser, remoteHost), sshCmd)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func stopLocalClient() error {
+	// 停止本地客户端
+	cmd := exec.Command("pkill", "-f", "main.go")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

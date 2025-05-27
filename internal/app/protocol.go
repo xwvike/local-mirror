@@ -22,12 +22,15 @@ const (
 	MsgTypeFileComplete uint16 = 0x0005 // 文件传输完成
 	MsgTypeError        uint16 = 0x0006 // 错误消息
 	MsgTypeAcknowledge  uint16 = 0x0007 // 确认消息
+	MsgTypeTreeRequest  uint16 = 0x0008 // 目录树请求
+	MsgTypeTreeResponse uint16 = 0x0009 // 目录树响应
 
 	// 状态码
 	StatusOK            uint16 = 0x0000 // 正常
 	StatusReject        uint16 = 0x0001 // 拒绝传输
 	StatusFileNotFound  uint16 = 0x0002 // 文件不存在
 	StatusInternalError uint16 = 0x0003 // 内部错误
+	StatusTreeNotFound  uint16 = 0x0004 // 目录树不存在
 
 	// 头部大小
 	HeaderSize = 12
@@ -89,6 +92,20 @@ type AcknowledgeMessage struct {
 	SessionID uint32 // 会话ID
 	Offset    uint64 // 确认偏移
 	Status    uint16 // 确认状态
+}
+
+// 树形结构请求消息
+type TreeRequestMessage struct {
+	PathLength uint16 // 路径长度
+	RootPath   string // 请求获取的目录树的路径
+}
+
+// 树形结构响应消息
+type TreeResponseMessage struct {
+	Status     uint16 // 状态码
+	RootPath   string // 目录树的根路径
+	DataLength uint32 // 数据长度
+	Data       []byte // 请求数据
 }
 
 func encodeHeader(header MessageHeader) []byte {
@@ -364,4 +381,75 @@ func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 	}
 
 	return header.Type, bodyBytes, nil
+}
+
+func encodeTreeRequest(msg TreeRequestMessage) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, msg.PathLength)
+	buf.Write([]byte(msg.RootPath))
+	return buf.Bytes()
+}
+
+func decodeTreeRequest(data []byte) (TreeRequestMessage, error) {
+	var msg TreeRequestMessage
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.PathLength); err != nil {
+		log.Error("Error decoding tree request path length:", err)
+		return msg, err
+	}
+	pathBytes := make([]byte, msg.PathLength)
+	if _, err := buf.Read(pathBytes); err != nil {
+		log.Error("Error reading tree request path:", err)
+		return msg, err
+	}
+	msg.RootPath = string(pathBytes)
+	return msg, nil
+}
+
+func encodeTreeResponse(msg TreeResponseMessage) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, msg.Status)
+	pathBytes := []byte(msg.RootPath)
+	binary.Write(buf, binary.BigEndian, uint16(len(pathBytes)))
+	buf.Write(pathBytes)
+	binary.Write(buf, binary.BigEndian, msg.DataLength)
+	buf.Write(msg.Data)
+	return buf.Bytes()
+}
+
+func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
+	var msg TreeResponseMessage
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.Status); err != nil {
+		log.Error("Error decoding tree response status:", err)
+		return msg, err
+	}
+
+	var pathLength uint16
+	if err := binary.Read(buf, binary.BigEndian, &pathLength); err != nil {
+		log.Error("Error decoding tree response path length:", err)
+		return msg, err
+	}
+
+	pathBytes := make([]byte, pathLength)
+	if _, err := buf.Read(pathBytes); err != nil {
+		log.Error("Error reading tree response path:", err)
+		return msg, err
+	}
+	msg.RootPath = string(pathBytes)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.DataLength); err != nil {
+		log.Error("Error decoding tree response data length:", err)
+		return msg, err
+	}
+
+	msg.Data = make([]byte, msg.DataLength)
+	if _, err := buf.Read(msg.Data); err != nil {
+		log.Error("Error reading tree response data:", err)
+		return msg, err
+	}
+
+	return msg, nil
 }

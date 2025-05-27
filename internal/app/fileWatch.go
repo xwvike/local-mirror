@@ -7,10 +7,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-var ignoreFileList = []string{".mirror", ".DS_Store"}
-
-func WatchFile(watcher *fsnotify.Watcher, root *Leaf) {
-	for _, dir := range root.GetAllDirs() {
+func WatchFile(watcher *fsnotify.Watcher) {
+	for _, dir := range rootLeaf.GetAllDirs() {
 		for _, v := range ignoreFileList {
 			if strings.Contains(dir, v) {
 				continue
@@ -29,7 +27,7 @@ func WatchFile(watcher *fsnotify.Watcher, root *Leaf) {
 					return
 				}
 
-				eventFilter(event, watcher, root)
+				eventFilter(event, watcher)
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return

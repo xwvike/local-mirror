@@ -1,12 +1,24 @@
 package app
 
 import (
+	"local-mirror/config"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func getLeafInfo(filepath string) Leaf {
 	fileInfo, err := os.Stat(filepath)
+	var ignore = false
+	for _, v := range ignoreFileList {
+		if strings.Contains(filepath, v) {
+			ignore = true
+			break
+		}
+	}
+	if ignore {
+		return Leaf{}
+	}
 	if err != nil {
 		return Leaf{}
 	}
@@ -15,14 +27,13 @@ func getLeafInfo(filepath string) Leaf {
 		fileType = "dir"
 	}
 	return Leaf{
-		Name: fileInfo.Name(),
-		Path: filepath,
-		Type: fileType,
+		Name:         fileInfo.Name(),
+		Path:         filepath,
+		RelativePath: strings.Replace(filepath, config.StartPath, ".", 1),
+		Type:         fileType,
 		Metadata: map[string]interface{}{
 			"size":    fileInfo.Size(),
-			"mode":    fileInfo.Mode(),
 			"modTime": fileInfo.ModTime(),
-			"sys":     fileInfo.Sys(),
 		},
 		Children: []*Leaf{},
 		Parent:   nil,

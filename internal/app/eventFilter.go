@@ -2,11 +2,11 @@ package app
 
 import (
 	"fmt"
+	"github.com/fsnotify/fsnotify"
+	"local-mirror/config"
 	"local-mirror/pkg/utils"
 	"path/filepath"
 	"strings"
-
-	"github.com/fsnotify/fsnotify"
 )
 
 var (
@@ -14,7 +14,7 @@ var (
 	remove string = "REMOVE"
 )
 
-func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher, root *Leaf) {
+func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
 	ignored := false
 	for _, v := range ignoreFileList {
 		if strings.Contains(event.Name, v) {
@@ -26,7 +26,7 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher, root *Leaf) {
 		return
 	}
 	nodeDir := filepath.Dir(event.Name)
-	fatherNode := root.GetChild(nodeDir)
+	fatherNode := rootLeaf.GetChild(nodeDir)
 	if fatherNode == nil {
 		return
 	}
@@ -54,12 +54,13 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher, root *Leaf) {
 			fileType = "dir"
 		}
 		newLeaf := &Leaf{
-			Name:     filepath.Base(event.Name),
-			Path:     event.Name,
-			Type:     fileType,
-			Children: []*Leaf{},
-			Parent:   fatherNode,
-			Metadata: map[string]interface{}{},
+			Name:         filepath.Base(event.Name),
+			Path:         event.Name,
+			RelativePath: strings.Replace(event.Name, config.StartPath, ".", 1),
+			Type:         fileType,
+			Children:     []*Leaf{},
+			Parent:       fatherNode,
+			Metadata:     map[string]interface{}{},
 		}
 		size, err := utils.GetSize(event.Name)
 		if err == nil {

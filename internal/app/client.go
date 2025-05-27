@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"local-mirror/config"
@@ -81,6 +82,60 @@ func (c *fileClient) Connect() (net.Conn, error) {
 		handshakeResponse.ClientID,
 		handshakeResponse.ServerID)
 	return conn, nil
+}
+
+func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]interface{}, error) {
+	request := TreeRequestMessage{
+		PathLength: uint16(len(rootPath)),
+		RootPath:   rootPath,
+	}
+
+	requestBytes := encodeTreeRequest(request)
+	if err := sendMessage(conn, MsgTypeTreeRequest, requestBytes); err != nil {
+		log.Error("Error sending tree request message:", err)
+		return nil, err
+	}
+	msgType, bodyBytes, err := receiveMessage(conn)
+	if err != nil {
+		log.Error("Error receiving tree response:", err)
+		return nil, err
+	}
+	if msgType == MsgTypeError {
+		errorMsg, err := decodeErrorMessage(bodyBytes)
+		if err != nil {
+			log.Error("Error decoding error message:", err)
+			return nil, err
+		}
+		newError := fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
+		log.Error(newError)
+		return nil, newError
+	}
+	if msgType != MsgTypeTreeResponse {
+		newError := fmt.Errorf("invalid tree response message type, got %d", msgType)
+		log.Error(newError)
+		return nil, newError
+	}
+	treeResponse, err := decodeTreeResponse(bodyBytes)
+	if err != nil {
+		log.Error("Error decoding tree response:", err)
+		return nil, err
+	}
+	log.Debugf("Received tree response: %s", treeResponse.Data)
+
+	if treeResponse.Status != StatusOK {
+		newError := fmt.Errorf("tree request failed, status code: %d", treeResponse.Status)
+		log.Error(newError)
+		return nil, newError
+	}
+	var a map[string]interface{}
+	json.Unmarshal(treeResponse.Data, &a)
+	if a == nil {
+		newError := fmt.Errorf("tree response data is nil")
+		log.Error(newError)
+		return nil, newError
+	}
+	log.Debugf("Parsed tree response data: %v", a)
+	return a, nil
 }
 
 func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
