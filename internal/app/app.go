@@ -106,17 +106,23 @@ func App() {
 			os.Exit(1)
 		}
 		Diff(treejson, rootLeaf)
-		log.Debugf("Diff count: %d", len(diffQueue))
-		for _, v := range diffQueue {
-			if v.Type == "file" && v.Action == "add" {
-				log.Debugf("start downloading file %s", v.Path)
-				err := fileClient.DownloadFile(conn, v.Path)
-				if err != nil {
-					log.Errorf("File %s downloading fail, %v", v.Path, err)
-				} else {
-					log.Infof("File %s downloaded successfully", v.Path)
+		log.Debugf("Diff count: %d", diffQueue.Size())
+		for diffQueue.Size() > 0 {
+			v, has := diffQueue.Pop()
+			if !has {
+				log.Error("Diff queue is empty, but we expected more items")
+				continue
+			} else {
+				if v.Type == "file" && v.Action == "add" {
+					err := fileClient.DownloadFile(conn, v.Path)
+					if err != nil {
+						log.Errorf("File %s downloading fail, %v", v.Path, err)
+					} else {
+						log.Infof("File %s downloaded successfully", v.Path)
+					}
 				}
 			}
+
 		}
 		defer conn.Close()
 	}

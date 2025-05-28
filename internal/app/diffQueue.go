@@ -3,12 +3,12 @@ package app
 import (
 	"encoding/json"
 	log "github.com/sirupsen/logrus"
+	"local-mirror/pkg/data"
 	"local-mirror/pkg/jsonutil"
 )
 
 var (
-	// ErrLeafNotFound is returned when a leaf is not found in the tree.
-	diffQueue = []jsonutil.DiffResult{}
+	diffQueue = data.NewStack[jsonutil.DiffResult]()
 )
 
 func Diff(a map[string]interface{}, leaf *Leaf) error {
@@ -27,11 +27,8 @@ func Diff(a map[string]interface{}, leaf *Leaf) error {
 		log.Error("Error finding differences:", err)
 		return err
 	}
-	diffQueue = append(diffQueue, diffs...)
-	diffList := ""
-	for _, diff := range diffQueue {
-		diffList += diff.Name + "-----" + diff.Path + "-----" + diff.Type + "-----" + diff.Action + "/\n"
+	for _, diff := range diffs {
+		diffQueue.Push(diff)
 	}
-	log.Infof("Differences found: /\n %s", diffList)
 	return nil
 }
