@@ -1,1 +1,4 @@
 /bin
+*.log
+dist/
+local-mirror

@@ -94,23 +94,25 @@ func App() {
 			os.Exit(1)
 		}
 	} else if *config.Mode == "mirror" {
-		fileClient := NewFileClient("10.8.0.9:52345")
+		fileClient := NewFileClient("172.27.0.53:52345")
 		conn, err := fileClient.Connect()
 		if err != nil {
 			log.Fatal("Error connecting to file server:", err)
 			os.Exit(1)
 		}
-		treejson, err := fileClient.GetRealityTree(conn, ".")
+		treejson, err := fileClient.GetRealityTree(conn, "./old")
 		if err != nil {
 			log.Fatal("Error getting reality tree:", err)
 			os.Exit(1)
 		}
 		Diff(treejson, rootLeaf)
+		log.Debugf("Diff count: %d", len(diffQueue))
 		for _, v := range diffQueue {
 			if v.Type == "file" && v.Action == "add" {
+				log.Debugf("start downloading file %s", v.Path)
 				err := fileClient.DownloadFile(conn, v.Path)
 				if err != nil {
-					log.Errorf("Error downloading file %s: %v", v.Path, err)
+					log.Errorf("File %s downloading fail, %v", v.Path, err)
 				} else {
 					log.Infof("File %s downloaded successfully", v.Path)
 				}

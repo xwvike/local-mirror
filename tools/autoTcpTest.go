@@ -11,11 +11,11 @@ import (
 
 const (
 	// 远程服务器配置
-	remoteHost    = "192.168.100.10"                     // 替换为你的 Debian 主机地址
-	remoteUser    = "xwvike"                             // 替换为你的 Debian 用户名（确保不是root）
-	remotePort    = "22"                                 // SSH 端口
-	remoteBinPath = "/tmp/local-mirror"                  // 远程二进制文件路径
-	sshKeyPath    = "/Users/xiazhike/.ssh/debian_xwvike" // SSH私钥路径，根据实际情况修改
+	remoteHost    = "comp"                        // 替换为你的 Debian 主机地址
+	remoteUser    = "xwvike"                      // 替换为你的 Debian 用户名（确保不是root）
+	remotePort    = "22"                          // SSH 端口
+	remoteBinPath = "/tmp/local-mirror"           // 远程二进制文件路径
+	sshKeyPath    = "/Users/xiazhike/.ssh/eu.pem" // SSH私钥路径，根据实际情况修改
 
 	// 本地配置
 	localBuildPath = "./dist/local-mirror" // 本地构建路径
@@ -123,9 +123,23 @@ func stopAndCleanup() error {
 }
 
 func stopLocalClient() error {
-	// 停止本地客户端
-	cmd := exec.Command("pkill", "-f", "main.go")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	// 通过端口号找到对应的进程并终止
+	cmd := exec.Command("lsof", "-t", "-i", ":52345")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("查找端口进程失败: %v", err)
+	}
+
+	// 如果没有找到进程，返回提示信息
+	if len(output) == 0 {
+		log.Println("没有找到监听52345端口的进程")
+		return nil
+	}
+
+	// 使用找到的PID终止进程
+	killCmd := exec.Command("kill", "-9", string(output[:len(output)-1])) // 去掉末尾的换行符
+	killCmd.Stdout = os.Stdout
+	killCmd.Stderr = os.Stderr
+
+	return killCmd.Run()
 }

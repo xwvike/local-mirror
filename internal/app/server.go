@@ -93,14 +93,14 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 				log.Error("Error decoding acknowledge message:", err)
 				return
 			}
-			log.Infof("Received acknowledge message: session ID: %d, offset: %d", ackMsg.SessionID, ackMsg.Offset)
+			log.Infof("Received acknowledge message: session ID: %s, offset: %d", ackMsg.SessionID, ackMsg.Offset)
 		case MsgTypeFileComplete:
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
 				log.Error("Error decoding file complete message:", err)
 				return
 			}
-			log.Infof("Received file complete message: session ID: %d", completeMsg.SessionID)
+			log.Infof("Received file complete message: session ID: %s", completeMsg.SessionID)
 			s.sessionMap.Delete(completeMsg.SessionID)
 		default:
 			log.Errorf("Unknown message type: %d", msgType)

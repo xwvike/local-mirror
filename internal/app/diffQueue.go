@@ -28,5 +28,10 @@ func Diff(a map[string]interface{}, leaf *Leaf) error {
 		return err
 	}
 	diffQueue = append(diffQueue, diffs...)
+	diffList := ""
+	for _, diff := range diffQueue {
+		diffList += diff.Name + "-----" + diff.Path + "-----" + diff.Type + "-----" + diff.Action + "/\n"
+	}
+	log.Infof("Differences found: /\n %s", diffList)
 	return nil
 }

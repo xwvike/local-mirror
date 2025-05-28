@@ -133,7 +133,6 @@ func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]
 		log.Error(newError)
 		return nil, newError
 	}
-	log.Debugf("Parsed tree response data: %v", a)
 	return a, nil
 }
 
@@ -217,7 +216,7 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
 				// todo: check session ID
 				if dataMsg.SessionID != sessionID {
 					log.Error("Invalid session ID in file data message")
-					return fmt.Errorf("invalid session ID in file data message, got %d", dataMsg.SessionID)
+					return fmt.Errorf("invalid session ID in file data message, got %s", dataMsg.SessionID)
 				}
 
 				if fileResponse.FileSize <= config.MemFileThreshold {
@@ -249,7 +248,7 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
 					return err
 				}
 				if completeMsg.SessionID != sessionID {
-					newError := fmt.Errorf("invalid session ID in file complete message, got %d", completeMsg.SessionID)
+					newError := fmt.Errorf("invalid session ID in file complete message, got %s", completeMsg.SessionID)
 					log.Error(newError)
 					return newError
 				}
@@ -282,7 +281,7 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
 					sessionID,
 					fileResponse.FileSize,
 					transferSpeed/1024/1024)
-
+				return nil
 			case MsgTypeError:
 				errorMsg, err := decodeErrorMessage(bodyBytes)
 				if err != nil {
