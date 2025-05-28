@@ -98,6 +98,19 @@ func CalcBlake3(path string) ([32]byte, error) {
 	return result, nil
 }
 
+func RandomString(length int) (string, error) {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_#&*!@"
+	b := make([]byte, length)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", err
+	}
+	for i := range b {
+		b[i] = charset[b[i]%byte(len(charset))]
+	}
+	return string(b), nil
+}
+
 // func ensureFileCanBeCreated(localPath string) (*os.File, error) {
 //     dir := filepath.Dir(localPath)
 //     if err := os.MkdirAll(dir, 0755); err != nil {

@@ -16,8 +16,7 @@ import (
 func NewFileServer(listenAddr string) *fileServer {
 	log.Debug("Creating file server, listen address:", listenAddr)
 	return &fileServer{
-		listenAddr:    listenAddr,
-		nextSessionID: 1,
+		listenAddr: listenAddr,
 	}
 }
 
@@ -189,8 +188,9 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 		return err
 	}
 
-	sessionID := s.nextSessionID
-	s.nextSessionID++
+	sessionID, err := utils.RandomString(16)
+	var sessionBytes [16]byte
+	copy(sessionBytes[:], sessionID)
 
 	if fileRequest.Offset > 0 {
 		if _, err := file.Seek(int64(fileRequest.Offset), io.SeekStart); err != nil {
@@ -200,7 +200,7 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 		}
 	}
 	session := &session{
-		ID:       sessionID,
+		ID:       sessionBytes,
 		FilePath: fullPath,
 		FileSize: uint64(fileInfo.Size()),
 		file:     file,
@@ -211,7 +211,7 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 
 	fileResponse := FileResponseMessage{
 		Status:    StatusOK,
-		SessionID: sessionID,
+		SessionID: sessionBytes,
 		FileSize:  uint64(fileInfo.Size()),
 		FileHash:  fileHash,
 	}
@@ -222,7 +222,7 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 		s.sessionMap.Delete(sessionID)
 		return err
 	}
-	log.Infof("Sent file response: session ID: %d, file size: %d bytes", sessionID, fileInfo.Size())
+	log.Infof("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
 	go s.sendFileData(conn, session, fileRequest.Offset)
 	return nil
 }

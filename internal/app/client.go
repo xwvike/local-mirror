@@ -15,13 +15,12 @@ import (
 )
 
 type fileServer struct {
-	listenAddr    string
-	sessionMap    sync.Map
-	nextSessionID uint32
+	listenAddr string
+	sessionMap sync.Map
 }
 
 type session struct {
-	ID       uint32   // 会话ID
+	ID       [16]byte // 会话ID
 	FilePath string   // 文件路径
 	FileSize uint64   // 文件大小
 	file     *os.File // 文件句柄
@@ -241,7 +240,7 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
 						log.Error("Error sending acknowledge message:", err)
 						return err
 					}
-					log.Debugf("Sent acknowledge message, session ID: %d, offset: %d", sessionID, receivedSize)
+					log.Debugf("Sent acknowledge message, session ID: %s, offset: %d", sessionID, receivedSize)
 				}
 			case MsgTypeFileComplete:
 				completeMsg, err := decodeFileComplete(bodyBytes)
@@ -279,7 +278,7 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
 					return newError
 				}
 				transferSpeed := float64(fileResponse.FileSize) / time.Since(startTime).Seconds()
-				log.Infof("File transfer complete, session ID: %d, file size: %d bytes, transfer speed: %.2f MB/s",
+				log.Infof("File transfer complete, session ID: %s, file size: %d bytes, transfer speed: %.2f MB/s",
 					sessionID,
 					fileResponse.FileSize,
 					transferSpeed/1024/1024)

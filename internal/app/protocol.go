@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	log "github.com/sirupsen/logrus"
 	"io"
 	"net"
@@ -61,22 +62,22 @@ type FileRequestMessage struct {
 // 文件响应消息
 type FileResponseMessage struct {
 	Status    uint16   // 状态码
-	SessionID uint32   // 会话ID
+	SessionID [16]byte // 会话ID
 	FileSize  uint64   // 文件大小
 	FileHash  [32]byte // 文件哈希值
 }
 
 // 文件数据消息
 type FileDataMessage struct {
-	SessionID  uint32 // 会话ID
-	Offset     uint64 // 数据偏移
-	DataLength uint32 // 数据长度
-	Data       []byte // 数据内容
+	SessionID  [16]byte // 会话ID
+	Offset     uint64   // 数据偏移
+	DataLength uint32   // 数据长度
+	Data       []byte   // 数据内容
 }
 
 // 文件完成消息
 type FileCompleteMessage struct {
-	SessionID uint32   // 会话ID
+	SessionID [16]byte // 会话ID
 	FileHash  [32]byte // 文件哈希值
 }
 
@@ -89,9 +90,9 @@ type ErrorMessage struct {
 
 // 确认消息
 type AcknowledgeMessage struct {
-	SessionID uint32 // 会话ID
-	Offset    uint64 // 确认偏移
-	Status    uint16 // 确认状态
+	SessionID [16]byte // 会话ID
+	Offset    uint64   // 确认偏移
+	Status    uint16   // 确认状态
 }
 
 // 树形结构请求消息
@@ -135,7 +136,7 @@ func decodeHeader(data []byte) (MessageHeader, error) {
 	}
 
 	if header.Magic != MagicNumber {
-		return header, errors.New("invalid magic number")
+		return header, errors.New(fmt.Sprintf("invalid magic number, got %d", header.Magic))
 	}
 
 	return header, nil
@@ -198,7 +199,7 @@ func decodeFileRequest(data []byte) (FileRequestMessage, error) {
 func encodeFileResponse(msg FileResponseMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.Status)
-	binary.Write(buf, binary.BigEndian, msg.SessionID)
+	buf.Write(msg.SessionID[:])
 	binary.Write(buf, binary.BigEndian, msg.FileSize)
 	buf.Write(msg.FileHash[:])
 	return buf.Bytes()
@@ -213,8 +214,8 @@ func decodeFileResponse(data []byte) (FileResponseMessage, error) {
 		return msg, err
 	}
 
-	if err := binary.Read(buf, binary.BigEndian, &msg.SessionID); err != nil {
-		log.Error("Error decoding session ID:", err)
+	if _, err := buf.Read(msg.SessionID[:]); err != nil {
+		log.Error("Error reading session ID:", err)
 		return msg, err
 	}
 
@@ -233,7 +234,7 @@ func decodeFileResponse(data []byte) (FileResponseMessage, error) {
 
 func encodeFileData(msg FileDataMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.SessionID)
+	buf.Write(msg.SessionID[:])
 	binary.Write(buf, binary.BigEndian, msg.Offset)
 	binary.Write(buf, binary.BigEndian, msg.DataLength)
 	buf.Write(msg.Data)
@@ -244,8 +245,8 @@ func decodeFileData(data []byte) (FileDataMessage, error) {
 	var msg FileDataMessage
 	buf := bytes.NewReader(data)
 
-	if err := binary.Read(buf, binary.BigEndian, &msg.SessionID); err != nil {
-		log.Error("Error decoding file data message:", err)
+	if _, err := buf.Read(msg.SessionID[:]); err != nil {
+		log.Error("Error reading file data session ID:", err)
 		return msg, err
 	}
 
@@ -269,7 +270,7 @@ func decodeFileData(data []byte) (FileDataMessage, error) {
 
 func encodeAcknowlege(msg AcknowledgeMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.SessionID)
+	buf.Write(msg.SessionID[:])
 	binary.Write(buf, binary.BigEndian, msg.Offset)
 	binary.Write(buf, binary.BigEndian, msg.Status)
 	return buf.Bytes()
@@ -279,8 +280,8 @@ func decodeAcknowledge(data []byte) (AcknowledgeMessage, error) {
 	var msg AcknowledgeMessage
 	buf := bytes.NewReader(data)
 
-	if err := binary.Read(buf, binary.BigEndian, &msg.SessionID); err != nil {
-		log.Error("Error decoding acknowledge message:", err)
+	if _, err := buf.Read(msg.SessionID[:]); err != nil {
+		log.Error("Error reading acknowledge session ID:", err)
 		return msg, err
 	}
 
@@ -298,7 +299,7 @@ func decodeAcknowledge(data []byte) (AcknowledgeMessage, error) {
 
 func encodeFileComplete(msg FileCompleteMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.SessionID)
+	buf.Write(msg.SessionID[:])
 	buf.Write(msg.FileHash[:])
 	return buf.Bytes()
 }
@@ -306,8 +307,9 @@ func encodeFileComplete(msg FileCompleteMessage) []byte {
 func decodeFileComplete(data []byte) (FileCompleteMessage, error) {
 	var msg FileCompleteMessage
 	buf := bytes.NewReader(data)
-	if err := binary.Read(buf, binary.BigEndian, &msg.SessionID); err != nil {
-		log.Error("Error decoding file complete message:", err)
+
+	if _, err := buf.Read(msg.SessionID[:]); err != nil {
+		log.Error("Error reading file complete session ID:", err)
 		return msg, err
 	}
 	if _, err := buf.Read(msg.FileHash[:]); err != nil {
