@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	log "github.com/sirupsen/logrus"
@@ -50,7 +49,6 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 
 	for {
 		msgType, bodyBytes, err := receiveMessage(conn)
-		fmt.Printf("Received message type %d with body size %d\n", msgType, binary.Size(bodyBytes))
 		if err != nil {
 			if err != io.EOF {
 				log.Errorf("Error receiving message from %s, %v\n", clientAddr, err)
@@ -116,7 +114,8 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 		log.Error("Error decoding tree request message:", err)
 		return err
 	}
-	log.Infof("Received tree request for path: %s", treeRequest.RootPath)
+	clientAddr := conn.RemoteAddr().String()
+	log.Infof("Received tree request from %s for path: %s", clientAddr, treeRequest.RootPath)
 	fullTreePath := filepath.Join(config.StartPath, treeRequest.RootPath)
 	treeLeaf := rootLeaf.GetChild(fullTreePath)
 	if treeLeaf == nil {
@@ -148,7 +147,7 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 		log.Error("Error sending tree response message:", err)
 		return err
 	}
-	log.Infof("Sent tree response for path: %s, data length: %d bytes", treeLeaf.Path, len(treeData))
+	log.Infof("Sent tree response to %s for path: %s, data length: %d bytes", clientAddr, treeLeaf.Path, len(treeData))
 	return nil
 }
 
@@ -158,7 +157,7 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 		log.Error("Error decoding file request message:", err)
 		return err
 	}
-	log.Infof("Received file request: %s, offset: %d", fileRequest.FilePath, fileRequest.Offset)
+	log.Debugf("Received file request: %s, offset: %d", fileRequest.FilePath, fileRequest.Offset)
 	fullPath := filepath.Join(config.StartPath, fileRequest.FilePath)
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
@@ -222,7 +221,7 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 		s.sessionMap.Delete(sessionID)
 		return err
 	}
-	log.Infof("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
+	log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
 	go s.sendFileData(conn, session, fileRequest.Offset)
 	return nil
 }

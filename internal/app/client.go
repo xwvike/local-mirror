@@ -88,12 +88,13 @@ func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]
 		PathLength: uint16(len(rootPath)),
 		RootPath:   rootPath,
 	}
-
 	requestBytes := encodeTreeRequest(request)
+	serverAddr := conn.RemoteAddr().String()
 	if err := sendMessage(conn, MsgTypeTreeRequest, requestBytes); err != nil {
 		log.Error("Error sending tree request message:", err)
 		return nil, err
 	}
+	log.Infof("Sent tree request to %s for path: %s", serverAddr, rootPath)
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
 		log.Error("Error receiving tree response:", err)
@@ -119,6 +120,10 @@ func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]
 		log.Error("Error decoding tree response:", err)
 		return nil, err
 	}
+	log.Infof("Received tree response from %s, status: %d, data length: %d bytes",
+		serverAddr,
+		treeResponse.Status,
+		len(treeResponse.Data))
 	log.Debugf("Received tree response: %s", treeResponse.Data)
 
 	if treeResponse.Status != StatusOK {

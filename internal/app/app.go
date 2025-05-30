@@ -1,9 +1,7 @@
 package app
 
 import (
-	"fmt"
 	"local-mirror/config"
-	"local-mirror/pkg/utils"
 	"os"
 	"os/signal"
 	"sync"
@@ -74,7 +72,7 @@ func (l *Leaf) GetAllDirs() []string {
 
 var (
 	rootLeaf       *Leaf
-	ignoreFileList = []string{".git", ".gitingore", ".github", ".local-mirror", ".DS_Store"}
+	ignoreFileList = []string{".gitingore", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log"}
 )
 
 func App() {
@@ -83,10 +81,8 @@ func App() {
 		log.Fatal(err)
 	}
 	defer watcher.Close()
-	osInfo := utils.BaseOSInfo()
 	rootLeaf = buildFileTree(config.StartPath)
 	WatchFile(watcher)
-	fmt.Println(osInfo)
 	if *config.Mode == "reality" {
 		fileServer := NewFileServer("0.0.0.0:52345")
 		if err := fileServer.Start(); err != nil {
@@ -100,19 +96,21 @@ func App() {
 			log.Fatal("Error connecting to file server:", err)
 			os.Exit(1)
 		}
-		treejson, err := fileClient.GetRealityTree(conn, "./old")
+		treejson, err := fileClient.GetRealityTree(conn, ".")
 		if err != nil {
 			log.Fatal("Error getting reality tree:", err)
 			os.Exit(1)
 		}
+		log.Info("start analyzing diff 🫨")
 		Diff(treejson, rootLeaf)
-		log.Debugf("Diff count: %d", diffQueue.Size())
+		log.Infof("Diff count: %d", diffQueue.Size())
 		for diffQueue.Size() > 0 {
 			v, has := diffQueue.Pop()
 			if !has {
 				log.Error("Diff queue is empty, but we expected more items")
 				continue
 			} else {
+				log.Infof("Processing diff item: %v 【%d】remaining", v, diffQueue.Size())
 				if v.Type == "file" && v.Action == "add" {
 					err := fileClient.DownloadFile(conn, v.Path)
 					if err != nil {

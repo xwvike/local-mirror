@@ -26,11 +26,11 @@ func init() {
 func main() {
 	flag.Parse()
 	app.InitLogger()
-	log.Debugf("实例ID: %x", config.InstanceID)
-	log.Debugf("协议版本: %x", config.Version)
-	log.Debugf("运行模式: %s", *config.Mode)
-	log.Debugf("日志级别: %s", *config.LogLevel)
-	log.Debugf("启动时间: %d", config.StartTime)
-	log.Debugf("当前工作目录: %s", config.StartPath)
+	log.Infof("实例ID: %x", config.InstanceID)
+	log.Infof("协议版本: %x", config.Version)
+	log.Infof("运行模式: %s", *config.Mode)
+	log.Infof("日志级别: %s", *config.LogLevel)
+	log.Infof("启动时间: %d", config.StartTime)
+	log.Infof("当前工作目录: %s", config.StartPath)
 	app.App()
 }

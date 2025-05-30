@@ -31,12 +31,15 @@ func findDifferences(a, b map[string]interface{}) []DiffResult {
 
 		// 如果b中没有对应节点，标记为add
 		if nodeB == nil {
-			diffs = append(diffs, DiffResult{
-				Path:   currentPath,
-				Type:   typeA,
-				Action: "add",
-				Name:   nameA,
-			})
+			if typeA == "file" {
+				diffs = append(diffs, DiffResult{
+					Path:   currentPath,
+					Type:   typeA,
+					Action: "add",
+					Name:   nameA,
+				})
+			}
+
 			// 递归处理所有子节点
 			childrenA, okA := nodeA["children"].([]interface{})
 			if okA {
@@ -54,12 +57,15 @@ func findDifferences(a, b map[string]interface{}) []DiffResult {
 		typeB, _ := nodeB["type"].(string)
 
 		if nameA != nameB || typeA != typeB {
-			diffs = append(diffs, DiffResult{
-				Path:   currentPath,
-				Type:   typeA,
-				Action: "reget",
-				Name:   nameA,
-			})
+			if typeA == "file" {
+				diffs = append(diffs, DiffResult{
+					Path:   currentPath,
+					Type:   typeA,
+					Action: "reget",
+					Name:   nameA,
+				})
+			}
+
 		}
 
 		// 比较children

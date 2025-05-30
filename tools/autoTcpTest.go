@@ -50,7 +50,7 @@ func main() {
 
 	// 等待服务器启动
 	log.Println("等待服务器就绪...")
-	time.Sleep(20 * time.Second)
+	time.Sleep(340 * time.Second)
 
 	// 5. 停止远程服务并清理
 	if err := stopAndCleanup(); err != nil {
@@ -106,7 +106,7 @@ func runLocalClient() error {
 	if err != nil {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}
-	cmd := exec.Command("go", "run", "./cmd/main/main.go", "-mode=reality", "-logLevel=debug")
+	cmd := exec.Command("go", "run", "./cmd/main/main.go", "-mode=reality", "-logLevel=info")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	return cmd.Start()
