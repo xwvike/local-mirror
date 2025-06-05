@@ -18,6 +18,7 @@ type Leaf struct {
 	Type         string                 `json:"type"` // "file" or "dir"
 	Children     []*Leaf                `json:"children"`
 	Parent       *Leaf                  `json:"-"`
+	Deep         int                    `json:"deep"`               // Depth in the tree
 	Metadata     map[string]interface{} `json:"metadata,omitempty"` // Additional metadata like size, mode, modTime, etc.
 	mu           sync.Mutex             `json:"-"`
 }
@@ -43,12 +44,10 @@ func (l *Leaf) GetChild(path string) *Leaf {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Check if the current leaf matches the path
 	if l.Path == path {
 		return l
 	}
 
-	// Recursively search in children
 	for _, child := range l.Children {
 		if result := child.GetChild(path); result != nil {
 			return result
@@ -56,23 +55,51 @@ func (l *Leaf) GetChild(path string) *Leaf {
 	}
 	return nil
 }
-func (l *Leaf) GetAllDirs() []string {
+func (l *Leaf) GetAllDirs(deep uint16) []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	var dirs []string
 	if l.Type == "dir" {
 		dirs = append(dirs, l.Path)
-		for _, child := range l.Children {
-			dirs = append(dirs, child.GetAllDirs()...)
+		if deep > 0 {
+			for _, child := range l.Children {
+				if child.Type == "dir" {
+					dirs = append(dirs, child.Path)
+					if deep > 1 {
+						childDirs := child.GetAllDirs(deep - 1)
+						dirs = append(dirs, childDirs...)
+					}
+				}
+			}
 		}
 	}
 	return dirs
 }
 
+func (l *Leaf) GetAllFiles(deep uint16) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var files []string
+	if l.Type == "file" {
+		files = append(files, l.Path)
+	} else if l.Type == "dir" {
+		for _, child := range l.Children {
+			if child.Type == "file" {
+				files = append(files, child.Path)
+			} else if deep > 0 && child.Type == "dir" {
+				childFiles := child.GetAllFiles(deep - 1)
+				files = append(files, childFiles...)
+			}
+		}
+	}
+	return files
+}
+
 var (
 	rootLeaf       *Leaf
-	ignoreFileList = []string{".gitingore", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log"}
+	ignoreFileList = []string{".gitingore", ".git", "node_modules", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log"}
 )
 
 func App() {
@@ -81,50 +108,9 @@ func App() {
 		log.Fatal(err)
 	}
 	defer watcher.Close()
-	rootLeaf = buildFileTree(config.StartPath)
+	rootLeaf = buildFileTreeTwoPhase(config.StartPath)
 	WatchFile(watcher)
-	if *config.Mode == "reality" {
-		fileServer := NewFileServer("0.0.0.0:52345")
-		if err := fileServer.Start(); err != nil {
-			log.Fatal("Error starting file server:", err)
-			os.Exit(1)
-		}
-	} else if *config.Mode == "mirror" {
-		fileClient := NewFileClient("172.27.0.53:52345")
-		conn, err := fileClient.Connect()
-		if err != nil {
-			log.Fatal("Error connecting to file server:", err)
-			os.Exit(1)
-		}
-		treejson, err := fileClient.GetRealityTree(conn, ".")
-		if err != nil {
-			log.Fatal("Error getting reality tree:", err)
-			os.Exit(1)
-		}
-		log.Info("start analyzing diff 🫨")
-		Diff(treejson, rootLeaf)
-		log.Infof("Diff count: %d", diffQueue.Size())
-		for diffQueue.Size() > 0 {
-			v, has := diffQueue.Pop()
-			if !has {
-				log.Error("Diff queue is empty, but we expected more items")
-				continue
-			} else {
-				log.Infof("Processing diff item: %v 【%d】remaining", v, diffQueue.Size())
-				if v.Type == "file" && v.Action == "add" {
-					err := fileClient.DownloadFile(conn, v.Path)
-					if err != nil {
-						log.Errorf("File %s downloading fail, %v", v.Path, err)
-					} else {
-						log.Infof("File %s downloaded successfully", v.Path)
-					}
-				}
-			}
-
-		}
-		defer conn.Close()
-	}
-
+	CreateLink()
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan

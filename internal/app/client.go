@@ -83,6 +83,47 @@ func (c *fileClient) Connect() (net.Conn, error) {
 	return conn, nil
 }
 
+func (c *fileClient) Ping(conn net.Conn) error {
+	pingMessage := HeartbeatPingMessage{
+		Version:   config.Version,
+		Timestamp: time.Now().Unix(),
+		ClientID:  config.InstanceID,
+	}
+	pingBytes := encodeHeartbeatPing(pingMessage)
+	if err := sendMessage(conn, MsgTypeHeartbeatPing, pingBytes); err != nil {
+		log.Error("Error sending ping message:", err)
+	}
+	msgType, bodyBytes, err := receiveMessage(conn)
+	if err != nil {
+		log.Error("Error receiving pong:", err)
+		return err
+	}
+	if msgType == MsgTypeError {
+		errorMsg, err := decodeErrorMessage(bodyBytes)
+		if err != nil {
+			log.Error("Error decoding error message:", err)
+			return err
+		}
+		newError := fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
+		log.Error(newError)
+		return newError
+	}
+	if msgType != MsgTypeHeartbeatPong {
+		newError := fmt.Errorf("invalid pong message type, got %d", msgType)
+		log.Error(newError)
+		return newError
+	}
+	pongMessage, err := decodeHeartbeatPong(bodyBytes)
+	if err != nil {
+		log.Error("Error decoding pong message:", err)
+	}
+	log.Infof("Received pong message: version: %d, timestamp: %d, clientID: %d",
+		pongMessage.Version,
+		pongMessage.Timestamp,
+		pongMessage.ServerID)
+	return nil
+}
+
 func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]interface{}, error) {
 	request := TreeRequestMessage{
 		PathLength: uint16(len(rootPath)),
@@ -124,7 +165,7 @@ func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]
 		serverAddr,
 		treeResponse.Status,
 		len(treeResponse.Data))
-	log.Debugf("Received tree response: %s", treeResponse.Data)
+	log.Infof("Received tree response: %s", treeResponse.Data)
 
 	if treeResponse.Status != StatusOK {
 		newError := fmt.Errorf("tree request failed, status code: %d", treeResponse.Status)

@@ -50,7 +50,7 @@ func main() {
 
 	// 等待服务器启动
 	log.Println("等待服务器就绪...")
-	time.Sleep(340 * time.Second)
+	time.Sleep(60 * time.Second)
 
 	// 5. 停止远程服务并清理
 	if err := stopAndCleanup(); err != nil {
@@ -92,7 +92,7 @@ func startRemoteServer() error {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}
 	// 使用 SSH 远程启动服务器，添加密钥参数
-	sshCmd := fmt.Sprintf(" cd ./test && chmod +x %s && nohup %s -mode=mirror -logLevel=debug > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
+	sshCmd := fmt.Sprintf(" cd ./test && chmod +x %s && nohup %s -mode=mirror -logLevel=info > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
 	fmt.Println("sshCmd:", sshCmd)
 	cmd := exec.Command("ssh", "-p", remotePort, "-i", sshKeyPath, fmt.Sprintf("%s@%s", remoteUser, remoteHost), sshCmd)
 	cmd.Stdout = logFile

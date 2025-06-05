@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func NewFileServer(listenAddr string) *fileServer {
@@ -59,6 +60,19 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 		}
 
 		switch msgType {
+		case MsgTypeHandshake:
+			if err := s.handlePingRequest(conn, bodyBytes); err != nil {
+				log.Error("Error handling ping request:", err)
+				errorMsg := ErrorMessage{
+					ErrorCode:    StatusInternalError,
+					MessageLen:   uint16(len(err.Error())),
+					ErrorMessage: err.Error(),
+				}
+				errorBytes := encodeErrorMessage(errorMsg)
+				if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
+					log.Error("Error sending error message:", err)
+				}
+			}
 		case MsgTypeTreeRequest:
 			if err := s.handleTreeRequest(conn, bodyBytes); err != nil {
 				log.Error("Error handling tree request:", err)
@@ -106,6 +120,26 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 
 	}
 
+}
+
+func (s *fileServer) handlePingRequest(conn net.Conn, bodyBytes []byte) error {
+	pingRequest, err := decodeHeartbeatPing(bodyBytes)
+	if err != nil {
+		log.Error("Error decoding ping request message:", err)
+		return err
+	}
+	log.Infof("Received ping request from %s, client ID: %d", conn.RemoteAddr().String(), pingRequest.ClientID)
+	pongMessage := HeartbeatPongMessage{
+		Version:   config.Version,
+		Timestamp: time.Now().Unix(),
+		ServerID:  config.InstanceID,
+	}
+	pongBytes := encodeHeartbeatPong(pongMessage)
+	if err := sendMessage(conn, MsgTypeHeartbeatPong, pongBytes); err != nil {
+		log.Error("Error sending pong message:", err)
+	}
+	log.Infof("Sent pong response to %s, server ID: %d", conn.RemoteAddr().String(), config.InstanceID)
+	return nil
 }
 
 func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {

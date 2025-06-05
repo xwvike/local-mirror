@@ -16,15 +16,17 @@ const (
 	MagicNumber uint32 = 0xF1E2D3C4 // 协议标识符
 
 	// 消息类型
-	MsgTypeHandshake    uint16 = 0x0001 // 握手请求/响应
-	MsgTypeFileRequest  uint16 = 0x0002 // 文件传输请求
-	MsgTypeFileResponse uint16 = 0x0003 // 文件传输响应
-	MsgTypeFileData     uint16 = 0x0004 // 文件数据
-	MsgTypeFileComplete uint16 = 0x0005 // 文件传输完成
-	MsgTypeError        uint16 = 0x0006 // 错误消息
-	MsgTypeAcknowledge  uint16 = 0x0007 // 确认消息
-	MsgTypeTreeRequest  uint16 = 0x0008 // 目录树请求
-	MsgTypeTreeResponse uint16 = 0x0009 // 目录树响应
+	MsgTypeHandshake     uint16 = 0x0001 // 握手请求/响应
+	MsgTypeFileRequest   uint16 = 0x0002 // 文件传输请求
+	MsgTypeFileResponse  uint16 = 0x0003 // 文件传输响应
+	MsgTypeFileData      uint16 = 0x0004 // 文件数据
+	MsgTypeFileComplete  uint16 = 0x0005 // 文件传输完成
+	MsgTypeError         uint16 = 0x0006 // 错误消息
+	MsgTypeAcknowledge   uint16 = 0x0007 // 确认消息
+	MsgTypeTreeRequest   uint16 = 0x0008 // 目录树请求
+	MsgTypeTreeResponse  uint16 = 0x0009 // 目录树响应
+	MsgTypeHeartbeatPing uint16 = 0x000A // 心跳请求
+	MsgTypeHeartbeatPong uint16 = 0x000B // 心跳响应
 
 	// 状态码
 	StatusOK            uint16 = 0x0000 // 正常
@@ -107,6 +109,20 @@ type TreeResponseMessage struct {
 	RootPath   string // 目录树的根路径
 	DataLength uint32 // 数据长度
 	Data       []byte // 请求数据
+}
+
+// 心跳请求消息
+type HeartbeatPingMessage struct {
+	Version   uint16 // 协议版本
+	Timestamp int64  // 时间戳（秒）
+	ClientID  uint32 // 客户端标识
+}
+
+// 心跳响应消息
+type HeartbeatPongMessage struct {
+	Version   uint16 // 协议版本
+	Timestamp int64  // 时间戳（秒）
+	ServerID  uint32 // 服务端标识
 }
 
 func encodeHeader(header MessageHeader) []byte {
@@ -453,5 +469,59 @@ func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 		return msg, err
 	}
 
+	return msg, nil
+}
+
+func encodeHeartbeatPing(msg HeartbeatPingMessage) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, msg.Version)
+	binary.Write(buf, binary.BigEndian, msg.Timestamp)
+	binary.Write(buf, binary.BigEndian, msg.ClientID)
+	return buf.Bytes()
+}
+
+func decodeHeartbeatPing(data []byte) (HeartbeatPingMessage, error) {
+	var msg HeartbeatPingMessage
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.Version); err != nil {
+		log.Error("Error decoding heartbeat ping version:", err)
+		return msg, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.Timestamp); err != nil {
+		log.Error("Error decoding heartbeat ping second:", err)
+		return msg, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.ClientID); err != nil {
+		log.Error("Error decoding heartbeat ping client ID:", err)
+		return msg, err
+	}
+	return msg, nil
+}
+
+func encodeHeartbeatPong(msg HeartbeatPongMessage) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, msg.Version)
+	binary.Write(buf, binary.BigEndian, msg.Timestamp)
+	binary.Write(buf, binary.BigEndian, msg.ServerID)
+	return buf.Bytes()
+}
+
+func decodeHeartbeatPong(data []byte) (HeartbeatPongMessage, error) {
+	var msg HeartbeatPongMessage
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.Version); err != nil {
+		log.Error("Error decoding heartbeat pong version:", err)
+		return msg, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.Timestamp); err != nil {
+		log.Error("Error decoding heartbeat pong second:", err)
+		return msg, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.ServerID); err != nil {
+		log.Error("Error decoding heartbeat pong server ID:", err)
+		return msg, err
+	}
 	return msg, nil
 }

@@ -4,10 +4,15 @@ import (
 	"local-mirror/config"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
-func getLeafInfo(filepath string) Leaf {
+func getLeafInfo(filepath string) *Leaf {
 	fileInfo, err := os.Stat(filepath)
 	var ignore = false
 	for _, v := range ignoreFileList {
@@ -17,20 +22,21 @@ func getLeafInfo(filepath string) Leaf {
 		}
 	}
 	if ignore {
-		return Leaf{}
+		return nil
 	}
 	if err != nil {
-		return Leaf{}
+		return nil
 	}
 	fileType := "file"
 	if fileInfo.IsDir() {
 		fileType = "dir"
 	}
-	return Leaf{
+	return &Leaf{
 		Name:         fileInfo.Name(),
 		Path:         filepath,
 		RelativePath: strings.Replace(filepath, config.StartPath, ".", 1),
 		Type:         fileType,
+		Deep:         strings.Count(strings.TrimPrefix(filepath, config.StartPath), string(os.PathSeparator)),
 		Metadata: map[string]interface{}{
 			"size":    fileInfo.Size(),
 			"modTime": fileInfo.ModTime(),
@@ -40,33 +46,118 @@ func getLeafInfo(filepath string) Leaf {
 	}
 }
 
-func buildFileTree(path string) *Leaf {
+func buildFileTreeTwoPhase(path string) *Leaf {
+	startTime := time.Now().UnixMilli()
+	log.Info("start build file tree (two-phase) from path:", path)
+
 	rootNode := getLeafInfo(path)
-
-	if rootNode.Type == "dir" {
-		buildChildren(&rootNode, path)
+	if rootNode == nil {
+		log.Error("Failed to get root node info, path may not exist:", path)
+		return nil
+	}
+	if rootNode.Type != "dir" {
+		return rootNode
 	}
 
-	return &rootNode
-}
+	// 第一阶段：收集所有目录
+	dirMap := make(map[string]*Leaf)
+	dirMap[path] = rootNode
 
-func buildChildren(parent *Leaf, dirPath string) {
-	entries, err := os.ReadDir(dirPath)
+	var collectDirs func(string, *Leaf)
+	collectDirs = func(dirPath string, parent *Leaf) {
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			return
+		}
 
-	if err != nil {
-		return
-	}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
 
-	for _, entry := range entries {
-		childPath := filepath.Join(dirPath, entry.Name())
-		childNode := getLeafInfo(childPath)
+			childPath := filepath.Join(dirPath, entry.Name())
+			childNode := getLeafInfo(childPath)
+			if childNode == nil {
+				continue
+			}
+			ignore := false
 
-		childNode.Parent = parent
-		parent.Children = append(parent.Children, &childNode)
+			for _, v := range ignoreFileList {
+				if strings.Contains(childNode.Path, v) {
+					ignore = true
+					break
+				}
+			}
+			// 跳过被忽略的目录
+			if ignore {
+				continue
+			}
 
-		if childNode.Type == "dir" {
-			childPtr := parent.Children[len(parent.Children)-1]
-			buildChildren(childPtr, childPath)
+			childNode.Parent = parent
+			parent.Children = append(parent.Children, childNode)
+			dirMap[childPath] = childNode
+
+			collectDirs(childPath, childNode)
 		}
 	}
+
+	collectDirs(path, rootNode)
+	log.Infof("Phase 1 completed: collected %d directories", len(dirMap))
+
+	// 第二阶段：为每个目录添加文件
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, runtime.NumCPU()) // 限制并发数
+
+	for dirPath, dirNode := range dirMap {
+		wg.Add(1)
+		go func(path string, node *Leaf) {
+			defer wg.Done()
+			sem <- struct{}{}        // 获取信号量
+			defer func() { <-sem }() // 释放信号量
+
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				return
+			}
+
+			files := make([]*Leaf, 0)
+
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue // 目录已经在第一阶段处理了
+				}
+
+				childPath := filepath.Join(path, entry.Name())
+				childNode := getLeafInfo(childPath)
+				if childNode == nil {
+					continue // 忽略无法获取信息的文件
+				}
+				ignore := false
+				for _, v := range ignoreFileList {
+					if strings.Contains(childNode.Path, v) {
+						ignore = true
+						break
+					}
+				}
+
+				if ignore {
+					continue // 跳过被忽略的文件
+				}
+
+				childNode.Parent = node
+				files = append(files, childNode)
+			}
+
+			// 原子性地添加文件到目录节点
+			node.mu.Lock()
+			node.Children = append(node.Children, files...)
+			node.mu.Unlock()
+		}(dirPath, dirNode)
+	}
+
+	wg.Wait()
+
+	log.Infof("file tree build (two-phase) completed, time taken: %d ms", time.Now().UnixMilli()-startTime)
+	log.Info("file tree build completed all files count:", len(rootNode.GetAllFiles(999)))
+	return rootNode
 }
