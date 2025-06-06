@@ -3,20 +3,39 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"local-mirror/config"
 	"local-mirror/pkg/utils"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
+
+type fileServer struct {
+	listenAddr string
+	sessionMap sync.Map
+	semaphore  chan struct{}
+}
+
+type session struct {
+	ID       [16]byte // 会话ID
+	FilePath string   // 文件路径
+	FileSize uint64   // 文件大小
+	file     *os.File // 文件句柄
+	fileHash [32]byte // 文件哈希值
+}
 
 func NewFileServer(listenAddr string) *fileServer {
 	log.Info("Creating file server, listen address:", listenAddr)
 	return &fileServer{
 		listenAddr: listenAddr,
+		sessionMap: sync.Map{},
+		semaphore:  make(chan struct{}, runtime.NumCPU()),
 	}
 }
 
@@ -256,7 +275,13 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 		return err
 	}
 	log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
-	go s.sendFileData(conn, session, fileRequest.Offset)
+	go func() {
+		s.semaphore <- struct{}{}
+		defer func() { <-s.semaphore }()
+		if err := s.sendFileData(conn, session, fileRequest.Offset); err != nil {
+			log.Error("Error sending file data:", err)
+		}
+	}()
 	return nil
 }
 

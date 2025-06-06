@@ -14,19 +14,6 @@ import (
 	"time"
 )
 
-type fileServer struct {
-	listenAddr string
-	sessionMap sync.Map
-}
-
-type session struct {
-	ID       [16]byte // 会话ID
-	FilePath string   // 文件路径
-	FileSize uint64   // 文件大小
-	file     *os.File // 文件句柄
-	fileHash [32]byte // 文件哈希值
-}
-
 type fileClient struct {
 	serverAddr string
 }
