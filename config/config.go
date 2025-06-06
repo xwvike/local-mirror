@@ -4,6 +4,19 @@ import (
 	"flag"
 )
 
+const (
+	// Mode constants
+	RealityMode = 0x0001
+	MirrorMode  = 0x0002
+)
+
+var (
+	ModeMap = map[string]uint8{
+		"reality": RealityMode,
+		"mirror":  MirrorMode,
+	}
+)
+
 var (
 	Mode                    = flag.String("mode", "reality", "运行模式: reality 或 mirror")
 	LogLevel                = flag.String("logLevel", "error", "日志级别: debug, info, warn, error")

@@ -48,7 +48,7 @@ func getLeafInfo(filepath string) *Leaf {
 
 func buildFileTreeTwoPhase(path string) *Leaf {
 	startTime := time.Now().UnixMilli()
-	log.Info("start build file tree (two-phase) from path:", path)
+	log.Info("setp 1 >> start build file tree from path:", path)
 
 	rootNode := getLeafInfo(path)
 	if rootNode == nil {
@@ -106,14 +106,14 @@ func buildFileTreeTwoPhase(path string) *Leaf {
 
 	// 第二阶段：为每个目录添加文件
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, runtime.NumCPU()) // 限制并发数
+	sem := make(chan struct{}, runtime.NumCPU())
 
 	for dirPath, dirNode := range dirMap {
 		wg.Add(1)
 		go func(path string, node *Leaf) {
 			defer wg.Done()
-			sem <- struct{}{}        // 获取信号量
-			defer func() { <-sem }() // 释放信号量
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
 			entries, err := os.ReadDir(path)
 			if err != nil {
@@ -124,13 +124,13 @@ func buildFileTreeTwoPhase(path string) *Leaf {
 
 			for _, entry := range entries {
 				if entry.IsDir() {
-					continue // 目录已经在第一阶段处理了
+					continue
 				}
 
 				childPath := filepath.Join(path, entry.Name())
 				childNode := getLeafInfo(childPath)
 				if childNode == nil {
-					continue // 忽略无法获取信息的文件
+					continue
 				}
 				ignore := false
 				for _, v := range ignoreFileList {
@@ -141,14 +141,13 @@ func buildFileTreeTwoPhase(path string) *Leaf {
 				}
 
 				if ignore {
-					continue // 跳过被忽略的文件
+					continue
 				}
 
 				childNode.Parent = node
 				files = append(files, childNode)
 			}
 
-			// 原子性地添加文件到目录节点
 			node.mu.Lock()
 			node.Children = append(node.Children, files...)
 			node.mu.Unlock()
@@ -157,7 +156,7 @@ func buildFileTreeTwoPhase(path string) *Leaf {
 
 	wg.Wait()
 
-	log.Infof("file tree build (two-phase) completed, time taken: %d ms", time.Now().UnixMilli()-startTime)
+	log.Infof("file tree build completed, time taken: %d ms", time.Now().UnixMilli()-startTime)
 	log.Info("file tree build completed all files count:", len(rootNode.GetAllFiles(999)))
 	return rootNode
 }

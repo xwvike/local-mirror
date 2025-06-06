@@ -1,12 +1,13 @@
 package app
 
 import (
-	"fmt"
-	"github.com/fsnotify/fsnotify"
+	log "github.com/sirupsen/logrus"
 	"local-mirror/config"
 	"local-mirror/pkg/utils"
 	"path/filepath"
 	"strings"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 var (
@@ -42,11 +43,10 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
 	} else {
 
 	}
-	fmt.Println("Event:", event.Name, "Operation:", opStr)
 	if opStr == create {
 		isDir, err := utils.IsDir(event.Name)
 		if err != nil {
-			fmt.Printf("Error checking if path is directory: %v\n", err)
+			log.Error("Error checking if path is directory:", err)
 			return
 		}
 		fileType := "file"
@@ -78,11 +78,8 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
 		if fileType == "dir" {
 			err := watcher.Add(event.Name)
 			if err != nil {
-				fmt.Println("Error adding directory to watcher:", err)
+				log.Error("Error adding directory to watcher:", err)
 			}
-			fmt.Println("Added directory to watcher:", event.Name)
-		} else {
-			fmt.Println("Added file", event.Name)
 		}
 	} else if opStr == remove {
 		children := fatherNode.GetChild(event.Name)
@@ -91,5 +88,4 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
 		}
 		fatherNode.RemoveChild(children)
 	}
-	fmt.Println("all watched dirs:", watcher.WatchList())
 }

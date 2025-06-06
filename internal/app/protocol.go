@@ -5,9 +5,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"net"
+	"os"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // 协议常量定义
@@ -49,9 +51,9 @@ type MessageHeader struct {
 
 // 握手消息
 type HandshakeMessage struct {
-	Version  uint16 // 协议版本
-	ServerID uint32 // 服务端标识
-	ClientID uint32 // 客户端标识
+	Version uint16 // 协议版本
+	UUID    uint32 // 标识
+	Role    uint8  // 角色
 }
 
 // 文件请求消息
@@ -161,8 +163,8 @@ func decodeHeader(data []byte) (MessageHeader, error) {
 func encodeHandshake(msg HandshakeMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.Version)
-	binary.Write(buf, binary.BigEndian, msg.ServerID)
-	binary.Write(buf, binary.BigEndian, msg.ClientID)
+	binary.Write(buf, binary.BigEndian, msg.UUID)
+	binary.Write(buf, binary.BigEndian, msg.Role)
 	return buf.Bytes()
 }
 
@@ -172,10 +174,10 @@ func decodeHandshake(data []byte) (HandshakeMessage, error) {
 	if err := binary.Read(buf, binary.BigEndian, &msg.Version); err != nil {
 		return msg, err
 	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.ClientID); err != nil {
+	if err := binary.Read(buf, binary.BigEndian, &msg.UUID); err != nil {
 		return msg, err
 	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.ServerID); err != nil {
+	if err := binary.Read(buf, binary.BigEndian, &msg.Role); err != nil {
 		return msg, err
 	}
 	return msg, nil
@@ -389,6 +391,8 @@ func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 	}
 	header, err := decodeHeader(headerBytes)
 	if err != nil {
+		log.Errorf("Error heading message: magic:%d, type:%d, body length: %d", header.Magic, header.Type, header.BodyLength)
+		os.Exit(1)
 		return 0, nil, err
 	}
 	bodyBytes := make([]byte, header.BodyLength)

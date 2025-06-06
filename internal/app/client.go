@@ -47,9 +47,9 @@ func (c *fileClient) Connect() (net.Conn, error) {
 	log.Infof("Connected to server %s", c.serverAddr)
 
 	handshakeMsg := HandshakeMessage{
-		Version:  config.Version,
-		ServerID: 0,
-		ClientID: config.InstanceID,
+		Version: config.Version,
+		UUID:    config.InstanceID,
+		Role:    config.ModeMap[*config.Mode],
 	}
 	handshakeBytes := encodeHandshake(handshakeMsg)
 
@@ -78,8 +78,8 @@ func (c *fileClient) Connect() (net.Conn, error) {
 	}
 	log.Infof("Received handshake response: version: %d, clientID: %d, serverID: %d",
 		handshakeResponse.Version,
-		handshakeResponse.ClientID,
-		handshakeResponse.ServerID)
+		handshakeResponse.UUID,
+		handshakeResponse.Role)
 	return conn, nil
 }
 
@@ -165,7 +165,7 @@ func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]
 		serverAddr,
 		treeResponse.Status,
 		len(treeResponse.Data))
-	log.Infof("Received tree response: %s", treeResponse.Data)
+	log.Debugf("Received tree response: %s", treeResponse.Data)
 
 	if treeResponse.Status != StatusOK {
 		newError := fmt.Errorf("tree request failed, status code: %d", treeResponse.Status)

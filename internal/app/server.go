@@ -14,7 +14,7 @@ import (
 )
 
 func NewFileServer(listenAddr string) *fileServer {
-	log.Debug("Creating file server, listen address:", listenAddr)
+	log.Info("Creating file server, listen address:", listenAddr)
 	return &fileServer{
 		listenAddr: listenAddr,
 	}
@@ -305,7 +305,7 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 		log.Error("Error sending file complete message:", err)
 		return err
 	}
-	log.Infof("Sent file complete message: session ID: %d", session.ID)
+	log.Infof("Sent file complete message: session ID: %s", session.ID)
 	return nil
 }
 
@@ -327,12 +327,12 @@ func (s *fileServer) handleHandshake(conn net.Conn) error {
 	}
 	log.Infof("Received handshake message: version: %d, clientID: %d, serverID: %d",
 		handshakeMsg.Version,
-		handshakeMsg.ClientID,
-		handshakeMsg.ServerID)
+		handshakeMsg.UUID,
+		handshakeMsg.Role)
 	receiveHandshake := HandshakeMessage{
-		Version:  config.Version,
-		ServerID: config.InstanceID,
-		ClientID: 0,
+		Version: config.Version,
+		UUID:    config.InstanceID,
+		Role:    config.ModeMap[*config.Mode],
 	}
 	handshakeBytes := encodeHandshake(receiveHandshake)
 	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {

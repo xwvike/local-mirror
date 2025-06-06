@@ -40,12 +40,14 @@ func mirror(conn net.Conn, fileClient *fileClient) {
 
 func CreateLink() {
 	if *config.Mode == "reality" {
+		log.Info("step 3 >> start file server")
 		fileServer := NewFileServer("0.0.0.0:52345")
 		if err := fileServer.Start(); err != nil {
 			log.Fatal("Error starting file server:", err)
 			os.Exit(1)
 		}
 	} else if *config.Mode == "mirror" {
+		log.Info("step 3 >> start file client")
 		fileClient := NewFileClient("172.27.0.53:52345")
 		conn, err := fileClient.Connect()
 		if err != nil {
