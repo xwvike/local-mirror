@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"time"
 
@@ -19,7 +18,6 @@ import (
 type fileServer struct {
 	listenAddr string
 	sessionMap sync.Map
-	semaphore  chan struct{}
 }
 
 type session struct {
@@ -35,7 +33,6 @@ func NewFileServer(listenAddr string) *fileServer {
 	return &fileServer{
 		listenAddr: listenAddr,
 		sessionMap: sync.Map{},
-		semaphore:  make(chan struct{}, runtime.NumCPU()),
 	}
 }
 
@@ -275,13 +272,9 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 		return err
 	}
 	log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
-	go func() {
-		s.semaphore <- struct{}{}
-		defer func() { <-s.semaphore }()
-		if err := s.sendFileData(conn, session, fileRequest.Offset); err != nil {
-			log.Error("Error sending file data:", err)
-		}
-	}()
+	if err := s.sendFileData(conn, session, fileRequest.Offset); err != nil {
+		log.Error("Error sending file data:", err)
+	}
 	return nil
 }
 

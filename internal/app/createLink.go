@@ -48,7 +48,7 @@ func CreateLink() {
 		}
 	} else if *config.Mode == "mirror" {
 		log.Info("step 3 >> start file client")
-		fileClient := NewFileClient("172.27.0.53:52345")
+		fileClient := NewFileClient("172.27.0.64:52345")
 		conn, err := fileClient.Connect()
 		if err != nil {
 			log.Fatal("Error connecting to file server:", err)

@@ -11,11 +11,11 @@ import (
 
 const (
 	// 远程服务器配置
-	remoteHost    = "comp"                        // 替换为你的 Debian 主机地址
-	remoteUser    = "xwvike"                      // 替换为你的 Debian 用户名（确保不是root）
-	remotePort    = "22"                          // SSH 端口
-	remoteBinPath = "/tmp/local-mirror"           // 远程二进制文件路径
-	sshKeyPath    = "/Users/xiazhike/.ssh/eu.pem" // SSH私钥路径，根据实际情况修改
+	remoteHost    = "comp"
+	remoteUser    = "xwvike"
+	remotePort    = "22"
+	remoteBinPath = "/tmp/local-mirror"
+	sshKeyPath    = "/Users/xiazhike/.ssh/eu.pem"
 
 	// 本地配置
 	localBuildPath = "./dist/local-mirror" // 本地构建路径
@@ -50,7 +50,7 @@ func main() {
 
 	// 等待服务器启动
 	log.Println("等待服务器就绪...")
-	time.Sleep(60 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	// 5. 停止远程服务并清理
 	if err := stopAndCleanup(); err != nil {
