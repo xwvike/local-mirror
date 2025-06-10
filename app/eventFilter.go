@@ -1,13 +1,12 @@
 package app
 
 import (
+	"github.com/fsnotify/fsnotify"
 	log "github.com/sirupsen/logrus"
+	"local-mirror/common/utils"
 	"local-mirror/config"
-	"local-mirror/pkg/utils"
 	"path/filepath"
 	"strings"
-
-	"github.com/fsnotify/fsnotify"
 )
 
 var (

@@ -2,9 +2,10 @@ package app
 
 import (
 	"encoding/json"
+	"local-mirror/common/data"
+	"local-mirror/common/jsonutil"
+
 	log "github.com/sirupsen/logrus"
-	"local-mirror/pkg/data"
-	"local-mirror/pkg/jsonutil"
 )
 
 var (

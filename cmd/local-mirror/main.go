@@ -3,9 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"local-mirror/app"
+	"local-mirror/app/logger"
+	"local-mirror/common/utils"
 	"local-mirror/config"
-	"local-mirror/internal/app"
-	"local-mirror/pkg/utils"
 	"os"
 	"time"
 
@@ -25,7 +26,7 @@ func init() {
 }
 func main() {
 	flag.Parse()
-	app.InitLogger()
+	logger.InitLogger()
 	log.Infof("实例ID: %x", config.InstanceID)
 	log.Infof("协议版本: %x", config.Version)
 	log.Infof("运行模式: %s", *config.Mode)

@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	log "github.com/sirupsen/logrus"
+	"local-mirror/common/utils"
 	"local-mirror/config"
-	"local-mirror/pkg/utils"
 	"net"
 	"os"
 	"path/filepath"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type fileClient struct {
