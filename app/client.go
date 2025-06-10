@@ -159,14 +159,14 @@ func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]
 		log.Error(newError)
 		return nil, newError
 	}
-	var a map[string]interface{}
-	json.Unmarshal(treeResponse.Data, &a)
-	if a == nil {
+	var realityTree map[string]interface{}
+	json.Unmarshal(treeResponse.Data, &realityTree)
+	if realityTree == nil {
 		newError := fmt.Errorf("tree response data is nil")
 		log.Error(newError)
 		return nil, newError
 	}
-	return a, nil
+	return realityTree, nil
 }
 
 func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {

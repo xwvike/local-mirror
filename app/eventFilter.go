@@ -7,6 +7,7 @@ import (
 	"local-mirror/config"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 var (
@@ -48,33 +49,28 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
 			log.Error("Error checking if path is directory:", err)
 			return
 		}
-		fileType := "file"
+		fileType := 0
 		if isDir {
-			fileType = "dir"
+			fileType = 1
 		}
 		newLeaf := &Leaf{
 			Name:         filepath.Base(event.Name),
 			Path:         event.Name,
 			RelativePath: strings.Replace(event.Name, config.StartPath, ".", 1),
-			Type:         fileType,
+			Type:         uint8(fileType),
 			Children:     []*Leaf{},
-			Parent:       fatherNode,
-			Metadata:     map[string]interface{}{},
+			Deep:         strings.Count(strings.TrimPrefix(event.Name, config.StartPath), string(filepath.Separator)),
+			Size:         0,
+			mu:           sync.Mutex{},
 		}
 		size, err := utils.GetSize(event.Name)
 		if err == nil {
-			newLeaf.Metadata["size"] = size
-		}
-		modTime, err := utils.GetModTime(event.Name)
-		if err == nil {
-			newLeaf.Metadata["modTime"] = modTime
-		}
-		mode, err := utils.GetMode(event.Name)
-		if err == nil {
-			newLeaf.Metadata["mode"] = mode
+			newLeaf.Size = uint64(size)
+		} else {
+			log.Error("Error getting file size:", err)
 		}
 		fatherNode.AddChild(newLeaf)
-		if fileType == "dir" {
+		if fileType == 1 {
 			err := watcher.Add(event.Name)
 			if err != nil {
 				log.Error("Error adding directory to watcher:", err)

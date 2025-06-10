@@ -24,7 +24,7 @@ func mirror(conn net.Conn, fileClient *fileClient) {
 			continue
 		} else {
 			log.Infof("Processing diff item: %v 【%d】remaining", v, diffQueue.Size())
-			if v.Type == "file" && v.Action == "add" {
+			if v.Type == 0 && v.Action == "add" {
 				err := fileClient.DownloadFile(conn, v.Path)
 				if err != nil {
 					log.Errorf("File %s downloading fail, %v", v.Path, err)
@@ -48,7 +48,7 @@ func CreateLink() {
 		}
 	} else if *config.Mode == "mirror" {
 		log.Info("step 3 >> start file client")
-		fileClient := NewFileClient("172.27.0.64:52345")
+		fileClient := NewFileClient("10.8.0.9:52345")
 		conn, err := fileClient.Connect()
 		if err != nil {
 			log.Fatal("Error connecting to file server:", err)

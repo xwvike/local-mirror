@@ -1,0 +1,276 @@
+{
+    "name": "local-mirror",
+    "path": ".",
+    "type": 1,
+    "children": [
+        {
+            "name": "app",
+            "path": "./app",
+            "type": 1,
+            "children": [
+                {
+                    "name": "logger",
+                    "path": "./app/logger",
+                    "type": 1,
+                    "children": [
+                        {
+                            "name": "initLogger.go",
+                            "path": "./app/logger/initLogger.go",
+                            "type": 0,
+                            "children": [],
+                            "deep": 3,
+                            "size": 1316
+                        }
+                    ],
+                    "deep": 2,
+                    "size": 96
+                },
+                {
+                    "name": "app.go",
+                    "path": "./app/app.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 2532
+                },
+                {
+                    "name": "buildFileTree.go",
+                    "path": "./app/buildFileTree.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 3329
+                },
+                {
+                    "name": "client.go",
+                    "path": "./app/client.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 9664
+                },
+                {
+                    "name": "createLink.go",
+                    "path": "./app/createLink.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 1496
+                },
+                {
+                    "name": "diffQueue.go",
+                    "path": "./app/diffQueue.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 741
+                },
+                {
+                    "name": "discovery.go",
+                    "path": "./app/discovery.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 12
+                },
+                {
+                    "name": "eventFilter.go",
+                    "path": "./app/eventFilter.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 1862
+                },
+                {
+                    "name": "fileWatch.go",
+                    "path": "./app/fileWatch.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 2325
+                },
+                {
+                    "name": "protocol.go",
+                    "path": "./app/protocol.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 14800
+                },
+                {
+                    "name": "server.go",
+                    "path": "./app/server.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 10454
+                }
+            ],
+            "deep": 1,
+            "size": 416
+        },
+        {
+            "name": "cmd",
+            "path": "./cmd",
+            "type": 1,
+            "children": [
+                {
+                    "name": "local-mirror",
+                    "path": "./cmd/local-mirror",
+                    "type": 1,
+                    "children": [
+                        {
+                            "name": "main.go",
+                            "path": "./cmd/local-mirror/main.go",
+                            "type": 0,
+                            "children": [],
+                            "deep": 3,
+                            "size": 799
+                        }
+                    ],
+                    "deep": 2,
+                    "size": 96
+                }
+            ],
+            "deep": 1,
+            "size": 96
+        },
+        {
+            "name": "common",
+            "path": "./common",
+            "type": 1,
+            "children": [
+                {
+                    "name": "data",
+                    "path": "./common/data",
+                    "type": 1,
+                    "children": [
+                        {
+                            "name": "stack.go",
+                            "path": "./common/data/stack.go",
+                            "type": 0,
+                            "children": [],
+                            "deep": 3,
+                            "size": 931
+                        }
+                    ],
+                    "deep": 2,
+                    "size": 96
+                },
+                {
+                    "name": "jsonutil",
+                    "path": "./common/jsonutil",
+                    "type": 1,
+                    "children": [
+                        {
+                            "name": "diffJson.go",
+                            "path": "./common/jsonutil/diffJson.go",
+                            "type": 0,
+                            "children": [],
+                            "deep": 3,
+                            "size": 3005
+                        }
+                    ],
+                    "deep": 2,
+                    "size": 96
+                },
+                {
+                    "name": "utils",
+                    "path": "./common/utils",
+                    "type": 1,
+                    "children": [
+                        {
+                            "name": "helper.go",
+                            "path": "./common/utils/helper.go",
+                            "type": 0,
+                            "children": [],
+                            "deep": 3,
+                            "size": 2419
+                        }
+                    ],
+                    "deep": 2,
+                    "size": 96
+                }
+            ],
+            "deep": 1,
+            "size": 160
+        },
+        {
+            "name": "config",
+            "path": "./config",
+            "type": 1,
+            "children": [
+                {
+                    "name": "config.go",
+                    "path": "./config/config.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 802
+                }
+            ],
+            "deep": 1,
+            "size": 96
+        },
+        {
+            "name": "dist",
+            "path": "./dist",
+            "type": 1,
+            "children": [
+                {
+                    "name": "local-mirror",
+                    "path": "./dist/local-mirror",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 4902835
+                }
+            ],
+            "deep": 1,
+            "size": 96
+        },
+        {
+            "name": "tools",
+            "path": "./tools",
+            "type": 1,
+            "children": [
+                {
+                    "name": "autoTcpTest.go",
+                    "path": "./tools/autoTcpTest.go",
+                    "type": 0,
+                    "children": [],
+                    "deep": 2,
+                    "size": 4067
+                }
+            ],
+            "deep": 1,
+            "size": 96
+        },
+        {
+            "name": "client.log",
+            "path": "./client.log",
+            "type": 0,
+            "children": [],
+            "deep": 1,
+            "size": 0
+        },
+        {
+            "name": "go.mod",
+            "path": "./go.mod",
+            "type": 0,
+            "children": [],
+            "deep": 1,
+            "size": 269
+        },
+        {
+            "name": "go.sum",
+            "path": "./go.sum",
+            "type": 0,
+            "children": [],
+            "deep": 1,
+            "size": 1612
+        }
+    ],
+    "deep": 0,
+    "size": 480
+}

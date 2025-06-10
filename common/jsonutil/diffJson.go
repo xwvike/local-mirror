@@ -7,7 +7,7 @@ import (
 
 type DiffResult struct {
 	Path   string `json:"path"`
-	Type   string `json:"type"`
+	Type   uint8  `json:"type"`
 	Action string `json:"action"` // "add", "reget"
 	Name   string `json:"name"`
 }
@@ -22,7 +22,7 @@ func findDifferences(a, b map[string]interface{}) []DiffResult {
 		// 获取当前节点信息
 		nameA, _ := nodeA["name"].(string)
 		pathA, _ := nodeA["path"].(string)
-		typeA, _ := nodeA["type"].(string)
+		typeA, _ := nodeA["type"].(float64)
 
 		currentPath := pathA
 		if parentPath != "" {
@@ -31,10 +31,10 @@ func findDifferences(a, b map[string]interface{}) []DiffResult {
 
 		// 如果b中没有对应节点，标记为add
 		if nodeB == nil {
-			if typeA == "file" {
+			if typeA == 0 {
 				diffs = append(diffs, DiffResult{
 					Path:   currentPath,
-					Type:   typeA,
+					Type:   uint8(typeA),
 					Action: "add",
 					Name:   nameA,
 				})
@@ -54,13 +54,13 @@ func findDifferences(a, b map[string]interface{}) []DiffResult {
 
 		// 比较基本属性
 		nameB, _ := nodeB["name"].(string)
-		typeB, _ := nodeB["type"].(string)
+		typeB, _ := nodeB["type"].(float64)
 
 		if nameA != nameB || typeA != typeB {
-			if typeA == "file" {
+			if typeA == 0 {
 				diffs = append(diffs, DiffResult{
 					Path:   currentPath,
-					Type:   typeA,
+					Type:   uint8(typeA),
 					Action: "reget",
 					Name:   nameA,
 				})

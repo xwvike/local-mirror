@@ -12,13 +12,13 @@ var (
 	diffQueue = data.NewStack[jsonutil.DiffResult]()
 )
 
-func Diff(a map[string]interface{}, leaf *Leaf) error {
+func Diff(realityTree map[string]interface{}, leaf *Leaf) error {
 	LeafBytes, err := json.Marshal(leaf)
 	if err != nil {
 		log.Error("Error marshaling leaf:", err)
 		return err
 	}
-	aBytes, err := json.Marshal(a)
+	aBytes, err := json.Marshal(realityTree)
 	if err != nil {
 		log.Error("Error marshaling tree response data:", err)
 		return err

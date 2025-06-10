@@ -27,22 +27,19 @@ func getLeafInfo(filepath string) *Leaf {
 	if err != nil {
 		return nil
 	}
-	fileType := "file"
+	fileType := 0
 	if fileInfo.IsDir() {
-		fileType = "dir"
+		fileType = 1
 	}
 	return &Leaf{
 		Name:         fileInfo.Name(),
 		Path:         filepath,
 		RelativePath: strings.Replace(filepath, config.StartPath, ".", 1),
-		Type:         fileType,
+		Type:         uint8(fileType),
 		Deep:         strings.Count(strings.TrimPrefix(filepath, config.StartPath), string(os.PathSeparator)),
-		Metadata: map[string]interface{}{
-			"size":    fileInfo.Size(),
-			"modTime": fileInfo.ModTime(),
-		},
-		Children: []*Leaf{},
-		Parent:   nil,
+		Size:         uint64(fileInfo.Size()),
+		mu:           sync.Mutex{},
+		Children:     []*Leaf{},
 	}
 }
 
@@ -55,7 +52,7 @@ func buildFileTreeTwoPhase(path string) *Leaf {
 		log.Error("Failed to get root node info, path may not exist:", path)
 		return nil
 	}
-	if rootNode.Type != "dir" {
+	if rootNode.Type != 1 {
 		return rootNode
 	}
 
@@ -93,7 +90,6 @@ func buildFileTreeTwoPhase(path string) *Leaf {
 				continue
 			}
 
-			childNode.Parent = parent
 			parent.Children = append(parent.Children, childNode)
 			dirMap[childPath] = childNode
 
@@ -144,7 +140,6 @@ func buildFileTreeTwoPhase(path string) *Leaf {
 					continue
 				}
 
-				childNode.Parent = node
 				files = append(files, childNode)
 			}
 
