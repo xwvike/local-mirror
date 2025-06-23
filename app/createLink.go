@@ -2,6 +2,7 @@ package app
 
 import (
 	log "github.com/sirupsen/logrus"
+	"local-mirror/app/model"
 	"local-mirror/config"
 	"net"
 	"os"
@@ -15,7 +16,7 @@ func mirror(conn net.Conn, fileClient *fileClient) {
 		os.Exit(1)
 	}
 	log.Info("start analyzing diff 🫨")
-	Diff(treejson, rootLeaf)
+	Diff(treejson, model.RootLeaf)
 	log.Infof("Diff count: %d", diffQueue.Size())
 	for diffQueue.Size() > 0 {
 		v, has := diffQueue.Pop()

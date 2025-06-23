@@ -1,15 +1,17 @@
 package app
 
 import (
-	"github.com/fsnotify/fsnotify"
-	log "github.com/sirupsen/logrus"
+	"local-mirror/app/model"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
+	log "github.com/sirupsen/logrus"
 )
 
 type DynamicWatcher struct {
-	leaf          *Leaf
+	leaf          *model.Leaf
 	watcher       *fsnotify.Watcher
 	allDirs       []string
 	fixedWatchers []string
@@ -19,7 +21,7 @@ type DynamicWatcher struct {
 	mu            sync.RWMutex
 }
 
-func NewDynamicWatcher(watcher *fsnotify.Watcher, leaf *Leaf, waitScan time.Duration) (*DynamicWatcher, error) {
+func NewDynamicWatcher(watcher *fsnotify.Watcher, leaf *model.Leaf, waitScan time.Duration) (*DynamicWatcher, error) {
 	return &DynamicWatcher{
 		leaf:          leaf,
 		allDirs:       make([]string, 0),
@@ -56,7 +58,7 @@ func (dw *DynamicWatcher) Start() {
 	log.Infof("DynamicWatcher: max watchers level is %d", watcherLevel)
 	log.Infof("DynamicWatcher: fixed watchers count is %d", fixedWatchersCount)
 	for _, dir := range dw.fixedWatchers {
-		for _, v := range ignoreFileList {
+		for _, v := range model.IgnoreFileList {
 			if strings.Contains(dir, v) {
 				continue
 			}
@@ -71,7 +73,7 @@ func (dw *DynamicWatcher) Start() {
 
 func WatchFile(watcher *fsnotify.Watcher) {
 	log.Info("setp 2 >> start watcher")
-	dynamicWatcher, err := NewDynamicWatcher(watcher, rootLeaf, 1*time.Second)
+	dynamicWatcher, err := NewDynamicWatcher(watcher, model.RootLeaf, 1*time.Second)
 	if err != nil {
 		log.Fatalf("Failed to create dynamic watcher: %v", err)
 	}

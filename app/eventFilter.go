@@ -1,13 +1,14 @@
 package app
 
 import (
-	"github.com/fsnotify/fsnotify"
-	log "github.com/sirupsen/logrus"
+	"local-mirror/app/model"
 	"local-mirror/common/utils"
 	"local-mirror/config"
 	"path/filepath"
 	"strings"
-	"sync"
+
+	"github.com/fsnotify/fsnotify"
+	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -17,7 +18,7 @@ var (
 
 func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
 	ignored := false
-	for _, v := range ignoreFileList {
+	for _, v := range model.IgnoreFileList {
 		if strings.Contains(event.Name, v) {
 			ignored = true
 			break
@@ -27,7 +28,7 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
 		return
 	}
 	nodeDir := filepath.Dir(event.Name)
-	fatherNode := rootLeaf.GetChild(nodeDir)
+	fatherNode := model.RootLeaf.GetChild(nodeDir)
 	if fatherNode == nil {
 		return
 	}
@@ -53,15 +54,14 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
 		if isDir {
 			fileType = 1
 		}
-		newLeaf := &Leaf{
+		newLeaf := &model.Leaf{
 			Name:         filepath.Base(event.Name),
 			Path:         event.Name,
 			RelativePath: strings.Replace(event.Name, config.StartPath, ".", 1),
 			Type:         uint8(fileType),
-			Children:     []*Leaf{},
+			Children:     []*model.Leaf{},
 			Deep:         strings.Count(strings.TrimPrefix(event.Name, config.StartPath), string(filepath.Separator)),
 			Size:         0,
-			mu:           sync.Mutex{},
 		}
 		size, err := utils.GetSize(event.Name)
 		if err == nil {

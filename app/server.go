@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"local-mirror/app/model"
 	"local-mirror/common/utils"
 	"local-mirror/config"
 	"net"
@@ -167,7 +168,7 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Received tree request from %s for path: %s", clientAddr, treeRequest.RootPath)
 	fullTreePath := filepath.Join(config.StartPath, treeRequest.RootPath)
-	treeLeaf := rootLeaf.GetChild(fullTreePath)
+	treeLeaf := model.RootLeaf.GetChild(fullTreePath)
 	if treeLeaf == nil {
 		log.Errorf("Tree path not found: %s", fullTreePath)
 		errorMsg := ErrorMessage{

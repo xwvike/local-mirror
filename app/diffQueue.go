@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"local-mirror/app/model"
 	"local-mirror/common/data"
 	"local-mirror/common/jsonutil"
 
@@ -12,7 +13,7 @@ var (
 	diffQueue = data.NewStack[jsonutil.DiffResult]()
 )
 
-func Diff(realityTree map[string]interface{}, leaf *Leaf) error {
+func Diff(realityTree map[string]interface{}, leaf *model.Leaf) error {
 	LeafBytes, err := json.Marshal(leaf)
 	if err != nil {
 		log.Error("Error marshaling leaf:", err)
