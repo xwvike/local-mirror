@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -154,7 +153,7 @@ func decodeHeader(data []byte) (MessageHeader, error) {
 	}
 
 	if header.Magic != MagicNumber {
-		return header, errors.New(fmt.Sprintf("invalid magic number, got %d", header.Magic))
+		return header, fmt.Errorf("invalid magic number, got %d", header.Magic)
 	}
 
 	return header, nil
