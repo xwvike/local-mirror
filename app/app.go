@@ -1,7 +1,6 @@
 package app
 
 import (
-	"local-mirror/app/model"
 	"local-mirror/app/tree"
 	"local-mirror/config"
 	"os"
@@ -18,9 +17,9 @@ func App() {
 		log.Fatal(err)
 	}
 	defer watcher.Close()
-	model.RootLeaf = tree.BuildFileTreeTwoPhase(config.StartPath)
-	WatchFile(watcher)
-	CreateLink()
+	tree.BuildFileTreeTwoPhase(config.StartPath)
+	// WatchFile(watcher)
+	// CreateLink()
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan

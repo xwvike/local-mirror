@@ -10,6 +10,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type SimpleFormatter struct{}
+
+func (f *SimpleFormatter) Format(entry *log.Entry) ([]byte, error) {
+	timestamp := entry.Time.Format("2006-01-02 15:04:05.000")
+	logLine := fmt.Sprintf("%s [%s] %s\n", timestamp, entry.Level.String(), entry.Message)
+	return []byte(logLine), nil
+}
+
 func getLogDir() string {
 	switch runtime.GOOS {
 	case "windows":
@@ -41,9 +49,7 @@ func InitLogger() {
 	} else {
 		log.Info("日志文件打开失败，使用默认stderr")
 	}
-	log.SetFormatter(&log.TextFormatter{
-		FullTimestamp: true,
-	})
+	log.SetFormatter(&SimpleFormatter{})
 	switch *config.LogLevel {
 	case "debug":
 		log.SetLevel(log.DebugLevel)

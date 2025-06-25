@@ -77,5 +77,5 @@ func (l *Leaf) GetAllFiles(deep uint16) []string {
 
 var (
 	RootLeaf       *Leaf
-	IgnoreFileList = []string{".gitingore", ".git", "node_modules", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log"}
+	IgnoreFileList = []string{"Library", ".gitingore", ".git", "node_modules", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log"}
 )

@@ -3,7 +3,6 @@ package utils
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"github.com/zeebo/blake3"
 	"io"
 	"os"
@@ -34,14 +33,6 @@ func BaseOSInfo() OSInfo {
 		Architecture: runtime.GOARCH,
 		NumCPU:       runtime.NumCPU(),
 	}
-}
-
-func StructToJson(data interface{}) (string, error) {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return "", err
-	}
-	return string(jsonData), nil
 }
 
 func GetSize(path string) (int64, error) {
@@ -99,7 +90,7 @@ func CalcBlake3(path string) ([32]byte, error) {
 }
 
 func RandomString(length int) (string, error) {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_#&*!@"
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, length)
 	_, err := rand.Read(b)
 	if err != nil {

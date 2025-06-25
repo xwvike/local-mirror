@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"local-mirror/app"
 	"local-mirror/app/logger"
+	"local-mirror/app/tree"
 	"local-mirror/common/utils"
 	"local-mirror/config"
 	"os"
@@ -25,6 +26,7 @@ func init() {
 	config.StartPath = wd
 }
 func main() {
+	defer tree.DB.Close()
 	flag.Parse()
 	logger.InitLogger()
 	log.Infof("实例ID: %x", config.InstanceID)
@@ -33,5 +35,6 @@ func main() {
 	log.Infof("日志级别: %s", *config.LogLevel)
 	log.Infof("启动时间: %d", config.StartTime)
 	log.Infof("当前工作目录: %s", config.StartPath)
+	tree.InitDB()
 	app.App()
 }
