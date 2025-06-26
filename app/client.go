@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"local-mirror/common/utils"
 	"local-mirror/config"
@@ -111,7 +110,7 @@ func (c *fileClient) Ping(conn net.Conn) error {
 	return nil
 }
 
-func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]interface{}, error) {
+func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, error) {
 	request := TreeRequestMessage{
 		PathLength: uint16(len(rootPath)),
 		RootPath:   rootPath,
@@ -159,14 +158,11 @@ func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) (map[string]
 		log.Error(newError)
 		return nil, newError
 	}
-	var realityTree map[string]interface{}
-	json.Unmarshal(treeResponse.Data, &realityTree)
-	if realityTree == nil {
-		newError := fmt.Errorf("tree response data is nil")
-		log.Error(newError)
-		return nil, newError
+	if len(treeResponse.Data) == 0 {
+		log.Warn("Received empty tree response data")
+		return nil, fmt.Errorf("received empty tree response data")
 	}
-	return realityTree, nil
+	return treeResponse.Data, nil
 }
 
 func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {

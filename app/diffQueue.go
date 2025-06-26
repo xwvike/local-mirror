@@ -2,7 +2,7 @@ package app
 
 import (
 	"encoding/json"
-	"local-mirror/app/model"
+	"local-mirror/app/tree"
 	"local-mirror/common/data"
 	"local-mirror/common/jsonutil"
 
@@ -13,22 +13,15 @@ var (
 	diffQueue = data.NewStack[jsonutil.DiffResult]()
 )
 
-func Diff(realityTree map[string]interface{}, leaf *model.Leaf) error {
-	LeafBytes, err := json.Marshal(leaf)
+func Diff(realityTree []byte, path string) error {
+	localTree, err := tree.GetDirContents(path)
 	if err != nil {
-		log.Error("Error marshaling leaf:", err)
+		log.Error("Error getting local tree contents:", err)
 		return err
 	}
-	aBytes, err := json.Marshal(realityTree)
-	if err != nil {
-		log.Error("Error marshaling tree response data:", err)
-		return err
-	}
-	diffs, err := jsonutil.FindDifferencesFromJSON(string(aBytes), string(LeafBytes))
-	if err != nil {
-		log.Error("Error finding differences:", err)
-		return err
-	}
+	var realityTreeData []tree.Node
+	json.Unmarshal(realityTree, &realityTreeData)
+	diffs := jsonutil.FindDifferences(realityTreeData, localTree)
 	for _, diff := range diffs {
 		diffQueue.Push(diff)
 	}

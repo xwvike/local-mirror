@@ -3,6 +3,7 @@ package tree
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"local-mirror/config"
 	"os"
 
@@ -189,13 +190,16 @@ func AddNodes(nodes []*Node) error {
 }
 
 func GetDirContents(dirPath string) ([]Node, error) {
-	var contents []Node
+	var contents = make([]Node, 0)
 	return contents, DB.View(func(tx *bolt.Tx) error {
 		nodesBucket := tx.Bucket([]byte("nodes"))
 		childrenBucket := tx.Bucket([]byte("children"))
 		pathIndexBucket := tx.Bucket([]byte("path_index"))
 
 		pathID := string(pathIndexBucket.Get([]byte(dirPath)))
+		if pathID == "" {
+			return fmt.Errorf("directory not found: %s", dirPath)
+		}
 		childrenIds := childrenBucket.Get([]byte(pathID))
 		if childrenIds == nil {
 			return nil // 目录下没有子节点

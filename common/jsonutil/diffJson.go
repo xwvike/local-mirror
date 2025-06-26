@@ -1,126 +1,66 @@
 package jsonutil
 
 import (
-	"encoding/json"
-	"fmt"
+	"local-mirror/app/tree"
 )
 
 type DiffResult struct {
 	Path   string `json:"path"`
-	Type   uint8  `json:"type"`
-	Action string `json:"action"` // "add", "reget"
+	IsDir  bool   `json:"is_dir"` // 是否为目录
+	Action string `json:"action"` // "create", "delete", "modify"
 	Name   string `json:"name"`
 }
 
-// findDifferences 比较两个JSON树结构，以a为基准
-func findDifferences(a, b map[string]interface{}) []DiffResult {
+// findDifferences 比较两个树结构，以a为基准
+func FindDifferences(a, b []tree.Node) []DiffResult {
 	var diffs []DiffResult
 
-	// 递归比较函数
-	var compare func(nodeA, nodeB map[string]interface{}, parentPath string)
-	compare = func(nodeA, nodeB map[string]interface{}, parentPath string) {
-		// 获取当前节点信息
-		nameA, _ := nodeA["name"].(string)
-		pathA, _ := nodeA["path"].(string)
-		typeA, _ := nodeA["type"].(float64)
+	// 将b转换为map以便快速查找
+	bMap := make(map[string]tree.Node)
+	aMap := make(map[string]tree.Node)
+	for _, node := range b {
+		bMap[node.Path] = node
+	}
 
-		currentPath := pathA
-		if parentPath != "" {
-			currentPath = parentPath + "/" + nameA
+	for _, nodeA := range a {
+		aMap[nodeA.Path] = nodeA
+		pathA := nodeA.Path
+		nodeB, exists := bMap[pathA]
+		if !exists {
+			// 如果b中没有对应节点，标记为add
+			diffs = append(diffs, DiffResult{
+				Path:   pathA,
+				IsDir:  nodeA.IsDir,
+				Action: "create",
+				Name:   nodeA.Name,
+			})
 		}
-
-		// 如果b中没有对应节点，标记为add
-		if nodeB == nil {
-			if typeA == 0 {
+		// 如果b中有对应节点，比较属性
+		if exists {
+			if nodeA.Size != nodeB.Size || nodeA.Hash != nodeB.Hash {
+				// 如果属性不同，标记为modify
 				diffs = append(diffs, DiffResult{
-					Path:   currentPath,
-					Type:   uint8(typeA),
-					Action: "add",
-					Name:   nameA,
+					Path:   pathA,
+					IsDir:  nodeA.IsDir,
+					Action: "modify",
+					Name:   nodeA.Name,
 				})
-			}
-
-			// 递归处理所有子节点
-			childrenA, okA := nodeA["children"].([]interface{})
-			if okA {
-				for _, childA := range childrenA {
-					if childAMap, ok := childA.(map[string]interface{}); ok {
-						compare(childAMap, nil, currentPath)
-					}
-				}
-			}
-			return
-		}
-
-		// 比较基本属性
-		nameB, _ := nodeB["name"].(string)
-		typeB, _ := nodeB["type"].(float64)
-
-		if nameA != nameB || typeA != typeB {
-			if typeA == 0 {
-				diffs = append(diffs, DiffResult{
-					Path:   currentPath,
-					Type:   uint8(typeA),
-					Action: "reget",
-					Name:   nameA,
-				})
-			}
-
-		}
-
-		// 比较children
-		childrenA, okA := nodeA["children"].([]interface{})
-		childrenB, okB := nodeB["children"].([]interface{})
-
-		if !okA {
-			childrenA = []interface{}{}
-		}
-		if !okB {
-			childrenB = []interface{}{}
-		}
-
-		// 将childrenB转换为map以便快速查找
-		childrenBMap := make(map[string]map[string]interface{})
-		for _, childB := range childrenB {
-			if childBMap, ok := childB.(map[string]interface{}); ok {
-				if name, ok := childBMap["name"].(string); ok {
-					childrenBMap[name] = childBMap
-				}
-			}
-		}
-
-		// 遍历A的children
-		for _, childA := range childrenA {
-			if childAMap, ok := childA.(map[string]interface{}); ok {
-				if nameA, ok := childAMap["name"].(string); ok {
-					if childBMap, exists := childrenBMap[nameA]; exists {
-						compare(childAMap, childBMap, currentPath)
-						delete(childrenBMap, nameA)
-					} else {
-						compare(childAMap, nil, currentPath)
-					}
-				}
 			}
 		}
 	}
-
-	// 开始比较
-	compare(a, b, "")
+	for _, nodeB := range b {
+		pathB := nodeB.Path
+		_, exists := aMap[pathB]
+		if !exists {
+			// 如果a中没有对应节点，标记为delete
+			diffs = append(diffs, DiffResult{
+				Path:   pathB,
+				IsDir:  nodeB.IsDir,
+				Action: "delete",
+				Name:   nodeB.Name,
+			})
+		}
+	}
 
 	return diffs
-}
-
-// findDifferencesFromJSON 从JSON字符串比较差异
-func FindDifferencesFromJSON(jsonA, jsonB string) ([]DiffResult, error) {
-	var a, b map[string]interface{}
-
-	if err := json.Unmarshal([]byte(jsonA), &a); err != nil {
-		return nil, fmt.Errorf("解析JSON A失败: %v", err)
-	}
-
-	if err := json.Unmarshal([]byte(jsonB), &b); err != nil {
-		return nil, fmt.Errorf("解析JSON B失败: %v", err)
-	}
-
-	return findDifferences(a, b), nil
 }

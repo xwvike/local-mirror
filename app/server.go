@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"local-mirror/app/model"
+	"local-mirror/app/tree"
 	"local-mirror/common/utils"
 	"local-mirror/config"
 	"net"
@@ -168,38 +168,53 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Received tree request from %s for path: %s", clientAddr, treeRequest.RootPath)
 	fullTreePath := filepath.Join(config.StartPath, treeRequest.RootPath)
-	treeLeaf := model.RootLeaf.GetChild(fullTreePath)
-	if treeLeaf == nil {
-		log.Errorf("Tree path not found: %s", fullTreePath)
+	treeLeaf, err := tree.GetDirContents(treeRequest.RootPath)
+	if err != nil {
+		log.Errorf("Error getting tree contents for path %s: %v", fullTreePath, err)
 		errorMsg := ErrorMessage{
 			ErrorCode:    StatusTreeNotFound,
-			MessageLen:   uint16(len("Path not found")),
-			ErrorMessage: "Path not found",
+			MessageLen:   uint16(len(err.Error())),
+			ErrorMessage: err.Error(),
 		}
 		errorBytes := encodeErrorMessage(errorMsg)
 		if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
 			log.Error("Error sending error message:", err)
+			return err
 		}
-		return fmt.Errorf("path not found: %s", fullTreePath)
+		return fmt.Errorf("error getting tree contents for path %s: %v", fullTreePath, err)
+	} else {
+		if len(treeLeaf) == 0 {
+			log.Errorf("Tree path not found: %s", fullTreePath)
+			errorMsg := ErrorMessage{
+				ErrorCode:    StatusTreeNotFound,
+				MessageLen:   uint16(len("Path not found")),
+				ErrorMessage: "Path not found",
+			}
+			errorBytes := encodeErrorMessage(errorMsg)
+			if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
+				log.Error("Error sending error message:", err)
+			}
+			return fmt.Errorf("path not found: %s", fullTreePath)
+		}
+		treeData, err := json.Marshal(treeLeaf)
+		if err != nil {
+			log.Error("Error marshalling tree leaf to JSON:", err)
+			return err
+		}
+		treeResponse := TreeResponseMessage{
+			Status:     StatusOK,
+			RootPath:   treeRequest.RootPath,
+			DataLength: uint32(len(treeData)),
+			Data:       []byte(treeData),
+		}
+		responseBytes := encodeTreeResponse(treeResponse)
+		if err := sendMessage(conn, MsgTypeTreeResponse, responseBytes); err != nil {
+			log.Error("Error sending tree response message:", err)
+			return err
+		}
+		log.Infof("Sent tree response to %s for path: %s, data length: %d bytes", clientAddr, treeRequest.RootPath, len(treeData))
+		return nil
 	}
-	treeData, err := json.Marshal(treeLeaf)
-	if err != nil {
-		log.Error("Error marshalling tree leaf to JSON:", err)
-		return err
-	}
-	treeResponse := TreeResponseMessage{
-		Status:     StatusOK,
-		RootPath:   treeLeaf.Path,
-		DataLength: uint32(len(treeData)),
-		Data:       []byte(treeData),
-	}
-	responseBytes := encodeTreeResponse(treeResponse)
-	if err := sendMessage(conn, MsgTypeTreeResponse, responseBytes); err != nil {
-		log.Error("Error sending tree response message:", err)
-		return err
-	}
-	log.Infof("Sent tree response to %s for path: %s, data length: %d bytes", clientAddr, treeLeaf.Path, len(treeData))
-	return nil
 }
 
 func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {

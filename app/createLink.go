@@ -2,7 +2,6 @@ package app
 
 import (
 	log "github.com/sirupsen/logrus"
-	"local-mirror/app/model"
 	"local-mirror/config"
 	"net"
 	"os"
@@ -16,7 +15,7 @@ func mirror(conn net.Conn, fileClient *fileClient) {
 		os.Exit(1)
 	}
 	log.Info("start analyzing diff 🫨")
-	Diff(treejson, model.RootLeaf)
+	Diff(treejson, ".")
 	log.Infof("Diff count: %d", diffQueue.Size())
 	for diffQueue.Size() > 0 {
 		v, has := diffQueue.Pop()
@@ -25,12 +24,19 @@ func mirror(conn net.Conn, fileClient *fileClient) {
 			continue
 		} else {
 			log.Infof("Processing diff item: %v 【%d】remaining", v, diffQueue.Size())
-			if v.Type == 0 && v.Action == "add" {
-				err := fileClient.DownloadFile(conn, v.Path)
-				if err != nil {
-					log.Errorf("File %s downloading fail, %v", v.Path, err)
+			switch v.Action {
+			case "delete":
+
+			case "create", "modify":
+				if v.IsDir {
+					os.MkdirAll(v.Path, 0755)
 				} else {
-					log.Infof("File %s downloaded successfully", v.Path)
+					err := fileClient.DownloadFile(conn, v.Path)
+					if err != nil {
+						log.Errorf("File %s downloading fail, %v", v.Path, err)
+					} else {
+						log.Infof("File %s downloaded successfully", v.Path)
+					}
 				}
 			}
 		}
