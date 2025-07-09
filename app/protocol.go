@@ -377,9 +377,11 @@ func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
 	if _, err := conn.Write(headerBytes); err != nil {
 		return err
 	}
+	log.Debug("Sending message with type:", msgType, "and body length:", len(body))
 	if _, err := conn.Write(body); err != nil {
 		return err
 	}
+	log.Debugf("Sent message with type: %d, body length: %d bytes", msgType, len(body))
 	return nil
 }
 

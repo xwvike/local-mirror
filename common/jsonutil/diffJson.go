@@ -9,6 +9,7 @@ type DiffResult struct {
 	IsDir  bool   `json:"is_dir"` // 是否为目录
 	Action string `json:"action"` // "create", "delete", "modify"
 	Name   string `json:"name"`
+	Size   uint64 `json:"size"` // 文件大小
 }
 
 // findDifferences 比较两个树结构，以a为基准
@@ -33,6 +34,7 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 				IsDir:  nodeA.IsDir,
 				Action: "create",
 				Name:   nodeA.Name,
+				Size:   nodeA.Size,
 			})
 		}
 		// 如果b中有对应节点，比较属性
@@ -44,6 +46,7 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 					IsDir:  nodeA.IsDir,
 					Action: "modify",
 					Name:   nodeA.Name,
+					Size:   nodeA.Size,
 				})
 			}
 		}
@@ -58,6 +61,7 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 				IsDir:  nodeB.IsDir,
 				Action: "delete",
 				Name:   nodeB.Name,
+				Size:   nodeB.Size,
 			})
 		}
 	}

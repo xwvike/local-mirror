@@ -37,7 +37,7 @@ type Node struct {
 	Name     string    `json:"name"`      // 文件/目录名
 	ParentID string    `json:"parent_id"` // 父目录ID
 	IsDir    bool      `json:"is_dir"`    // 是否为目录
-	Size     int64     `json:"size"`
+	Size     uint64    `json:"size"`
 	ModTime  time.Time `json:"mod_time"`
 	Hash     string    `json:"hash"`
 }

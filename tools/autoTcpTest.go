@@ -106,7 +106,7 @@ func runLocalClient() error {
 	if err != nil {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}
-	cmd := exec.Command("go", "run", "./cmd/local-mirror/main.go", "-mode=reality", "-logLevel=info")
+	cmd := exec.Command("go", "run", "./cmd/local-mirror/main.go", "-mode=reality", "-logLevel=debug")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	return cmd.Start()

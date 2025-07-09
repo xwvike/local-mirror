@@ -36,7 +36,7 @@ func getLeafInfo(filepath string) *Node {
 		Name:     fileInfo.Name(),
 		ParentID: "",
 		IsDir:    fileInfo.IsDir(),
-		Size:     fileInfo.Size(),
+		Size:     uint64(fileInfo.Size()),
 		ModTime:  fileInfo.ModTime(),
 		Hash:     "",
 	}

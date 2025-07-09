@@ -212,7 +212,7 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 			log.Error("Error sending tree response message:", err)
 			return err
 		}
-		log.Infof("Sent tree response to %s for path: %s, data length: %d bytes", clientAddr, treeRequest.RootPath, len(treeData))
+		log.Infof("Sent tree response to %s for path: %s, data length: %d bytes, msgType: %d", clientAddr, treeRequest.RootPath, len(treeData), MsgTypeTreeResponse)
 		return nil
 	}
 }
