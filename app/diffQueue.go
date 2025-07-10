@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"local-mirror/app/tree"
 	"local-mirror/common/data"
 	"local-mirror/common/jsonutil"
@@ -16,8 +17,7 @@ var (
 func Diff(realityTree []byte, path string) error {
 	localTree, err := tree.GetDirContents(path)
 	if err != nil {
-		log.Error("Error getting local tree contents:", err)
-		return err
+		return fmt.Errorf("failed to get local tree contents: %w", err)
 	}
 	var realityTreeData []tree.Node
 	json.Unmarshal(realityTree, &realityTreeData)

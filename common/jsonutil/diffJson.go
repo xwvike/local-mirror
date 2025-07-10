@@ -5,11 +5,12 @@ import (
 )
 
 type DiffResult struct {
-	Path   string `json:"path"`
-	IsDir  bool   `json:"is_dir"` // 是否为目录
-	Action string `json:"action"` // "create", "delete", "modify"
-	Name   string `json:"name"`
-	Size   uint64 `json:"size"` // 文件大小
+	Path     string `json:"path"`
+	IsDir    bool   `json:"is_dir"` // 是否为目录
+	Action   string `json:"action"` // "create", "delete", "modify"
+	Name     string `json:"name"`
+	Size     uint64 `json:"size"`      // 文件大小
+	ParentID string `json:"parent_id"` // 父目录ID
 }
 
 // findDifferences 比较两个树结构，以a为基准
@@ -30,11 +31,12 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 		if !exists {
 			// 如果b中没有对应节点，标记为add
 			diffs = append(diffs, DiffResult{
-				Path:   pathA,
-				IsDir:  nodeA.IsDir,
-				Action: "create",
-				Name:   nodeA.Name,
-				Size:   nodeA.Size,
+				Path:     pathA,
+				IsDir:    nodeA.IsDir,
+				Action:   "create",
+				Name:     nodeA.Name,
+				Size:     nodeA.Size,
+				ParentID: nodeB.ParentID,
 			})
 		}
 		// 如果b中有对应节点，比较属性
@@ -42,11 +44,12 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 			if nodeA.Size != nodeB.Size || nodeA.Hash != nodeB.Hash {
 				// 如果属性不同，标记为modify
 				diffs = append(diffs, DiffResult{
-					Path:   pathA,
-					IsDir:  nodeA.IsDir,
-					Action: "modify",
-					Name:   nodeA.Name,
-					Size:   nodeA.Size,
+					Path:     pathA,
+					IsDir:    nodeA.IsDir,
+					Action:   "modify",
+					Name:     nodeA.Name,
+					Size:     nodeA.Size,
+					ParentID: nodeB.ParentID,
 				})
 			}
 		}

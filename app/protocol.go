@@ -3,10 +3,10 @@ package app
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
-	"os"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -298,18 +298,15 @@ func decodeAcknowledge(data []byte) (AcknowledgeMessage, error) {
 	buf := bytes.NewReader(data)
 
 	if _, err := buf.Read(msg.SessionID[:]); err != nil {
-		log.Error("Error reading acknowledge session ID:", err)
-		return msg, err
+		return msg, fmt.Errorf("error reading acknowledge session ID: %w", err)
 	}
 
 	if err := binary.Read(buf, binary.BigEndian, &msg.Offset); err != nil {
-		log.Error("Error decoding acknowledge offset:", err)
-		return msg, err
+		return msg, fmt.Errorf("error decoding acknowledge offset: %w", err)
 	}
 
 	if err := binary.Read(buf, binary.BigEndian, &msg.Status); err != nil {
-		log.Error("Error decoding acknowledge status:", err)
-		return msg, err
+		return msg, fmt.Errorf("error decoding acknowledge status: %w", err)
 	}
 	return msg, nil
 }
@@ -326,12 +323,10 @@ func decodeFileComplete(data []byte) (FileCompleteMessage, error) {
 	buf := bytes.NewReader(data)
 
 	if _, err := buf.Read(msg.SessionID[:]); err != nil {
-		log.Error("Error reading file complete session ID:", err)
-		return msg, err
+		return msg, fmt.Errorf("error reading file complete session ID: %w", err)
 	}
 	if _, err := buf.Read(msg.FileHash[:]); err != nil {
-		log.Error("Error reading file hash:", err)
-		return msg, err
+		return msg, fmt.Errorf("error reading file complete hash: %w", err)
 	}
 	return msg, nil
 }
@@ -377,7 +372,6 @@ func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
 	if _, err := conn.Write(headerBytes); err != nil {
 		return err
 	}
-	log.Debug("Sending message with type:", msgType, "and body length:", len(body))
 	if _, err := conn.Write(body); err != nil {
 		return err
 	}
@@ -390,12 +384,14 @@ func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 	if _, err := io.ReadFull(conn, headerBytes); err != nil {
 		return 0, nil, err
 	}
+
 	header, err := decodeHeader(headerBytes)
 	if err != nil {
-		log.Errorf("Error heading message: magic:%d, type:%d, body length: %d", header.Magic, header.Type, header.BodyLength)
-		os.Exit(1)
-		return 0, nil, err
+		remoteAddr := conn.RemoteAddr().String()
+		_error := fmt.Errorf("error decoding message header from %s: %w", remoteAddr, err)
+		return 0, nil, _error
 	}
+
 	bodyBytes := make([]byte, header.BodyLength)
 	if header.BodyLength > 0 {
 		if _, err := io.ReadFull(conn, bodyBytes); err != nil {

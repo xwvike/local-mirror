@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"local-mirror/app/tree"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,7 +60,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	clientAddr := conn.RemoteAddr().String()
-	log.Infof("Client connected: %s", clientAddr)
+	log.Infof("Client connected from %s to local port %s", clientAddr, conn.LocalAddr().String())
 
 	if err := s.handleHandshake(conn); err != nil {
 		log.Error("Error during handshake:", err)
@@ -68,18 +70,18 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 	for {
 		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
-			if err != io.EOF {
-				log.Errorf("Error receiving message from %s, %v\n", clientAddr, err)
-			} else {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				log.Infof("Client %s disconnected", clientAddr)
+			} else {
+				log.Errorf("Error receiving message from %s, %v\n", clientAddr, err)
 			}
 			break
 		}
 
 		switch msgType {
-		case MsgTypeHandshake:
+		case MsgTypeHeartbeatPing:
 			if err := s.handlePingRequest(conn, bodyBytes); err != nil {
-				log.Error("Error handling ping request:", err)
+				log.Error("ping request:", err)
 				errorMsg := ErrorMessage{
 					ErrorCode:    StatusInternalError,
 					MessageLen:   uint16(len(err.Error())),
@@ -92,7 +94,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			}
 		case MsgTypeTreeRequest:
 			if err := s.handleTreeRequest(conn, bodyBytes); err != nil {
-				log.Error("Error handling tree request:", err)
+				log.Error("request:", err)
 				errorMsg := ErrorMessage{
 					ErrorCode:    StatusInternalError,
 					MessageLen:   uint16(len(err.Error())),
@@ -105,7 +107,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			}
 		case MsgTypeFileRequest:
 			if err := s.handleFileRequest(conn, bodyBytes); err != nil {
-				log.Error("Error handling file request:", err)
+				log.Error("file request:", err)
 				errorMsg := ErrorMessage{
 					ErrorCode:    StatusInternalError,
 					MessageLen:   uint16(len(err.Error())),
@@ -113,13 +115,14 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 				}
 				errorBytes := encodeErrorMessage(errorMsg)
 				if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
-					log.Error("Error sending error message:", err)
+					log.Error("Error sending errorm essage:", err)
 				}
 			}
 		case MsgTypeAcknowledge:
 			ackMsg, err := decodeAcknowledge(bodyBytes)
 			if err != nil {
-				log.Error("Error decoding acknowledge message:", err)
+				log.Error("acknowledge message:", err)
+				//todo: 给客户端发送错误消息
 				return
 			}
 			log.Infof("Received acknowledge message: session ID: %s, offset: %d", ackMsg.SessionID, ackMsg.Offset)
@@ -127,6 +130,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
 				log.Error("Error decoding file complete message:", err)
+				//todo: 给客户端发送错误消息
 				return
 			}
 			log.Infof("Received file complete message: session ID: %s", completeMsg.SessionID)
@@ -136,7 +140,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 		}
 
 	}
-
+	return
 }
 
 func (s *fileServer) handlePingRequest(conn net.Conn, bodyBytes []byte) error {
@@ -162,44 +166,17 @@ func (s *fileServer) handlePingRequest(conn net.Conn, bodyBytes []byte) error {
 func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 	treeRequest, err := decodeTreeRequest(bodyBytes)
 	if err != nil {
-		log.Error("Error decoding tree request message:", err)
-		return err
+		return fmt.Errorf("error decoding tree request: %v", err)
 	}
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Received tree request from %s for path: %s", clientAddr, treeRequest.RootPath)
-	fullTreePath := filepath.Join(config.StartPath, treeRequest.RootPath)
 	treeLeaf, err := tree.GetDirContents(treeRequest.RootPath)
 	if err != nil {
-		log.Errorf("Error getting tree contents for path %s: %v", fullTreePath, err)
-		errorMsg := ErrorMessage{
-			ErrorCode:    StatusTreeNotFound,
-			MessageLen:   uint16(len(err.Error())),
-			ErrorMessage: err.Error(),
-		}
-		errorBytes := encodeErrorMessage(errorMsg)
-		if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
-			log.Error("Error sending error message:", err)
-			return err
-		}
-		return fmt.Errorf("error getting tree contents for path %s: %v", fullTreePath, err)
+		return fmt.Errorf("error getting tree contents for path %s: %v", treeRequest.RootPath, err)
 	} else {
-		if len(treeLeaf) == 0 {
-			log.Errorf("Tree path not found: %s", fullTreePath)
-			errorMsg := ErrorMessage{
-				ErrorCode:    StatusTreeNotFound,
-				MessageLen:   uint16(len("Path not found")),
-				ErrorMessage: "Path not found",
-			}
-			errorBytes := encodeErrorMessage(errorMsg)
-			if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
-				log.Error("Error sending error message:", err)
-			}
-			return fmt.Errorf("path not found: %s", fullTreePath)
-		}
 		treeData, err := json.Marshal(treeLeaf)
 		if err != nil {
-			log.Error("Error marshalling tree leaf to JSON:", err)
-			return err
+			return fmt.Errorf("error marshalling tree leaf for path %s: %v", treeRequest.RootPath, err)
 		}
 		treeResponse := TreeResponseMessage{
 			Status:     StatusOK,
@@ -209,10 +186,9 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 		}
 		responseBytes := encodeTreeResponse(treeResponse)
 		if err := sendMessage(conn, MsgTypeTreeResponse, responseBytes); err != nil {
-			log.Error("Error sending tree response message:", err)
-			return err
+			return fmt.Errorf("error sending tree response for path %s: %v", treeRequest.RootPath, err)
 		}
-		log.Infof("Sent tree response to %s for path: %s, data length: %d bytes, msgType: %d", clientAddr, treeRequest.RootPath, len(treeData), MsgTypeTreeResponse)
+		log.Infof("Sent tree response to %s for path: %s, data length: %d bytes", clientAddr, treeRequest.RootPath, len(treeData))
 		return nil
 	}
 }
@@ -220,78 +196,68 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 	fileRequest, err := decodeFileRequest(bodyBytes)
 	if err != nil {
-		log.Error("Error decoding file request message:", err)
-		return err
+		return fmt.Errorf("error decoding file request: %v", err)
 	}
 	log.Debugf("Received file request: %s, offset: %d", fileRequest.FilePath, fileRequest.Offset)
 	fullPath := filepath.Join(config.StartPath, fileRequest.FilePath)
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			log.Errorf("File not found: %s", fullPath)
-			errorMsg := ErrorMessage{
-				ErrorCode:    StatusFileNotFound,
-				MessageLen:   uint16(len(err.Error())),
-				ErrorMessage: err.Error(),
-			}
-			errorBytes := encodeErrorMessage(errorMsg)
-			if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
-				log.Error("Error sending error message:", err)
+			return fmt.Errorf("file not found: %s", fileRequest.FilePath)
+		}
+		return fmt.Errorf("Error getting file info: %s :%v", fileRequest.FilePath, err)
+
+	} else {
+		fileHash, err := utils.CalcBlake3(fullPath)
+		if err != nil {
+			return fmt.Errorf("error calculating file hash for %s", fileRequest.FilePath)
+		}
+
+		file, err := os.Open(fullPath)
+		if err != nil {
+			return fmt.Errorf("error opening file %s", fileRequest.FilePath)
+		}
+		defer file.Close()
+
+		sessionID, err := utils.RandomString(16)
+		if err != nil {
+			return fmt.Errorf("error generating session ID for file %s", fileRequest.FilePath)
+		}
+		var sessionBytes [16]byte
+		copy(sessionBytes[:], sessionID)
+
+		if fileRequest.Offset > 0 {
+			if _, err := file.Seek(int64(fileRequest.Offset), io.SeekStart); err != nil {
+				return fmt.Errorf("error seeking file %s at offset %d", fileRequest.FilePath, fileRequest.Offset)
 			}
 		}
-	}
+		session := &session{
+			ID:       sessionBytes,
+			FilePath: fullPath,
+			FileSize: uint64(fileInfo.Size()),
+			file:     file,
+			fileHash: fileHash,
+		}
 
-	fileHash, err := utils.CalcBlake3(fullPath)
-	if err != nil {
-		log.Error("Error calculating file hash:", err)
-		return err
-	}
+		s.sessionMap.Store(sessionID, session)
 
-	file, err := os.Open(fullPath)
-	if err != nil {
-		log.Error("Error opening file:", err)
-		return err
-	}
-
-	sessionID, err := utils.RandomString(16)
-	var sessionBytes [16]byte
-	copy(sessionBytes[:], sessionID)
-
-	if fileRequest.Offset > 0 {
-		if _, err := file.Seek(int64(fileRequest.Offset), io.SeekStart); err != nil {
-			log.Error("Error seeking file:", err)
-			file.Close()
+		fileResponse := FileResponseMessage{
+			Status:    StatusOK,
+			SessionID: sessionBytes,
+			FileSize:  uint64(fileInfo.Size()),
+			FileHash:  fileHash,
+		}
+		responseBytes := encodeFileResponse(fileResponse)
+		if err := sendMessage(conn, MsgTypeFileResponse, responseBytes); err != nil {
+			s.sessionMap.Delete(sessionID)
+			return fmt.Errorf("error sending file response for %s", fileRequest.FilePath)
+		}
+		log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
+		if err := s.sendFileData(conn, session, fileRequest.Offset); err != nil {
 			return err
 		}
+		return nil
 	}
-	session := &session{
-		ID:       sessionBytes,
-		FilePath: fullPath,
-		FileSize: uint64(fileInfo.Size()),
-		file:     file,
-		fileHash: fileHash,
-	}
-
-	s.sessionMap.Store(sessionID, session)
-
-	fileResponse := FileResponseMessage{
-		Status:    StatusOK,
-		SessionID: sessionBytes,
-		FileSize:  uint64(fileInfo.Size()),
-		FileHash:  fileHash,
-	}
-	responseBytes := encodeFileResponse(fileResponse)
-	if err := sendMessage(conn, MsgTypeFileResponse, responseBytes); err != nil {
-		log.Error("Error sending file response message:", err)
-		file.Close()
-		s.sessionMap.Delete(sessionID)
-		return err
-	}
-	log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
-	if err := s.sendFileData(conn, session, fileRequest.Offset); err != nil {
-		log.Error("Error sending file data:", err)
-	}
-	return nil
 }
 
 func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64) error {
@@ -301,33 +267,26 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 	fileBuf := make([]byte, config.FileBufferSize)
 	for {
 		n, err := session.file.Read(fileBuf)
-		if err != nil {
-			if err != io.EOF {
-				log.Error("Error reading file:", err)
-				errMsg := ErrorMessage{
-					ErrorCode:    StatusInternalError,
-					MessageLen:   uint16(len(err.Error())),
-					ErrorMessage: err.Error(),
-				}
-				errorBytes := encodeErrorMessage(errMsg)
-				sendMessage(conn, MsgTypeError, errorBytes)
+		if n > 0 {
+			dataMsg := FileDataMessage{
+				SessionID:  session.ID,
+				Offset:     offset,
+				DataLength: uint32(n),
+				Data:       fileBuf[:n],
 			}
-			break
-		}
+			//todo: 添加发送失败重试发送的机制
+			if err := sendMessage(conn, MsgTypeFileData, encodeFileData(dataMsg)); err != nil {
+				return fmt.Errorf("error sending file data for %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
+			}
 
-		dataMsg := FileDataMessage{
-			SessionID:  session.ID,
-			Offset:     offset,
-			DataLength: uint32(n),
-			Data:       fileBuf[:n],
+			offset += uint64(n)
 		}
-
-		if err := sendMessage(conn, MsgTypeFileData, encodeFileData(dataMsg)); err != nil {
-			log.Error("Error sending file data message:", err)
-			return err
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("error reading file %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
 		}
-
-		offset += uint64(n)
 	}
 	completeMsg := FileCompleteMessage{
 		SessionID: session.ID,
@@ -336,33 +295,28 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 
 	completeBytes := encodeFileComplete(completeMsg)
 	if err := sendMessage(conn, MsgTypeFileComplete, completeBytes); err != nil {
-		log.Error("Error sending file complete message:", err)
-		return err
+		return fmt.Errorf("error sending file complete for %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
 	}
-	log.Infof("Sent file complete message: session ID: %s", session.ID)
+	log.Infof("Sent file complete message: file path: %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
 	return nil
 }
 
 func (s *fileServer) handleHandshake(conn net.Conn) error {
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		log.Error("Error receiving message:", err)
-		return err
+		return fmt.Errorf("error receiving message: %v", err)
 	}
 	if msgType != MsgTypeHandshake {
-		log.Error("Invalid message type:", msgType)
 		return fmt.Errorf("invalid message type, got message type %d", msgType)
 	}
 
 	handshakeMsg, err := decodeHandshake(bodyBytes)
 	if err != nil {
-		log.Error("Error decoding handshake message:", err)
-		return err
+		return fmt.Errorf("error decoding handshake message: %v", err)
 	}
-	log.Infof("Received handshake message: version: %d, clientID: %d, serverID: %d",
+	log.Infof("Received handshake message: version: %d, clientID: %d",
 		handshakeMsg.Version,
-		handshakeMsg.UUID,
-		handshakeMsg.Role)
+		handshakeMsg.UUID)
 	receiveHandshake := HandshakeMessage{
 		Version: config.Version,
 		UUID:    config.InstanceID,
@@ -370,8 +324,7 @@ func (s *fileServer) handleHandshake(conn net.Conn) error {
 	}
 	handshakeBytes := encodeHandshake(receiveHandshake)
 	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
-		log.Error("Error sending handshake message:", err)
-		return err
+		return fmt.Errorf("error sending handshake message: %v", err)
 	}
 	return nil
 }

@@ -189,6 +189,24 @@ func AddNodes(nodes []*Node) error {
 	return error
 }
 
+func HasPath(path string) (bool, error) {
+	var exists bool
+	err := DB.View(func(tx *bolt.Tx) error {
+		pathIndexBucket := tx.Bucket([]byte("path_index"))
+		if pathIndexBucket == nil {
+			return fmt.Errorf("path index bucket not found")
+		}
+		pathID := pathIndexBucket.Get([]byte(path))
+		if pathID != nil {
+			exists = true
+		} else {
+			exists = false
+		}
+		return nil
+	})
+	return exists, err
+}
+
 func GetDirContents(dirPath string) ([]Node, error) {
 	var contents = make([]Node, 0)
 	return contents, DB.View(func(tx *bolt.Tx) error {

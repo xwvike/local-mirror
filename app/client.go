@@ -18,7 +18,7 @@ type fileClient struct {
 }
 
 func NewFileClient(serverAddr string) *fileClient {
-	log.Debug("Creating file client, server address:", serverAddr)
+	log.Info("Creating file client, server address:", serverAddr)
 	return &fileClient{
 		serverAddr: serverAddr,
 	}
@@ -27,8 +27,7 @@ func NewFileClient(serverAddr string) *fileClient {
 func (c *fileClient) Connect() (net.Conn, error) {
 	conn, err := net.Dial("tcp", c.serverAddr)
 	if err != nil {
-		log.Errorf("Error connecting to server %s: %v", c.serverAddr, err)
-		return nil, err
+		return nil, fmt.Errorf("failed to connect to server %s: %w", c.serverAddr, err)
 	}
 	log.Infof("Connected to server %s", c.serverAddr)
 
@@ -40,32 +39,26 @@ func (c *fileClient) Connect() (net.Conn, error) {
 	handshakeBytes := encodeHandshake(handshakeMsg)
 
 	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
-		log.Error("Error sending handshake message:", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to send handshake message: %w", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		log.Error("Error receiving handshake response:", err)
 		conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("failed to receive handshake response: %w", err)
 	}
 
 	if msgType != MsgTypeHandshake {
-		newError := fmt.Errorf("invalid handshake response message type, got %d", msgType)
-		log.Error(newError)
 		conn.Close()
-		return nil, newError
+		return nil, fmt.Errorf("invalid handshake response message type, got %d", msgType)
 	}
 	handshakeResponse, err := decodeHandshake(bodyBytes)
 	if err != nil {
-		log.Error("Error decoding handshake response:", err)
 		conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("failed to decode handshake response: %w", err)
 	}
-	log.Infof("Received handshake response: version: %d, clientID: %d, serverID: %d",
+	log.Infof("Received handshake response: version: %d, clientID: %d",
 		handshakeResponse.Version,
-		handshakeResponse.UUID,
-		handshakeResponse.Role)
+		handshakeResponse.UUID)
 	return conn, nil
 }
 
@@ -118,50 +111,41 @@ func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, err
 	requestBytes := encodeTreeRequest(request)
 	serverAddr := conn.RemoteAddr().String()
 	if err := sendMessage(conn, MsgTypeTreeRequest, requestBytes); err != nil {
-		log.Error("Error sending tree request message:", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to send tree request: %w", err)
 	}
-	log.Infof("Sent tree request to %s for path: %s", serverAddr, rootPath)
+	log.Debugf("Sent tree request to %s for path: %s", serverAddr, rootPath)
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		log.Error("Error receiving tree response:", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to receive tree response: %w", err)
 	}
 	if msgType == MsgTypeError {
 		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
-			log.Error("Error decoding error message:", err)
-			return nil, err
+			return nil, fmt.Errorf("failed to decode error message: %w", err)
 		}
-		newError := fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
-		log.Error(newError)
-		return nil, newError
+
+		return nil, fmt.Errorf("[server error]: %s", errorMsg.ErrorMessage)
 	}
 	if msgType != MsgTypeTreeResponse {
-		newError := fmt.Errorf("invalid tree response message type, got %d", msgType)
-		log.Error(newError)
-		return nil, newError
+		return nil, fmt.Errorf("invalid tree response message type, got %d", msgType)
 	}
 	treeResponse, err := decodeTreeResponse(bodyBytes)
 	if err != nil {
-		log.Error("Error decoding tree response:", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to decode tree response: %w", err)
+	}
+
+	if treeResponse.Status != StatusOK {
+		return nil, fmt.Errorf("tree request failed, status code: %d", treeResponse.Status)
+	}
+	if len(treeResponse.Data) == 0 {
+		log.Warnf("Received empty tree response from %s, path: %s", serverAddr, rootPath)
+		return []byte{}, nil
 	}
 	log.Infof("Received tree response from %s, status: %d, data length: %d bytes",
 		serverAddr,
 		treeResponse.Status,
 		len(treeResponse.Data))
 	log.Debugf("Received tree response: %s", treeResponse.Data)
-
-	if treeResponse.Status != StatusOK {
-		newError := fmt.Errorf("tree request failed, status code: %d", treeResponse.Status)
-		log.Error(newError)
-		return nil, newError
-	}
-	if len(treeResponse.Data) == 0 {
-		log.Warn("Received empty tree response data")
-		return nil, fmt.Errorf("received empty tree response data")
-	}
 	return treeResponse.Data, nil
 }
 
