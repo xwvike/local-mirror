@@ -190,7 +190,7 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
 	}
 	file, err := os.Create(fullPath)
 	if err != nil {
-		return fmt.Errorf("failed to create file %s: %w", fullPath, err)
+		return fmt.Errorf("failed to create file %w", err)
 	}
 	defer file.Close()
 	sessionID := fileResponse.SessionID
@@ -258,10 +258,11 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
 			file.Sync()
 			fileHash, err := utils.CalcBlake3(fullPath)
 			if err != nil {
-				return fmt.Errorf("error calculating file hash: %w: %s", err, fullPath)
+				return fmt.Errorf("error calculating file hash: %w", err)
 			}
 			if fileHash != completeMsg.FileHash {
-				return fmt.Errorf("file hash mismatch, expected %s, got %s %s", completeMsg.FileHash, fileHash, fullPath)
+				os.Remove(fullPath)
+				return fmt.Errorf("file hash mismatch, expected %s, got %s", completeMsg.FileHash, fileHash)
 			}
 			transferSpeed := float64(fileResponse.FileSize) / time.Since(startTime).Seconds()
 			log.Infof("File transfer complete, file path: %s, file size: %d bytes, transfer speed: %.2f MB/s",
