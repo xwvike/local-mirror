@@ -157,50 +157,40 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
 	}
 	requestBytes := encodeFileRequest(requestFile)
 	if err := sendMessage(conn, MsgTypeFileRequest, requestBytes); err != nil {
-		log.Error("Error sending file request message:", err)
-		return err
+		return fmt.Errorf("failed to send file request: %w", err)
 	}
 
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		log.Error("Error receiving file response:", err)
-		return err
+		return fmt.Errorf("failed to receive file response: %w", err)
 	}
 
 	if msgType == MsgTypeError {
 		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
-			log.Error("Error decoding error message:", err)
-			return err
+			return fmt.Errorf("failed to decode error message: %w", err)
 		}
-		newError := fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
-		log.Error(newError)
-		return newError
+		return fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
 	}
 
 	if msgType != MsgTypeFileResponse {
-		newError := fmt.Errorf("invalid file response message type, got %d", msgType)
-		log.Error(newError)
-		return newError
+		return fmt.Errorf("invalid file response message type, got %d", msgType)
 	}
 	fileResponse, err := decodeFileResponse(bodyBytes)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to decode file response: %w", err)
 	}
 	if fileResponse.Status != StatusOK {
-		newError := fmt.Errorf("file transfer rejected, status code: %d", fileResponse.Status)
-		log.Error(newError)
-		return newError
+		return fmt.Errorf("file transfer rejected, status code: %d", fileResponse.Status)
 	}
 
 	fullPath := filepath.Join(config.StartPath, filePath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		log.Error("Error creating directory:", err)
-		return err
+		return fmt.Errorf("failed to create directory for file: %w", err)
 	}
 	file, err := os.Create(fullPath)
 	if err != nil {
-		log.Error("Error creating file:", err)
+		return fmt.Errorf("failed to create file %s: %w", fullPath, err)
 	}
 	defer file.Close()
 	sessionID := fileResponse.SessionID
@@ -211,99 +201,82 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) error {
 	for {
 		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
-			log.Error("Error receiving file data:", err)
-			return err
+			return fmt.Errorf("error receiving file data: %w", err)
 		}
 		switch msgType {
 		case MsgTypeFileData:
 			dataMsg, err := decodeFileData(bodyBytes)
 			if err != nil {
-				log.Error("Error decoding file data message:", err)
-				return err
+				return fmt.Errorf("error decoding file data message: %w", err)
 			}
 			// todo: check session ID
 			if dataMsg.SessionID != sessionID {
-				log.Error("Invalid session ID in file data message")
 				return fmt.Errorf("invalid session ID in file data message, got %s", dataMsg.SessionID)
 			}
 
 			if fileResponse.FileSize <= config.MemFileThreshold {
-				cacheFile.Write(dataMsg.Data)
-				receivedSize += uint64(len(dataMsg.Data))
+				if _, err := cacheFile.Write(dataMsg.Data); err != nil {
+					return fmt.Errorf("error writing cached file data: %w", err)
+				}
 			} else {
 				if _, err := file.Write(dataMsg.Data); err != nil {
-					log.Error("Error writing file data:", err)
-					return err
+					return fmt.Errorf("error writing file data: %w", err)
 				}
-				receivedSize += uint64(len(dataMsg.Data))
-				ackMsg := AcknowledgeMessage{
-					SessionID: sessionID,
-					Offset:    receivedSize,
-					Status:    StatusOK,
-				}
-
-				ackBytes := encodeAcknowlege(ackMsg)
-				if err := sendMessage(conn, MsgTypeAcknowledge, ackBytes); err != nil {
-					log.Error("Error sending acknowledge message:", err)
-					return err
-				}
-				log.Debugf("Sent acknowledge message, session ID: %s, offset: %d", sessionID, receivedSize)
 			}
+			receivedSize += uint64(len(dataMsg.Data))
+			ackMsg := AcknowledgeMessage{
+				SessionID: sessionID,
+				Offset:    receivedSize,
+				Status:    StatusOK,
+			}
+
+			ackBytes := encodeAcknowlege(ackMsg)
+			if err := sendMessage(conn, MsgTypeAcknowledge, ackBytes); err != nil {
+				return fmt.Errorf("failed to send acknowledge message: %w", err)
+			}
+			log.Debugf("Sent acknowledge message, session ID: %s, offset: %d", sessionID, receivedSize)
 		case MsgTypeFileComplete:
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
-				log.Error("Error decoding file complete message:", err)
-				return err
+				return fmt.Errorf("error decoding file complete message: %w", err)
 			}
 			if completeMsg.SessionID != sessionID {
-				newError := fmt.Errorf("invalid session ID in file complete message, got %s", completeMsg.SessionID)
-				log.Error(newError)
-				return newError
+				return fmt.Errorf("invalid session ID in file complete message, got %s", completeMsg.SessionID)
 			}
 			if fileResponse.FileSize <= config.MemFileThreshold {
 				if _, err := file.Write(cacheFile.Bytes()); err != nil {
-					log.Error("Error writing cached file data:", err)
-					return err
+					return fmt.Errorf("error writing cached file data: %w", err)
 				}
 				cacheFile.Reset()
-			} else {
-				if err := file.Close(); err != nil {
-					log.Error("Error closing file:", err)
-					return err
-				}
+			}
+
+			if err := file.Close(); err != nil {
+				log.Error("Error closing file:", err)
+				return err
 			}
 
 			file.Sync()
 			fileHash, err := utils.CalcBlake3(fullPath)
 			if err != nil {
-				log.Error("Error calculating file hash:", err)
-				return err
+				return fmt.Errorf("error calculating file hash: %w: %s", err, fullPath)
 			}
 			if fileHash != completeMsg.FileHash {
-				newError := fmt.Errorf("file hash mismatch, expected %x, got %x", completeMsg.FileHash, fileHash)
-				log.Error(newError)
-				return newError
+				return fmt.Errorf("file hash mismatch, expected %s, got %s %s", completeMsg.FileHash, fileHash, fullPath)
 			}
 			transferSpeed := float64(fileResponse.FileSize) / time.Since(startTime).Seconds()
-			log.Infof("File transfer complete, session ID: %s, file size: %d bytes, transfer speed: %.2f MB/s",
-				sessionID,
+			log.Infof("File transfer complete, file path: %s, file size: %d bytes, transfer speed: %.2f MB/s",
+				fullPath,
 				fileResponse.FileSize,
 				transferSpeed/1024/1024)
 			return nil
 		case MsgTypeError:
 			errorMsg, err := decodeErrorMessage(bodyBytes)
 			if err != nil {
-				log.Error("Error decoding error message:", err)
-				return err
+				return fmt.Errorf("error decoding error message: %w", err)
 			}
-			newError := fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
-			log.Error(newError)
-			return newError
+			return fmt.Errorf("server error: %w", errorMsg)
 		default:
-			newError := fmt.Errorf("invalid file data message type, got %d", msgType)
-			log.Error(newError)
-			return newError
+			return fmt.Errorf("invalid file data message type, got %d", msgType)
 		}
 	}
-	return nil
 }

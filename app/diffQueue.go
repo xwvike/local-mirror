@@ -6,8 +6,6 @@ import (
 	"local-mirror/app/tree"
 	"local-mirror/common/data"
 	"local-mirror/common/jsonutil"
-
-	log "github.com/sirupsen/logrus"
 )
 
 var (

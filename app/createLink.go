@@ -65,9 +65,9 @@ func getDirectory(conn net.Conn, fileClient *fileClient, path string) {
 				} else {
 					err := fileClient.DownloadFile(conn, v.Path)
 					if err != nil {
-						log.Errorf("File %s downloading fail, %v", v.Path, err)
+						log.Errorf("Error downloading file %s: %v", v.Path, err)
 					} else {
-						log.Infof("File %s downloaded successfully", v.Path)
+						log.Infof("File downloaded successfully: %s", v.Path)
 					}
 				}
 			}
