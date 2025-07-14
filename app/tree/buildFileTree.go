@@ -171,7 +171,7 @@ func processDirectory(node *Node) []*Node {
 			continue
 		}
 
-		childPath := filepath.Join(path, entry.Name())
+		childPath := filepath.Join(config.StartPath, path, entry.Name())
 		childNode := getLeafInfo(childPath)
 		if childNode == nil {
 			continue
