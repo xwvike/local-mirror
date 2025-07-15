@@ -403,3 +403,29 @@ func GetDirContents(dirPath string) ([]Node, error) {
 		return nil
 	})
 }
+
+func GetAllDirectories() ([]Node, error) {
+	var directories = make([]Node, 0)
+
+	err := DB.View(func(tx *bolt.Tx) error {
+		nodesBucket := tx.Bucket([]byte("nodes"))
+		if nodesBucket == nil {
+			return fmt.Errorf("nodes bucket not found")
+		}
+
+		return nodesBucket.ForEach(func(k, v []byte) error {
+			var node Node
+			if err := json.Unmarshal(v, &node); err != nil {
+				return err
+			}
+
+			if node.IsDir {
+				directories = append(directories, node)
+			}
+
+			return nil
+		})
+	})
+
+	return directories, err
+}
