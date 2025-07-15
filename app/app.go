@@ -17,7 +17,7 @@ func App() {
 		log.Fatal(err)
 	}
 	defer watcher.Close()
-	tree.BuildFileTreeTwoPhase(config.StartPath)
+	tree.BuildFileTree(config.StartPath)
 	// WatchFile(watcher)
 	CreateLink()
 	sigChan := make(chan os.Signal, 1)

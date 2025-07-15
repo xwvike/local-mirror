@@ -57,9 +57,15 @@ func InitDB() {
 	err = DB.Update(func(tx *bolt.Tx) error {
 		buckets := []string{"nodes", "children", "path_index", "meta"}
 		for _, bucketName := range buckets {
-			tx.DeleteBucket([]byte(bucketName))
+			// 删除旧的 bucket（如果存在）
+			if tx.Bucket([]byte(bucketName)) != nil {
+				if err := tx.DeleteBucket([]byte(bucketName)); err != nil {
+					return fmt.Errorf("failed to delete bucket %s: %w", bucketName, err)
+				}
+			}
+			// 创建新的空 bucket
 			if _, err := tx.CreateBucket([]byte(bucketName)); err != nil {
-				return err
+				return fmt.Errorf("failed to create bucket %s: %w", bucketName, err)
 			}
 		}
 		return nil
@@ -79,7 +85,7 @@ func InitDB() {
 	})
 
 	if err != nil {
-		log.Error("Failed to create database buckets:", err)
+		log.Error("bbolt:", err)
 		os.Exit(1)
 	}
 	log.Info("Database initialized successfully")

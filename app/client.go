@@ -214,7 +214,7 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) (string, error
 				return "", fmt.Errorf("invalid session ID in file data message, got %s", dataMsg.SessionID)
 			}
 
-			if fileResponse.FileSize <= config.MemFileThreshold {
+			if fileResponse.FileSize <= *config.MemFileThreshold {
 				if _, err := cacheFile.Write(dataMsg.Data); err != nil {
 					return "", fmt.Errorf("error writing cached file data: %w", err)
 				}
@@ -243,7 +243,7 @@ func (c *fileClient) DownloadFile(conn net.Conn, filePath string) (string, error
 			if completeMsg.SessionID != sessionID {
 				return "", fmt.Errorf("invalid session ID in file complete message, got %s", completeMsg.SessionID)
 			}
-			if fileResponse.FileSize <= config.MemFileThreshold {
+			if fileResponse.FileSize <= *config.MemFileThreshold {
 				if _, err := file.Write(cacheFile.Bytes()); err != nil {
 					return "", fmt.Errorf("error writing cached file data: %w", err)
 				}

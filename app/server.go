@@ -264,7 +264,7 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 	defer session.file.Close()
 	defer s.sessionMap.Delete(session.ID)
 
-	fileBuf := make([]byte, config.FileBufferSize)
+	fileBuf := make([]byte, *config.FileBufferSize)
 	for {
 		n, err := session.file.Read(fileBuf)
 		if n > 0 {
