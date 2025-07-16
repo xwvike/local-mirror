@@ -352,6 +352,7 @@ func DeleteNode(nodePath string) error {
 		return nil
 	})
 }
+
 func HasPath(path string) (bool, error) {
 	var exists bool
 	err := DB.View(func(tx *bolt.Tx) error {
@@ -404,28 +405,29 @@ func GetDirContents(dirPath string) ([]Node, error) {
 	})
 }
 
-func GetAllDirectories() ([]Node, error) {
-	var directories = make([]Node, 0)
-
+func GetNodeByPath(path string) (*Node, error) {
+	var node Node
 	err := DB.View(func(tx *bolt.Tx) error {
+		pathIndexBucket := tx.Bucket([]byte("path_index"))
 		nodesBucket := tx.Bucket([]byte("nodes"))
-		if nodesBucket == nil {
-			return fmt.Errorf("nodes bucket not found")
+
+		nodeID := pathIndexBucket.Get([]byte(path))
+		if nodeID == nil {
+			return fmt.Errorf("node not found for path: %s", path)
 		}
 
-		return nodesBucket.ForEach(func(k, v []byte) error {
-			var node Node
-			if err := json.Unmarshal(v, &node); err != nil {
-				return err
-			}
+		nodeData := nodesBucket.Get(nodeID)
+		if nodeData == nil {
+			return fmt.Errorf("node data not found for ID: %s", string(nodeID))
+		}
 
-			if node.IsDir {
-				directories = append(directories, node)
-			}
-
-			return nil
-		})
+		if err := json.Unmarshal(nodeData, &node); err != nil {
+			return err
+		}
+		return nil
 	})
-
-	return directories, err
+	if err != nil {
+		return nil, err
+	}
+	return &node, nil
 }

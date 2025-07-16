@@ -1,9 +1,12 @@
 package app
 
 import (
+	"fmt"
 	"local-mirror/app/model"
+	"local-mirror/app/tree"
 	"local-mirror/common/utils"
 	"local-mirror/config"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -16,7 +19,8 @@ var (
 	remove string = "REMOVE"
 )
 
-func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
+func eventFilter(event fsnotify.Event) {
+	fmt.Printf("Event: %s\n", event)
 	ignored := false
 	for _, v := range model.IgnoreFileList {
 		if strings.Contains(event.Name, v) {
@@ -27,60 +31,56 @@ func eventFilter(event fsnotify.Event, watcher *fsnotify.Watcher) {
 	if ignored {
 		return
 	}
-	nodeDir := filepath.Dir(event.Name)
-	fatherNode := model.RootLeaf.GetChild(nodeDir)
-	if fatherNode == nil {
-		return
-	}
-	opStr := event.Op.String()
-	os := utils.BaseOSInfo().OS
-	if os == "darwin" {
-		create = "CREATE"
-		remove = "REMOVE"
-	} else if os == "linux" {
-
-	} else if os == "windows" {
-
+	nodeDir := strings.Replace(filepath.Dir(event.Name), config.StartPath, ".", 1)
+	fatherNode, err := tree.GetNodeByPath(nodeDir)
+	if err != nil {
+		log.Errorf("Incomplete directory tree, unable to find parent node for %s: %v", nodeDir, err)
 	} else {
+		opStr := event.Op.String()
+		osType := utils.BaseOSInfo().OS
+		switch osType {
+		case "darwin":
+			create = "CREATE"
+			remove = "REMOVE"
+		case "linux":
+			create = "CREATE"
+			remove = "REMOVE"
+		case "windows":
 
-	}
-	if opStr == create {
-		isDir, err := utils.IsDir(event.Name)
-		if err != nil {
-			log.Error("Error checking if path is directory:", err)
-			return
+		default:
+
 		}
-		fileType := 0
-		if isDir {
-			fileType = 1
-		}
-		newLeaf := &model.Leaf{
-			Name:         filepath.Base(event.Name),
-			Path:         event.Name,
-			RelativePath: strings.Replace(event.Name, config.StartPath, ".", 1),
-			Type:         uint8(fileType),
-			Children:     []*model.Leaf{},
-			Deep:         strings.Count(strings.TrimPrefix(event.Name, config.StartPath), string(filepath.Separator)),
-			Size:         0,
-		}
-		size, err := utils.GetSize(event.Name)
-		if err == nil {
-			newLeaf.Size = uint64(size)
-		} else {
-			log.Error("Error getting file size:", err)
-		}
-		fatherNode.AddChild(newLeaf)
-		if fileType == 1 {
-			err := watcher.Add(event.Name)
+		switch opStr {
+		case create:
+			fileInfo, err := os.Stat(event.Name)
 			if err != nil {
-				log.Error("Error adding directory to watcher:", err)
+				log.Error("Error getting file info:", err)
+				return
 			}
+			uuid, _ := utils.RandomString(16)
+			newLeaf := &tree.Node{
+				ID:       uuid,
+				Path:     strings.Replace(event.Name, config.StartPath, ".", 1),
+				Name:     filepath.Base(event.Name),
+				ParentID: fatherNode.ID,
+				IsDir:    fileInfo.IsDir(),
+				Size:     uint64(fileInfo.Size()),
+				ModTime:  fileInfo.ModTime(),
+				Hash:     "",
+			}
+			nodes := []*tree.Node{newLeaf}
+			if err := tree.AddNodes(nodes); err != nil {
+				log.Errorf("Failed to add node %s: %v", newLeaf.Name, err)
+				return
+			}
+			log.Debugf("Added node %s to the tree", newLeaf.Name)
+		case remove:
+			err := tree.DeleteNode(event.Name)
+			if err != nil {
+				log.Errorf("Failed to delete node %s: %v", event.Name, err)
+				return
+			}
+			log.Debugf("Deleted node %s from the tree", event.Name)
 		}
-	} else if opStr == remove {
-		children := fatherNode.GetChild(event.Name)
-		if children == nil {
-			return
-		}
-		fatherNode.RemoveChild(children)
 	}
 }

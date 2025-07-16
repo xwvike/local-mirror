@@ -17,7 +17,7 @@ type OSInfo struct {
 	NumCPU       int
 }
 
-func BaseOSInfo() OSInfo {
+func BaseOSInfo() *OSInfo {
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "unknown"
@@ -26,7 +26,7 @@ func BaseOSInfo() OSInfo {
 	if err != nil {
 		userHomeDir = "unknown"
 	}
-	return OSInfo{
+	return &OSInfo{
 		hostname:     hostname,
 		UserHomeDir:  userHomeDir,
 		OS:           runtime.GOOS,
@@ -35,34 +35,6 @@ func BaseOSInfo() OSInfo {
 	}
 }
 
-func GetSize(path string) (int64, error) {
-	fileInfo, err := os.Stat(path)
-	if err != nil {
-		return 0, err
-	}
-	return fileInfo.Size(), nil
-}
-func GetModTime(path string) (int64, error) {
-	fileInfo, err := os.Stat(path)
-	if err != nil {
-		return 0, err
-	}
-	return fileInfo.ModTime().Unix(), nil
-}
-func GetMode(path string) (os.FileMode, error) {
-	fileInfo, err := os.Stat(path)
-	if err != nil {
-		return 0, err
-	}
-	return fileInfo.Mode(), nil
-}
-func IsDir(path string) (bool, error) {
-	fileInfo, err := os.Stat(path)
-	if err != nil {
-		return false, err
-	}
-	return fileInfo.IsDir(), nil
-}
 func GenerateRandomNum() uint32 {
 	b := make([]byte, 4)
 	_, err := rand.Read(b)
@@ -101,11 +73,3 @@ func RandomString(length int) (string, error) {
 	}
 	return string(b), nil
 }
-
-// func ensureFileCanBeCreated(localPath string) (*os.File, error) {
-//     dir := filepath.Dir(localPath)
-//     if err := os.MkdirAll(dir, 0755); err != nil {
-//         return nil, err
-//     }
-//     return os.Create(localPath)
-// }
