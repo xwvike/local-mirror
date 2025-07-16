@@ -1,4 +1,4 @@
-package app
+package watcher
 
 import (
 	"local-mirror/app/tree"
@@ -109,6 +109,7 @@ func WatchFile(watcher *fsnotify.Watcher) {
 		log.Error("Failed to create dynamic watcher:", err)
 	}
 	dynamicWatcher.Start()
+	watcher.Add(config.StartPath + "/test")
 	go func() {
 		for {
 			select {

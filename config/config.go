@@ -11,6 +11,10 @@ const (
 )
 
 var (
+	IgnoreFileList = []string{"Library", ".gitingore", ".git", "node_modules", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log", ".local-mirror.db"}
+)
+
+var (
 	ModeMap = map[string]uint8{
 		"reality": RealityMode,
 		"mirror":  MirrorMode,

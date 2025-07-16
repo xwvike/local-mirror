@@ -2,7 +2,6 @@ package tree
 
 import (
 	"io/fs"
-	"local-mirror/app/model"
 	"local-mirror/common/utils"
 	"local-mirror/config"
 	"os"
@@ -85,7 +84,7 @@ func BuildFileTree(path string) error {
 
 		// 检查忽略列表
 		relPath := strings.Replace(fullPath, config.StartPath, ".", 1)
-		for _, ignorePattern := range model.IgnoreFileList {
+		for _, ignorePattern := range config.IgnoreFileList {
 			if strings.Contains(relPath, ignorePattern) {
 				if d.IsDir() {
 					return filepath.SkipDir

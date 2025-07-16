@@ -195,8 +195,11 @@ func AddNodes(nodes []*Node) error {
 	return _err
 }
 
-func DeleteNode(nodePath string) error {
-	log.Debug("Deleting node:", nodePath)
+func DeleteNodes(nodePaths []string) error {
+	log.Debug("Deleting nodes:", len(nodePaths))
+	if len(nodePaths) == 0 {
+		return nil
+	}
 
 	return DB.Update(func(tx *bolt.Tx) error {
 		nodesBucket := tx.Bucket([]byte("nodes"))
@@ -209,70 +212,107 @@ func DeleteNode(nodePath string) error {
 			return os.ErrNotExist
 		}
 
-		// 获取要删除的节点ID
-		nodeID := pathIndexBucket.Get([]byte(nodePath))
-		if nodeID == nil {
-			return fmt.Errorf("node not found: %s", nodePath)
-		}
+		var totalDirCount, totalFileCount uint64
+		var allNodesToDelete []string
+		var parentUpdates = make(map[string][]string) // parentID -> childIDs to remove
 
-		// 获取节点信息
-		nodeData := nodesBucket.Get(nodeID)
-		if nodeData == nil {
-			return fmt.Errorf("node data not found for ID: %s", string(nodeID))
-		}
-
-		var rootNode Node
-		if err := json.Unmarshal(nodeData, &rootNode); err != nil {
-			return err
-		}
-
-		// 如果是目录，需要收集所有子节点进行批量删除
-		var nodesToDelete []string
-		var dirCount, fileCount uint64
-
-		if rootNode.IsDir {
-			// 使用队列进行迭代遍历，收集所有需要删除的节点
-			queue := []string{string(nodeID)}
-
-			for len(queue) > 0 {
-				currentID := queue[0]
-				queue = queue[1:]
-
-				nodesToDelete = append(nodesToDelete, currentID)
-
-				// 获取当前节点信息用于计数
-				currentNodeData := nodesBucket.Get([]byte(currentID))
-				if currentNodeData != nil {
-					var currentNode Node
-					if err := json.Unmarshal(currentNodeData, &currentNode); err != nil {
-						return err
-					}
-					if currentNode.IsDir {
-						dirCount++
-					} else {
-						fileCount++
-					}
-				}
-
-				// 获取子节点
-				childrenData := childrenBucket.Get([]byte(currentID))
-				if childrenData != nil {
-					var children Children
-					if err := json.Unmarshal(childrenData, &children); err != nil {
-						return err
-					}
-					// 将子节点加入队列
-					queue = append(queue, children.ChildIDs...)
-				}
+		// 预收集所有需要删除的节点信息
+		for _, nodePath := range nodePaths {
+			// 获取要删除的节点ID
+			nodeID := pathIndexBucket.Get([]byte(nodePath))
+			if nodeID == nil {
+				log.Warnf("node not found: %s", nodePath)
+				continue
 			}
-		} else {
-			// 如果是文件，直接删除
-			nodesToDelete = append(nodesToDelete, string(nodeID))
-			fileCount = 1
+
+			// 获取节点信息
+			nodeData := nodesBucket.Get(nodeID)
+			if nodeData == nil {
+				log.Warnf("node data not found for ID: %s", string(nodeID))
+				continue
+			}
+
+			var rootNode Node
+			if err := json.Unmarshal(nodeData, &rootNode); err != nil {
+				return err
+			}
+
+			// 收集父节点更新信息
+			if rootNode.ParentID != "" {
+				if _, exists := parentUpdates[rootNode.ParentID]; !exists {
+					parentUpdates[rootNode.ParentID] = []string{}
+				}
+				parentUpdates[rootNode.ParentID] = append(parentUpdates[rootNode.ParentID], string(nodeID))
+			}
+
+			// 收集所有需要删除的节点（包括子节点）
+			var nodesToDelete []string
+			var dirCount, fileCount uint64
+
+			if rootNode.IsDir {
+				// 使用队列进行迭代遍历，收集所有需要删除的节点
+				queue := []string{string(nodeID)}
+				visited := make(map[string]bool)
+
+				for len(queue) > 0 {
+					currentID := queue[0]
+					queue = queue[1:]
+
+					if visited[currentID] {
+						continue
+					}
+					visited[currentID] = true
+
+					nodesToDelete = append(nodesToDelete, currentID)
+
+					// 获取当前节点信息用于计数
+					currentNodeData := nodesBucket.Get([]byte(currentID))
+					if currentNodeData != nil {
+						var currentNode Node
+						if err := json.Unmarshal(currentNodeData, &currentNode); err != nil {
+							return err
+						}
+						if currentNode.IsDir {
+							dirCount++
+						} else {
+							fileCount++
+						}
+					}
+
+					// 获取子节点
+					childrenData := childrenBucket.Get([]byte(currentID))
+					if childrenData != nil {
+						var children Children
+						if err := json.Unmarshal(childrenData, &children); err != nil {
+							return err
+						}
+						// 将子节点加入队列
+						queue = append(queue, children.ChildIDs...)
+					}
+				}
+			} else {
+				// 如果是文件，直接删除
+				nodesToDelete = append(nodesToDelete, string(nodeID))
+				fileCount = 1
+			}
+
+			allNodesToDelete = append(allNodesToDelete, nodesToDelete...)
+			totalDirCount += dirCount
+			totalFileCount += fileCount
+		}
+
+		if len(allNodesToDelete) == 0 {
+			return nil
+		}
+
+		// 使用map去重，防止重复删除
+		uniqueNodesToDelete := make(map[string]bool)
+		for _, nodeID := range allNodesToDelete {
+			uniqueNodesToDelete[nodeID] = true
 		}
 
 		// 批量删除所有收集到的节点
-		for _, deleteID := range nodesToDelete {
+		for deleteID := range uniqueNodesToDelete {
 			// 获取节点信息用于删除路径索引
 			nodeData := nodesBucket.Get([]byte(deleteID))
 			if nodeData != nil {
@@ -290,44 +330,51 @@ func DeleteNode(nodePath string) error {
 			childrenBucket.Delete([]byte(deleteID))
 		}
 
-		// 从父节点的子节点列表中移除根节点
-		if rootNode.ParentID != "" {
-			parentChildrenData := childrenBucket.Get([]byte(rootNode.ParentID))
+		// 批量更新父节点信息
+		for parentID, childIDsToRemove := range parentUpdates {
+			parentChildrenData := childrenBucket.Get([]byte(parentID))
 			if parentChildrenData != nil {
 				var parentChildren Children
 				if err := json.Unmarshal(parentChildrenData, &parentChildren); err != nil {
 					return err
 				}
 
-				// 移除当前节点ID
-				for i, childID := range parentChildren.ChildIDs {
-					if childID == string(nodeID) {
-						parentChildren.ChildIDs = append(parentChildren.ChildIDs[:i], parentChildren.ChildIDs[i+1:]...)
-						break
+				// 创建一个集合用于快速查找需要移除的子节点
+				childIDSet := make(map[string]bool)
+				for _, childID := range childIDsToRemove {
+					childIDSet[childID] = true
+				}
+
+				// 过滤掉需要移除的子节点
+				var newChildIDs []string
+				for _, childID := range parentChildren.ChildIDs {
+					if !childIDSet[childID] {
+						newChildIDs = append(newChildIDs, childID)
 					}
 				}
 
 				// 更新父节点的子节点列表
-				if len(parentChildren.ChildIDs) > 0 {
+				if len(newChildIDs) > 0 {
+					parentChildren.ChildIDs = newChildIDs
 					updatedChildrenData, err := json.Marshal(parentChildren)
 					if err != nil {
 						return err
 					}
-					childrenBucket.Put([]byte(rootNode.ParentID), updatedChildrenData)
+					childrenBucket.Put([]byte(parentID), updatedChildrenData)
 				} else {
 					// 如果没有子节点了，删除整个记录
-					childrenBucket.Delete([]byte(rootNode.ParentID))
+					childrenBucket.Delete([]byte(parentID))
 				}
 			}
 		}
 
 		// 更新计数
-		if dirCount > 0 {
+		if totalDirCount > 0 {
 			oldDirCountData := metaBucket.Get([]byte("dir_count"))
 			if oldDirCountData != nil {
 				oldDirCount := binary.BigEndian.Uint64(oldDirCountData)
-				if oldDirCount >= dirCount {
-					newDirCount := oldDirCount - dirCount
+				if oldDirCount >= totalDirCount {
+					newDirCount := oldDirCount - totalDirCount
 					dirCountData := make([]byte, 8)
 					binary.BigEndian.PutUint64(dirCountData, newDirCount)
 					metaBucket.Put([]byte("dir_count"), dirCountData)
@@ -335,12 +382,12 @@ func DeleteNode(nodePath string) error {
 			}
 		}
 
-		if fileCount > 0 {
+		if totalFileCount > 0 {
 			oldFileCountData := metaBucket.Get([]byte("file_count"))
 			if oldFileCountData != nil {
 				oldFileCount := binary.BigEndian.Uint64(oldFileCountData)
-				if oldFileCount >= fileCount {
-					newFileCount := oldFileCount - fileCount
+				if oldFileCount >= totalFileCount {
+					newFileCount := oldFileCount - totalFileCount
 					fileCountData := make([]byte, 8)
 					binary.BigEndian.PutUint64(fileCountData, newFileCount)
 					metaBucket.Put([]byte("file_count"), fileCountData)
@@ -348,9 +395,14 @@ func DeleteNode(nodePath string) error {
 			}
 		}
 
-		log.Debugf("Deleted %d directories and %d files from the database", dirCount, fileCount)
+		log.Debugf("Deleted %d directories and %d files from the database", totalDirCount, totalFileCount)
 		return nil
 	})
+}
+
+// DeleteNode 保持向后兼容性
+func DeleteNode(nodePath string) error {
+	return DeleteNodes([]string{nodePath})
 }
 
 func HasPath(path string) (bool, error) {

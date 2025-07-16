@@ -1,8 +1,7 @@
-package app
+package watcher
 
 import (
 	"fmt"
-	"local-mirror/app/model"
 	"local-mirror/app/tree"
 	"local-mirror/common/utils"
 	"local-mirror/config"
@@ -22,7 +21,7 @@ var (
 func eventFilter(event fsnotify.Event) {
 	fmt.Printf("Event: %s\n", event)
 	ignored := false
-	for _, v := range model.IgnoreFileList {
+	for _, v := range config.IgnoreFileList {
 		if strings.Contains(event.Name, v) {
 			ignored = true
 			break
