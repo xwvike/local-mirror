@@ -1,0 +1,21 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/build.ps1"
+			],
+			"command": "powershell.exe",
+			"group": "build",
+			"isBackground": false,
+			"label": "Build All Platforms",
+			"problemMatcher": [
+				"$go"
+			],
+			"type": "shell"
+		}
+	]
+}
