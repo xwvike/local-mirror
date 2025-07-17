@@ -22,13 +22,14 @@ var (
 )
 
 var (
-	Mode                    = flag.String("mode", "reality", "运行模式: reality 或 mirror")
-	LogLevel                = flag.String("logLevel", "error", "日志级别: debug, info, warn, error")
-	CoolDown                = flag.Int64("coolDown", 300, "冷静时间（秒）：服务端用于全局遍历目录树的间隔时间，客户端用于下载完成后的等待时间")
-	FileBufferSize          = flag.Uint64("fileBufferSize", 64*1024, "文件缓冲区大小，默认64KB")
-	MemFileThreshold        = flag.Uint64("memFileThreshold", 64*1024*10, "内存文件阈值，超过此大小则使用磁盘文件")
-	StartPath        string = ""         // 启动路径
-	InstanceID       uint32 = 0x00000000 // 实例ID
-	Version          uint16 = 0x0001     // 协议版本
-	StartTime        int64  = 0          // 启动时间
+	Mode                    = flag.String("mode", "reality", "Running mode: reality or mirror")
+	LogLevel                = flag.String("loglevel", "error", "Log level: debug, info, warn, error")
+	CoolDown                = flag.Int64("cooldown", 300, "Cool down time (seconds): Interval for global directory tree traversal on server, waiting time after download completion on client")
+	FileBufferSize          = flag.Uint64("filebuffersize", 64*1024, "File buffer size, default 64KB")
+	MemFileThreshold        = flag.Uint64("memfilethreshold", 64*1024*10, "Memory file threshold, files larger than this will use disk storage")
+	RealityIP               = flag.String("realityip", "", "Server IP address, default empty means auto-detect - (client only)")
+	StartPath        string = ""         // Start path
+	InstanceID       uint32 = 0x00000000 // Instance ID
+	Version          uint16 = 0x0001     // Protocol version
+	StartTime        int64  = 0          // Start time
 )

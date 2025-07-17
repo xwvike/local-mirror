@@ -101,7 +101,7 @@ func CreateLink() {
 		}
 	case "mirror":
 		log.Info("step 3 >> start file client")
-		fileClient := NewFileClient("10.10.0.5:52345")
+		fileClient := NewFileClient(*config.RealityIP + ":52345")
 		conn, err := fileClient.Connect()
 		if err != nil {
 			log.Fatal("connecting to file server fail:", err)
