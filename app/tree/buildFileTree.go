@@ -72,9 +72,9 @@ func BuildFileTree(path string) error {
 	nodeChan <- rootNode
 
 	// 使用WalkDir遍历
-	err = filepath.WalkDir(path, func(fullPath string, d fs.DirEntry, err error) error {
-		if err != nil {
-			log.Warnf("Error accessing path %s: %v", fullPath, err)
+	walkErr := filepath.WalkDir(path, func(fullPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			log.Warnf("Error accessing path %s: %v", fullPath, walkErr)
 			return nil
 		}
 
@@ -104,10 +104,7 @@ func BuildFileTree(path string) error {
 		uuid, _ := utils.RandomString(16)
 
 		// 计算父节点路径
-		parentPath := filepath.Dir(relPath)
-		if parentPath == "." {
-			parentPath = ""
-		}
+		parentPath := strings.Replace(filepath.Dir(fullPath), config.StartPath, ".", 1)
 
 		// 获取父节点ID
 		parentID := pathToID[parentPath]
@@ -133,6 +130,11 @@ func BuildFileTree(path string) error {
 
 	close(nodeChan)
 	wg.Wait()
+
+	if walkErr != nil {
+		log.Error("Error walking directory:", walkErr)
+		return walkErr
+	}
 
 	// 批量写入数据库
 	log.Infof("Collected %d nodes with concurrent processing, writing to database...", len(allNodes))
