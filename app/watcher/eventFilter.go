@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"fmt"
 	"local-mirror/app/tree"
 	"local-mirror/common/utils"
 	"local-mirror/config"
@@ -18,10 +19,12 @@ var (
 	create string = "CREATE"
 	remove string = "REMOVE"
 )
-var lastEventTime = make(map[string]time.Time)
 var deleteEventCache []string
+var deleteTimer *time.Timer
+var deleteTimerActive bool
 
 func eventFilter(event fsnotify.Event) {
+	fmt.Println("eventFilter:", event.Name, "event.Op:", event.Op)
 	ignored := false
 	for _, v := range config.IgnoreFileList {
 		if strings.Contains(event.Name, v) {
@@ -38,7 +41,6 @@ func eventFilter(event fsnotify.Event) {
 		log.Errorf("Incomplete directory tree, unable to find parent node for %s: %v", nodeDir, err)
 	} else {
 		opStr := event.Op.String()
-		lastEventTime[opStr] = time.Now()
 		osType := utils.BaseOSInfo().OS
 		switch osType {
 		case "darwin":
@@ -75,18 +77,23 @@ func eventFilter(event fsnotify.Event) {
 				log.Errorf("Failed to add node %s: %v", newLeaf.Name, err)
 				return
 			}
-			log.Debugf("Added node %s to the tree", newLeaf.Name)
 		case remove:
-			deleteEventCache = append(deleteEventCache, event.Name)
-			if time.Since(lastEventTime[opStr]) > 1*time.Second {
+			deleteEventCache = append(deleteEventCache, strings.Replace(event.Name, config.StartPath, ".", 1))
+			if deleteTimerActive {
+				deleteTimer.Stop()
+			}
+
+			deleteTimer = time.AfterFunc(1*time.Second, func() {
 				err := tree.DeleteNodes(deleteEventCache)
 				if err != nil {
-					log.Errorf("Failed to delete node %s: %v", event.Name, err)
-					return
+					log.Errorf("Failed to delete nodes: %v", err)
+				} else {
+					log.Debugf("Deleted nodes count %d", len(deleteEventCache))
+					deleteEventCache = slices.Delete(deleteEventCache, 0, len(deleteEventCache))
 				}
-				log.Debugf("Deleted nodes count %d", len(deleteEventCache))
-				deleteEventCache = slices.Delete(deleteEventCache, 0, len(deleteEventCache))
-			}
+				deleteTimerActive = false
+			})
+			deleteTimerActive = true
 		}
 	}
 }
