@@ -40,6 +40,7 @@ func BuildFileTree(path string) error {
 		Size:     uint64(rootInfo.Size()),
 		ModTime:  rootInfo.ModTime(),
 		Hash:     "",
+		Depth:    0, // 根节点深度为0
 	}
 
 	// 用于存储路径到节点ID的映射
@@ -118,6 +119,7 @@ func BuildFileTree(path string) error {
 			Size:     uint64(info.Size()),
 			ModTime:  info.ModTime(),
 			Hash:     "",
+			Depth:    strings.Count(relPath, string(filepath.Separator)),
 		}
 
 		// 记录路径到ID的映射

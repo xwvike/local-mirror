@@ -23,6 +23,7 @@ func App() {
 	defer _watcher.Close()
 	tree.BuildFileTree(config.StartPath)
 	watcher.WatchFile(_watcher)
+	watcher.InitWatcher(_watcher)
 	CreateLink()
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

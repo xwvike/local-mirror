@@ -40,6 +40,7 @@ type Node struct {
 	Size     uint64    `json:"size"`
 	ModTime  time.Time `json:"mod_time"`
 	Hash     string    `json:"hash"`
+	Depth    int       `json:"depth"` // 目录深度
 }
 
 type Children struct {
@@ -482,4 +483,25 @@ func GetNodeByPath(path string) (*Node, error) {
 		return nil, err
 	}
 	return &node, nil
+}
+
+func GetAllDirNodes() ([]*Node, error) {
+	var dirNodes []*Node
+	err := DB.View(func(tx *bolt.Tx) error {
+		nodesBucket := tx.Bucket([]byte("nodes"))
+		if nodesBucket == nil {
+			return fmt.Errorf("nodes bucket not found")
+		}
+		return nodesBucket.ForEach(func(k, v []byte) error {
+			var node Node
+			if err := json.Unmarshal(v, &node); err != nil {
+				return err
+			}
+			if node.IsDir {
+				dirNodes = append(dirNodes, &node)
+			}
+			return nil
+		})
+	})
+	return dirNodes, err
 }
