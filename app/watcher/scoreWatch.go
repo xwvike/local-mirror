@@ -178,7 +178,6 @@ func (sw *ScoreWatch) getPathHeuristics(path string) float64 {
 	return 1.0
 }
 
-// getTimeBasedScore 基于时间的评分
 func (sw *ScoreWatch) getTimeBasedScore(modTime time.Time) float64 {
 	now := time.Now()
 	hours := now.Sub(modTime).Hours()
@@ -196,6 +195,7 @@ func (sw *ScoreWatch) getTimeBasedScore(modTime time.Time) float64 {
 
 func (sw *ScoreWatch) intelligentScan() {
 	sw.performScan()
+	go sw.monitorTier2()
 	rollTicker := time.NewTicker(10 * time.Minute)
 	defer rollTicker.Stop()
 
@@ -205,7 +205,7 @@ func (sw *ScoreWatch) intelligentScan() {
 }
 
 func (sw *ScoreWatch) performScan() {
-	dirs := make([]*HeatScore, 0, len(sw.heatMap))
+	dirs := make([]*HeatScore, 0)
 	for _, heat := range sw.heatMap {
 		dirs = append(dirs, heat)
 	}
@@ -233,7 +233,7 @@ func (sw *ScoreWatch) performScan() {
 			log.Warnf("Unsupported OS %s, cannot determine used watches", utils.BaseOSInfo().OS)
 		}
 		if usedWatches < sw.tier1Limit {
-			sw.Watcher.Add(heat.Path)
+			sw.Watcher.Add(strings.Replace(heat.Path, ".", config.StartPath, 1))
 		} else {
 			sw.tier1 = dirs[:i]
 			dirs = dirs[i:]
@@ -241,37 +241,56 @@ func (sw *ScoreWatch) performScan() {
 			break
 		}
 	}
-	removedTier1 := make([]*HeatScore, 0)
-	oldTier1Map := make(map[string]struct{}, len(oldTier1))
+	sw.removeOldWatchers(oldTier1, sw.tier1)
+}
+
+func (sw *ScoreWatch) removeOldWatchers(oldTier1, newTier1 []*HeatScore) {
+	newTier1Map := make(map[string]struct{})
+	for _, heat := range newTier1 {
+		newTier1Map[heat.Path] = struct{}{}
+	}
+
 	for _, heat := range oldTier1 {
-		oldTier1Map[heat.Path] = struct{}{}
-	}
-	for _, heat := range sw.tier1 {
-		if _, existed := oldTier1Map[heat.Path]; !existed {
-			removedTier1 = append(removedTier1, heat)
-		}
-	}
-	if len(removedTier1) > 0 {
-		for _, heat := range removedTier1 {
-			if err := sw.Watcher.Remove(heat.Path); err != nil {
-				log.Warnf("Failed to remove path %s from watcher: %v", heat.Path, err)
+		if _, exists := newTier1Map[heat.Path]; !exists {
+			watchPath := strings.Replace(heat.Path, ".", config.StartPath, 1)
+			if err := sw.Watcher.Remove(watchPath); err != nil {
+				log.Warnf("Failed to remove path %s from watcher: %v", watchPath, err)
 			}
 		}
 	}
-	if len(sw.tier2) > 0 {
-		ticker := time.NewTicker(sw.tier2Interval)
-		defer ticker.Stop()
-		tier2i := 0
-		for range ticker.C {
-			if tier2i >= len(sw.tier2) {
-				tier2i = 0
+}
+
+func (sw *ScoreWatch) monitorTier2() {
+	if len(sw.tier2) == 0 {
+		return
+	}
+
+	ticker := time.NewTicker(sw.tier2Interval)
+	defer ticker.Stop()
+
+	tier2Index := 0
+
+	for {
+		select {
+		case <-ticker.C:
+			if len(sw.tier2) == 0 {
+				return
 			}
-			heat := sw.tier2[tier2i]
-			tier2i++
+
+			if tier2Index >= len(sw.tier2) {
+				tier2Index = 0
+			}
+
+			heat := sw.tier2[tier2Index]
+			tier2Index++
+
 			err := hasDirectoryChanged(heat.Path)
 			if err != nil {
-				log.Warn("Failed to check directory change:", err)
+				log.Warnf("Failed to check directory change for %s: %v", heat.Path, err)
 			}
+
+		case <-sw.ctx.Done():
+			return
 		}
 	}
 }
@@ -317,10 +336,10 @@ func hasDirectoryChanged(path string) error {
 }
 
 func (sw *ScoreWatch) handleEvents() {
+	fmt.Println("ScoreWatch: Starting to handle events...")
+	fmt.Println(sw.Watcher.WatchList())
 	for {
 		select {
-		case <-sw.ctx.Done():
-			return
 		case event, ok := <-sw.Watcher.Events:
 			if !ok {
 				return
@@ -330,7 +349,7 @@ func (sw *ScoreWatch) handleEvents() {
 			if !ok {
 				return
 			}
-			log.Errorf("Watcher error: %v", err)
+			log.Errorf("watcher error: %v", err)
 		}
 	}
 }
