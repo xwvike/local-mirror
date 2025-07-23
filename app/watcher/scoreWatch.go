@@ -115,6 +115,7 @@ func (sw *ScoreWatch) collectAll() error {
 	for _, dir := range allDir {
 		path := dir.Path
 		score := sw.calculateInitScore(path, dir)
+		fmt.Println("Initial score for path:", path, "is", score)
 		heatScore := &HeatScore{
 			Path:       path,
 			Deepth:     dir.Depth,
@@ -350,6 +351,39 @@ func (sw *ScoreWatch) handleEvents() {
 				return
 			}
 			log.Errorf("watcher error: %v", err)
+		}
+	}
+}
+
+func (sw *ScoreWatch) addHeat(path string, node *tree.Node) {
+	score := sw.calculateInitScore(path, node)
+	fmt.Println("Adding heat for path:", path, "with score:", score)
+	heatScore := &HeatScore{
+		Path:       path,
+		Deepth:     node.Depth,
+		Score:      score,
+		EventCount: 0,
+	}
+	sw.heatMap[path] = heatScore
+	sw.tier1 = append(sw.tier1, heatScore)
+	sw.Watcher.Add(strings.Replace(path, ".", config.StartPath, 1))
+}
+
+// 删除
+func (sw *ScoreWatch) removeHeat(path string) {
+	if _, exists := sw.heatMap[path]; exists {
+		delete(sw.heatMap, path)
+		for i, tierHeat := range sw.tier1 {
+			if tierHeat.Path == path {
+				sw.tier1 = append(sw.tier1[:i], sw.tier1[i+1:]...)
+				break
+			}
+		}
+		for i, tierHeat := range sw.tier2 {
+			if tierHeat.Path == path {
+				sw.tier2 = append(sw.tier2[:i], sw.tier2[i+1:]...)
+				break
+			}
 		}
 	}
 }

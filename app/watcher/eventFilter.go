@@ -72,6 +72,9 @@ func eventFilter(event fsnotify.Event) {
 				ModTime:  fileInfo.ModTime(),
 				Hash:     "",
 			}
+			if fileInfo.IsDir() {
+				GlobalScoreWatch.addHeat(newLeaf.Path, newLeaf)
+			}
 			nodes := []*tree.Node{newLeaf}
 			if err := tree.AddNodes(nodes); err != nil {
 				log.Errorf("Failed to add node %s: %v", newLeaf.Name, err)
@@ -79,6 +82,7 @@ func eventFilter(event fsnotify.Event) {
 			}
 		case remove:
 			deleteEventCache = append(deleteEventCache, strings.Replace(event.Name, config.StartPath, ".", 1))
+			GlobalScoreWatch.removeHeat(strings.Replace(event.Name, config.StartPath, ".", 1))
 			if deleteTimerActive {
 				deleteTimer.Stop()
 			}
