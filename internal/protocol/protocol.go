@@ -1,4 +1,4 @@
-package app
+package protocol
 
 import (
 	"bytes"
@@ -125,7 +125,7 @@ type HeartbeatPongMessage struct {
 	ServerID  uint32 // 服务端标识
 }
 
-func encodeHeader(header MessageHeader) []byte {
+func EncodeHeader(header MessageHeader) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, header.Magic)
 	binary.Write(buf, binary.BigEndian, header.Type)
@@ -134,7 +134,7 @@ func encodeHeader(header MessageHeader) []byte {
 	return buf.Bytes()
 }
 
-func decodeHeader(data []byte) (MessageHeader, error) {
+func DecodeHeader(data []byte) (MessageHeader, error) {
 	var header MessageHeader
 	buf := bytes.NewReader(data)
 
@@ -158,7 +158,7 @@ func decodeHeader(data []byte) (MessageHeader, error) {
 	return header, nil
 }
 
-func encodeHandshake(msg HandshakeMessage) []byte {
+func EncodeHandshake(msg HandshakeMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.Version)
 	binary.Write(buf, binary.BigEndian, msg.UUID)
@@ -166,7 +166,7 @@ func encodeHandshake(msg HandshakeMessage) []byte {
 	return buf.Bytes()
 }
 
-func decodeHandshake(data []byte) (HandshakeMessage, error) {
+func DecodeHandshake(data []byte) (HandshakeMessage, error) {
 	var msg HandshakeMessage
 	buf := bytes.NewReader(data)
 	if err := binary.Read(buf, binary.BigEndian, &msg.Version); err != nil {
@@ -181,7 +181,7 @@ func decodeHandshake(data []byte) (HandshakeMessage, error) {
 	return msg, nil
 }
 
-func encodeFileRequest(msg FileRequestMessage) []byte {
+func EncodeFileRequest(msg FileRequestMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.PathLength)
 	buf.Write([]byte(msg.FilePath))
@@ -189,7 +189,7 @@ func encodeFileRequest(msg FileRequestMessage) []byte {
 	return buf.Bytes()
 }
 
-func decodeFileRequest(data []byte) (FileRequestMessage, error) {
+func DecodeFileRequest(data []byte) (FileRequestMessage, error) {
 	var msg FileRequestMessage
 	buf := bytes.NewReader(data)
 	if err := binary.Read(buf, binary.BigEndian, &msg.PathLength); err != nil {
@@ -212,7 +212,7 @@ func decodeFileRequest(data []byte) (FileRequestMessage, error) {
 
 }
 
-func encodeFileResponse(msg FileResponseMessage) []byte {
+func EncodeFileResponse(msg FileResponseMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.Status)
 	buf.Write(msg.SessionID[:])
@@ -221,7 +221,7 @@ func encodeFileResponse(msg FileResponseMessage) []byte {
 	return buf.Bytes()
 }
 
-func decodeFileResponse(data []byte) (FileResponseMessage, error) {
+func DecodeFileResponse(data []byte) (FileResponseMessage, error) {
 	var msg FileResponseMessage
 	buf := bytes.NewReader(data)
 
@@ -248,7 +248,7 @@ func decodeFileResponse(data []byte) (FileResponseMessage, error) {
 	return msg, nil
 }
 
-func encodeFileData(msg FileDataMessage) []byte {
+func EncodeFileData(msg FileDataMessage) []byte {
 	buf := new(bytes.Buffer)
 	buf.Write(msg.SessionID[:])
 	binary.Write(buf, binary.BigEndian, msg.Offset)
@@ -257,7 +257,7 @@ func encodeFileData(msg FileDataMessage) []byte {
 	return buf.Bytes()
 }
 
-func decodeFileData(data []byte) (FileDataMessage, error) {
+func DecodeFileData(data []byte) (FileDataMessage, error) {
 	var msg FileDataMessage
 	buf := bytes.NewReader(data)
 
@@ -284,7 +284,7 @@ func decodeFileData(data []byte) (FileDataMessage, error) {
 	return msg, nil
 }
 
-func encodeAcknowlege(msg AcknowledgeMessage) []byte {
+func EncodeAcknowledge(msg AcknowledgeMessage) []byte {
 	buf := new(bytes.Buffer)
 	buf.Write(msg.SessionID[:])
 	binary.Write(buf, binary.BigEndian, msg.Offset)
@@ -292,7 +292,7 @@ func encodeAcknowlege(msg AcknowledgeMessage) []byte {
 	return buf.Bytes()
 }
 
-func decodeAcknowledge(data []byte) (AcknowledgeMessage, error) {
+func DecodeAcknowledge(data []byte) (AcknowledgeMessage, error) {
 	var msg AcknowledgeMessage
 	buf := bytes.NewReader(data)
 
@@ -310,14 +310,14 @@ func decodeAcknowledge(data []byte) (AcknowledgeMessage, error) {
 	return msg, nil
 }
 
-func encodeFileComplete(msg FileCompleteMessage) []byte {
+func EncodeFileComplete(msg FileCompleteMessage) []byte {
 	buf := new(bytes.Buffer)
 	buf.Write(msg.SessionID[:])
 	buf.Write(msg.FileHash[:])
 	return buf.Bytes()
 }
 
-func decodeFileComplete(data []byte) (FileCompleteMessage, error) {
+func DecodeFileComplete(data []byte) (FileCompleteMessage, error) {
 	var msg FileCompleteMessage
 	buf := bytes.NewReader(data)
 
@@ -330,7 +330,7 @@ func decodeFileComplete(data []byte) (FileCompleteMessage, error) {
 	return msg, nil
 }
 
-func encodeErrorMessage(msg ErrorMessage) []byte {
+func EncodeErrorMessage(msg ErrorMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.ErrorCode)
 	binary.Write(buf, binary.BigEndian, msg.MessageLen)
@@ -338,7 +338,7 @@ func encodeErrorMessage(msg ErrorMessage) []byte {
 	return buf.Bytes()
 }
 
-func decodeErrorMessage(data []byte) (ErrorMessage, error) {
+func DecodeErrorMessage(data []byte) (ErrorMessage, error) {
 	var msg ErrorMessage
 	buf := bytes.NewReader(data)
 
@@ -359,7 +359,7 @@ func decodeErrorMessage(data []byte) (ErrorMessage, error) {
 	return msg, nil
 }
 
-func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
+func SendMessage(conn net.Conn, msgType uint16, body []byte) error {
 	header := MessageHeader{
 		Magic:        MagicNumber,
 		Type:         msgType,
@@ -367,7 +367,7 @@ func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
 		ReservedWord: 0,
 	}
 
-	headerBytes := encodeHeader(header)
+	headerBytes := EncodeHeader(header)
 	if _, err := conn.Write(headerBytes); err != nil {
 		return err
 	}
@@ -378,13 +378,13 @@ func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
 	return nil
 }
 
-func receiveMessage(conn net.Conn) (uint16, []byte, error) {
+func ReceiveMessage(conn net.Conn) (uint16, []byte, error) {
 	headerBytes := make([]byte, HeaderSize)
 	if _, err := io.ReadFull(conn, headerBytes); err != nil {
 		return 0, nil, err
 	}
 
-	header, err := decodeHeader(headerBytes)
+	header, err := DecodeHeader(headerBytes)
 	if err != nil {
 		remoteAddr := conn.RemoteAddr().String()
 		_error := fmt.Errorf("error decoding message header from %s: %w", remoteAddr, err)
@@ -401,14 +401,14 @@ func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 	return header.Type, bodyBytes, nil
 }
 
-func encodeTreeRequest(msg TreeRequestMessage) []byte {
+func EncodeTreeRequest(msg TreeRequestMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.PathLength)
 	buf.Write([]byte(msg.RootPath))
 	return buf.Bytes()
 }
 
-func decodeTreeRequest(data []byte) (TreeRequestMessage, error) {
+func DecodeTreeRequest(data []byte) (TreeRequestMessage, error) {
 	var msg TreeRequestMessage
 	buf := bytes.NewReader(data)
 
@@ -425,7 +425,7 @@ func decodeTreeRequest(data []byte) (TreeRequestMessage, error) {
 	return msg, nil
 }
 
-func encodeTreeResponse(msg TreeResponseMessage) []byte {
+func EncodeTreeResponse(msg TreeResponseMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.Status)
 	pathBytes := []byte(msg.RootPath)
@@ -436,7 +436,7 @@ func encodeTreeResponse(msg TreeResponseMessage) []byte {
 	return buf.Bytes()
 }
 
-func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
+func DecodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 	var msg TreeResponseMessage
 	buf := bytes.NewReader(data)
 
@@ -472,7 +472,7 @@ func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 	return msg, nil
 }
 
-func encodeHeartbeatPing(msg HeartbeatPingMessage) []byte {
+func EncodeHeartbeatPing(msg HeartbeatPingMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.Version)
 	binary.Write(buf, binary.BigEndian, msg.Timestamp)
@@ -480,7 +480,7 @@ func encodeHeartbeatPing(msg HeartbeatPingMessage) []byte {
 	return buf.Bytes()
 }
 
-func decodeHeartbeatPing(data []byte) (HeartbeatPingMessage, error) {
+func DecodeHeartbeatPing(data []byte) (HeartbeatPingMessage, error) {
 	var msg HeartbeatPingMessage
 	buf := bytes.NewReader(data)
 
@@ -499,7 +499,7 @@ func decodeHeartbeatPing(data []byte) (HeartbeatPingMessage, error) {
 	return msg, nil
 }
 
-func encodeHeartbeatPong(msg HeartbeatPongMessage) []byte {
+func EncodeHeartbeatPong(msg HeartbeatPongMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.Version)
 	binary.Write(buf, binary.BigEndian, msg.Timestamp)
@@ -507,7 +507,7 @@ func encodeHeartbeatPong(msg HeartbeatPongMessage) []byte {
 	return buf.Bytes()
 }
 
-func decodeHeartbeatPong(data []byte) (HeartbeatPongMessage, error) {
+func DecodeHeartbeatPong(data []byte) (HeartbeatPongMessage, error) {
 	var msg HeartbeatPongMessage
 	buf := bytes.NewReader(data)
 

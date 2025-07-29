@@ -3,21 +3,22 @@ package utils
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"github.com/zeebo/blake3"
 	"io"
 	"os"
 	"runtime"
+
+	"github.com/zeebo/blake3"
 )
 
 type OSInfo struct {
-	hostname     string
+	Hostname     string
 	UserHomeDir  string
 	OS           string
 	Architecture string
 	NumCPU       int
 }
 
-func BaseOSInfo() *OSInfo {
+func GetOSInfo() *OSInfo {
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "unknown"
@@ -27,7 +28,7 @@ func BaseOSInfo() *OSInfo {
 		userHomeDir = "unknown"
 	}
 	return &OSInfo{
-		hostname:     hostname,
+		Hostname:     hostname,
 		UserHomeDir:  userHomeDir,
 		OS:           runtime.GOOS,
 		Architecture: runtime.GOARCH,
@@ -35,7 +36,7 @@ func BaseOSInfo() *OSInfo {
 	}
 }
 
-func GenerateRandomNum() uint32 {
+func GenerateRandomUint32() uint32 {
 	b := make([]byte, 4)
 	_, err := rand.Read(b)
 	if err != nil {
@@ -44,9 +45,9 @@ func GenerateRandomNum() uint32 {
 	return binary.BigEndian.Uint32(b)
 }
 
-func CalcBlake3(path string) ([32]byte, error) {
+func CalculateBlake3Hash(filePath string) ([32]byte, error) {
 	var result [32]byte
-	f, err := os.Open(path)
+	f, err := os.Open(filePath)
 	if err != nil {
 		return result, err
 	}
@@ -61,7 +62,7 @@ func CalcBlake3(path string) ([32]byte, error) {
 	return result, nil
 }
 
-func RandomString(length int) (string, error) {
+func GenerateRandomString(length int) (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, length)
 	_, err := rand.Read(b)

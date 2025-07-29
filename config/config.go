@@ -11,7 +11,7 @@ const (
 )
 
 var (
-	IgnoreFileList = []string{"Library", ".gitingore", ".git", "node_modules", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log", ".local-mirror.db"}
+	IgnoreFileList = []string{"Library", ".gitignore", ".git", "node_modules", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log", ".local-mirror.db"}
 )
 
 var (

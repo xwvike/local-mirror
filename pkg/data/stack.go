@@ -29,30 +29,14 @@ func (s *Stack[T]) Pop() (T, bool) {
 	return value, true
 }
 
-func (s *Stack[T]) Peek() (T, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.data) == 0 {
-		var zero T
-		return zero, false
-	}
-	return s.data[len(s.data)-1], true
-}
-
-func (s *Stack[T]) IsEmpty() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.data) == 0
-}
-
 func (s *Stack[T]) Size() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.data)
 }
 
-func (s *Stack[T]) Clear() {
+func (s *Stack[T]) IsEmpty() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data = make([]T, 0)
+	return len(s.data) == 0
 }

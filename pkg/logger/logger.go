@@ -34,32 +34,30 @@ func getLogDir() string {
 	return filepath.Join(".", "logs")
 }
 
-func InitLogger() {
-
-	if err := os.MkdirAll(getLogDir(), 0755); err != nil {
-		log.Fatalf("创建日志目录失败: %v", err)
-		return
+func Initialize() {
+	levelMap := map[string]log.Level{
+		"debug": log.DebugLevel,
+		"info":  log.InfoLevel,
+		"warn":  log.WarnLevel,
+		"error": log.ErrorLevel,
 	}
-	logPath := filepath.Join(getLogDir(), "app.log")
-	fmt.Println("日志文件路径:", logPath)
 
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	level, exists := levelMap[*config.LogLevel]
+	if !exists {
+		level = log.ErrorLevel
+	}
+
+	log.SetLevel(level)
+	log.SetFormatter(&SimpleFormatter{})
+
+	logDir := getLogDir()
+	os.MkdirAll(logDir, 0755)
+
+	logFile := filepath.Join(logDir, "app.log")
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err == nil {
 		log.SetOutput(file)
 	} else {
-		log.Info("日志文件打开失败，使用默认stderr")
-	}
-	log.SetFormatter(&SimpleFormatter{})
-	switch *config.LogLevel {
-	case "debug":
-		log.SetLevel(log.DebugLevel)
-	case "info":
-		log.SetLevel(log.InfoLevel)
-	case "warn":
-		log.SetLevel(log.WarnLevel)
-	case "error":
-		log.SetLevel(log.ErrorLevel)
-	default:
-		log.SetLevel(log.ErrorLevel)
+		log.Warn("Failed to log to file, using default stderr")
 	}
 }

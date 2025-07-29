@@ -1,9 +1,8 @@
 package watcher
 
 import (
-	"local-mirror/app/tree"
-	"local-mirror/common/utils"
 	"local-mirror/config"
+	"local-mirror/pkg/utils"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -25,8 +24,8 @@ type DynamicWatcher struct {
 
 func NewDynamicWatcher(watcher *fsnotify.Watcher, waitScan time.Duration) (*DynamicWatcher, error) {
 	var _maxWatches uint16 = 10240
-	os := utils.BaseOSInfo().OS
-	switch os {
+	osInfo := utils.GetOSInfo()
+	switch osInfo.OS {
 	case "darwin":
 		maxfilesperprocCmd := exec.Command("sysctl", "-n", "kern.maxfilesperproc")
 		maxfilesCmd := exec.Command("sysctl", "-n", "kern.maxfiles")
@@ -48,68 +47,38 @@ func NewDynamicWatcher(watcher *fsnotify.Watcher, waitScan time.Duration) (*Dyna
 		maxWatchesOutput, err := maxWatchesCmd.Output()
 		if err != nil {
 			log.Error("Failed to get max user watches:", err)
-			_maxWatches = 1024
+			_maxWatches = 8192
 		} else {
 			maxWatchesInt, err := strconv.ParseUint(strings.TrimSpace(string(maxWatchesOutput)), 10, 16)
 			if err != nil {
-				log.Error("Failed to parse max user watches:", err)
-				_maxWatches = 1024
+				log.Error("Error parsing max user watches:", err)
+				_maxWatches = 8192
 			} else {
 				_maxWatches = uint16(maxWatchesInt)
 			}
 		}
-	case "windows":
-		// Windows does not have a direct equivalent, using a default value
-		_maxWatches = 10240
 	default:
-		log.Warnf("Unsupported OS %s, using default max watchers value", os)
 		_maxWatches = 1024
 	}
+
+	log.Infof("Maximum file watchers: %d", _maxWatches)
+
 	return &DynamicWatcher{
 		watcher:     watcher,
 		watchers:    make([]string, 0),
-		maxWatchers: _maxWatches / 2,
+		maxWatchers: _maxWatches,
 		usedWatches: 0,
 		waitScan:    waitScan,
-		mu:          sync.RWMutex{},
 	}, nil
 }
-func (dw *DynamicWatcher) Start() {
-	dw.mu.Lock()
-	defer dw.mu.Unlock()
-	rootNodes, err := tree.GetDirContents(".")
-	if err != nil {
-		log.Error("Failed to get directory contents:", err)
-		return
-	}
-	osType := utils.BaseOSInfo().OS
-	switch osType {
-	case "darwin":
-		if len(rootNodes)+1+int(dw.usedWatches) > int(dw.maxWatchers) {
-			log.Warnf("Too many files to watch, max is %d, current is %d", dw.maxWatchers, len(rootNodes)+1+int(dw.usedWatches))
-		} else {
-			dw.watcher.Add(config.StartPath)
-			dw.usedWatches = uint16(len(rootNodes)+1) + dw.usedWatches
-		}
-	case "linux":
-		dw.watcher.Add(config.StartPath)
-		dw.usedWatches++
-	case "windows":
-		dw.watcher.Add(config.StartPath)
-		dw.usedWatches++
-	default:
-		log.Warnf("Unsupported OS %s, cannot add root directory to watcher", osType)
-	}
-}
 
-func WatchFile(watcher *fsnotify.Watcher) {
-	log.Info("Starting file watcher...")
-	dynamicWatcher, err := NewDynamicWatcher(watcher, 1*time.Second)
+func Initialize(watcher *fsnotify.Watcher) {
+	dynamicWatcher, err := NewDynamicWatcher(watcher, 5*time.Second)
 	if err != nil {
 		log.Error("Failed to create dynamic watcher:", err)
+		return
 	}
-	dynamicWatcher.Start()
-	watcher.Add(config.StartPath + "/test")
+
 	go func() {
 		for {
 			select {
@@ -122,8 +91,39 @@ func WatchFile(watcher *fsnotify.Watcher) {
 				if !ok {
 					return
 				}
-				log.Errorf("watcher error: %v", err)
+				log.Error("Watcher error:", err)
 			}
 		}
 	}()
+
+	dynamicWatcher.addWatchesToDirectories()
+}
+
+func (dw *DynamicWatcher) addWatchesToDirectories() {
+	ticker := time.NewTicker(dw.waitScan)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		dw.scanAndAddWatches()
+	}
+}
+
+func (dw *DynamicWatcher) scanAndAddWatches() {
+	// 实现扫描和添加监视逻辑
+	log.Debug("Scanning for new directories to watch...")
+}
+
+func eventFilter(event fsnotify.Event) {
+	log.Debugf("File event: %s %s", event.Name, event.Op.String())
+
+	// 检查是否在忽略列表中
+	for _, ignorePattern := range config.IgnoreFileList {
+		if strings.Contains(event.Name, ignorePattern) {
+			log.Debugf("Ignoring file event for: %s", event.Name)
+			return
+		}
+	}
+
+	// 处理文件系统事件
+	// 这里可以添加具体的事件处理逻辑
 }
