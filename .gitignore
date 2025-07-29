@@ -3,3 +3,5 @@
 dist/
 *.db
 test/
+.DS_Store
+**/.DS_Store
