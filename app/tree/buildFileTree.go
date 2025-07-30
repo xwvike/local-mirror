@@ -2,8 +2,8 @@ package tree
 
 import (
 	"io/fs"
-	"local-mirror/common/utils"
 	"local-mirror/config"
+	"local-mirror/pkg/utils"
 	"os"
 	"path/filepath"
 	"runtime"

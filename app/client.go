@@ -3,8 +3,8 @@ package app
 import (
 	"bytes"
 	"fmt"
-	"local-mirror/common/utils"
 	"local-mirror/config"
+	"local-mirror/pkg/utils"
 	"net"
 	"os"
 	"path/filepath"

@@ -1,4 +1,4 @@
-package data
+package stack
 
 import "sync"
 

@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"local-mirror/app/tree"
-	"local-mirror/common/data"
-	"local-mirror/common/jsonutil"
+	"local-mirror/pkg/diff"
+	"local-mirror/pkg/stack"
 )
 
 var (
-	diffQueue = data.NewStack[jsonutil.DiffResult]()
+	diffQueue = stack.NewStack[diff.DiffResult]()
 )
 
 func Diff(realityTree []byte, path string) error {
@@ -19,7 +19,7 @@ func Diff(realityTree []byte, path string) error {
 	}
 	var realityTreeData []tree.Node
 	json.Unmarshal(realityTree, &realityTreeData)
-	diffs := jsonutil.FindDifferences(realityTreeData, localTree)
+	diffs := diff.FindDifferences(realityTreeData, localTree)
 	for _, diff := range diffs {
 		diffQueue.Push(diff)
 	}

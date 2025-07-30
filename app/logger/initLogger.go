@@ -5,7 +5,6 @@ import (
 	"local-mirror/config"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	log "github.com/sirupsen/logrus"
 )

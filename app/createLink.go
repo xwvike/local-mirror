@@ -3,17 +3,17 @@ package app
 import (
 	log "github.com/sirupsen/logrus"
 	"local-mirror/app/tree"
-	"local-mirror/common/data"
-	"local-mirror/common/jsonutil"
-	"local-mirror/common/utils"
 	"local-mirror/config"
+	"local-mirror/pkg/diff"
+	"local-mirror/pkg/stack"
+	"local-mirror/pkg/utils"
 	"net"
 	"os"
 	"path/filepath"
 	"time"
 )
 
-var NextLevel = data.NewStack[jsonutil.DiffResult]()
+var NextLevel = stack.NewStack[diff.DiffResult]()
 
 func getDirectory(conn net.Conn, fileClient *fileClient, path string) {
 	treejson, err := fileClient.GetRealityTree(conn, path)
@@ -106,7 +106,7 @@ func CreateLink() {
 		if err != nil {
 			log.Fatal("connecting to file server fail:", err)
 		}
-		rootNode := jsonutil.DiffResult{
+		rootNode := diff.DiffResult{
 			Path:   ".",
 			IsDir:  true,
 			Action: "create",
