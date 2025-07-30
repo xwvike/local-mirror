@@ -50,7 +50,7 @@ type Children struct {
 
 func InitDB() {
 	var err error
-	DB, err = bolt.Open(".local-mirror.db", 0600, nil)
+	DB, err = bolt.Open("./.local-mirror/cache.db", 0600, nil)
 	if err != nil {
 		log.Error("Failed to open database:", err)
 		os.Exit(1)

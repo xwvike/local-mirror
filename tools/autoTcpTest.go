@@ -87,12 +87,12 @@ func transferBinary() error {
 }
 
 func startRemoteServer() error {
-	logFile, err := os.Create("client.log")
+	logFile, err := os.Create("./local-mirror/client.log")
 	if err != nil {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}
 	// 使用 SSH 远程启动服务器，添加密钥参数
-	sshCmd := fmt.Sprintf(" cd ./test && chmod +x %s && nohup %s -mode=mirror -coolDown=30 -logLevel=debug > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
+	sshCmd := fmt.Sprintf(" cd ./test && chmod +x %s && nohup %s -mode=mirror -coolDown=30 -loglevel=debug > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
 	fmt.Println("sshCmd:", sshCmd)
 	cmd := exec.Command("ssh", "-p", remotePort, "-i", sshKeyPath, fmt.Sprintf("%s@%s", remoteUser, remoteHost), sshCmd)
 	cmd.Stdout = logFile
@@ -102,11 +102,11 @@ func startRemoteServer() error {
 
 func runLocalClient() error {
 	// 运行本地客户端测试
-	logFile, err := os.Create("server.log")
+	logFile, err := os.Create("./local-mirror/server.log")
 	if err != nil {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}
-	cmd := exec.Command("go", "run", "./cmd/local-mirror/main.go", "-mode=reality", "-logLevel=debug", "-coolDown=30")
+	cmd := exec.Command("go", "run", "./cmd/local-mirror/main.go", "-mode=reality", "-loglevel=debug", "-coolDown=30")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	return cmd.Start()

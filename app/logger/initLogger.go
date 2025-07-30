@@ -19,19 +19,7 @@ func (f *SimpleFormatter) Format(entry *log.Entry) ([]byte, error) {
 }
 
 func getLogDir() string {
-	switch runtime.GOOS {
-	case "windows":
-		return os.Getenv("USERPROFILE") + "\\AppData\\Local\\local-mirror\\logs"
-	case "linux", "freebsd":
-		return os.Getenv("HOME") + "/.local-mirror/logs"
-	case "darwin":
-		return os.Getenv("HOME") + "/Library/Logs/local-mirror"
-	}
-	executable, err := os.Executable()
-	if err == nil {
-		return filepath.Join(filepath.Dir(executable), "logs")
-	}
-	return filepath.Join(".", "logs")
+	return "./.local-mirror/logs"
 }
 
 func InitLogger() {
@@ -40,7 +28,7 @@ func InitLogger() {
 		log.Fatalf("创建日志目录失败: %v", err)
 		return
 	}
-	logPath := filepath.Join(getLogDir(), "app.log")
+	logPath := filepath.Join(getLogDir(), "error.log")
 	fmt.Println("日志文件路径:", logPath)
 
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
