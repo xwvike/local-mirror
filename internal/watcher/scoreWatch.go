@@ -3,8 +3,8 @@ package watcher
 import (
 	"context"
 	"fmt"
-	"local-mirror/app/tree"
 	"local-mirror/config"
+	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"math"
 	"os"

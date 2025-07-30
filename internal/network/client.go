@@ -1,4 +1,4 @@
-package app
+package network
 
 import (
 	"bytes"
@@ -13,18 +13,18 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type fileClient struct {
+type FileClient struct {
 	serverAddr string
 }
 
-func NewFileClient(serverAddr string) *fileClient {
+func NewFileClient(serverAddr string) *FileClient {
 	log.Info("Creating file client, server address:", serverAddr)
-	return &fileClient{
+	return &FileClient{
 		serverAddr: serverAddr,
 	}
 }
 
-func (c *fileClient) Connect() (net.Conn, error) {
+func (c *FileClient) Connect() (net.Conn, error) {
 	conn, err := net.Dial("tcp", c.serverAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to server %s: %w", c.serverAddr, err)
@@ -62,7 +62,7 @@ func (c *fileClient) Connect() (net.Conn, error) {
 	return conn, nil
 }
 
-func (c *fileClient) Ping(conn net.Conn) error {
+func (c *FileClient) Ping(conn net.Conn) error {
 	pingMessage := HeartbeatPingMessage{
 		Version:   config.Version,
 		Timestamp: time.Now().Unix(),
@@ -103,7 +103,7 @@ func (c *fileClient) Ping(conn net.Conn) error {
 	return nil
 }
 
-func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, error) {
+func (c *FileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, error) {
 	request := TreeRequestMessage{
 		PathLength: uint16(len(rootPath)),
 		RootPath:   rootPath,
@@ -149,7 +149,7 @@ func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, err
 	return treeResponse.Data, nil
 }
 
-func (c *fileClient) DownloadFile(conn net.Conn, filePath string) (string, error) {
+func (c *FileClient) DownloadFile(conn net.Conn, filePath string) (string, error) {
 	requestFile := FileRequestMessage{
 		PathLength: uint16(len(filePath)),
 		FilePath:   filePath,

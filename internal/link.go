@@ -2,9 +2,9 @@ package app
 
 import (
 	log "github.com/sirupsen/logrus"
-	"local-mirror/app/tree"
 	"local-mirror/config"
-	"local-mirror/pkg/diff"
+	"local-mirror/internal/network"
+	"local-mirror/internal/tree"
 	"local-mirror/pkg/stack"
 	"local-mirror/pkg/utils"
 	"net"
@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-var NextLevel = stack.NewStack[diff.DiffResult]()
+var NextLevel = stack.NewStack[DiffResult]()
 
-func getDirectory(conn net.Conn, fileClient *fileClient, path string) {
+func getDirectory(conn net.Conn, fileClient *network.FileClient, path string) {
 	treejson, err := fileClient.GetRealityTree(conn, path)
 	if err != nil {
 		log.Errorf("get reality tree for path %s: %v", path, err)
@@ -94,19 +94,19 @@ func CreateLink() {
 	switch *config.Mode {
 	case "reality":
 		log.Info("step 3 >> start file server")
-		fileServer := NewFileServer("0.0.0.0:52345")
+		fileServer := network.NewFileServer("0.0.0.0:52345")
 		if err := fileServer.Start(); err != nil {
 			log.Fatal("Error starting file server:", err)
 			os.Exit(1)
 		}
 	case "mirror":
 		log.Info("step 3 >> start file client")
-		fileClient := NewFileClient(*config.RealityIP + ":52345")
+		fileClient := network.NewFileClient(*config.RealityIP + ":52345")
 		conn, err := fileClient.Connect()
 		if err != nil {
 			log.Fatal("connecting to file server fail:", err)
 		}
-		rootNode := diff.DiffResult{
+		rootNode := DiffResult{
 			Path:   ".",
 			IsDir:  true,
 			Action: "create",

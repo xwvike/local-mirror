@@ -2,9 +2,9 @@ package app
 
 import (
 	"fmt"
-	"local-mirror/app/tree"
-	"local-mirror/app/watcher"
 	"local-mirror/config"
+	"local-mirror/internal/tree"
+	"local-mirror/internal/watcher"
 	"os"
 	"os/signal"
 	"syscall"

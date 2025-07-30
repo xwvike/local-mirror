@@ -3,10 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
-	"local-mirror/app"
-	"local-mirror/app/logger"
-	"local-mirror/app/tree"
 	"local-mirror/config"
+	"local-mirror/internal"
+	"local-mirror/internal/logger"
+	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"net/http"
 	_ "net/http/pprof"

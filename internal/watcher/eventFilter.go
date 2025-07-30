@@ -2,8 +2,8 @@ package watcher
 
 import (
 	"fmt"
-	"local-mirror/app/tree"
 	"local-mirror/config"
+	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"os"
 	"path/filepath"

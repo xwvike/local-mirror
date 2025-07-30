@@ -1,7 +1,10 @@
-package diff
+package app
 
 import (
-	"local-mirror/app/tree"
+	"encoding/json"
+	"fmt"
+	"local-mirror/internal/tree"
+	"local-mirror/pkg/stack"
 )
 
 type DiffResult struct {
@@ -12,6 +15,10 @@ type DiffResult struct {
 	Size     uint64 `json:"size"`      // 文件大小
 	ParentID string `json:"parent_id"` // 父目录ID
 }
+
+var (
+	diffQueue = stack.NewStack[DiffResult]()
+)
 
 // findDifferences 比较两个树结构，以a为基准
 func FindDifferences(a, b []tree.Node) []DiffResult {
@@ -70,4 +77,18 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 	}
 
 	return diffs
+}
+
+func Diff(realityTree []byte, path string) error {
+	localTree, err := tree.GetDirContents(path)
+	if err != nil {
+		return fmt.Errorf("failed to get local tree contents: %w", err)
+	}
+	var realityTreeData []tree.Node
+	json.Unmarshal(realityTree, &realityTreeData)
+	diffs := FindDifferences(realityTreeData, localTree)
+	for _, diff := range diffs {
+		diffQueue.Push(diff)
+	}
+	return nil
 }
