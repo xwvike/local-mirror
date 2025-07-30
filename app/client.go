@@ -1,10 +1,10 @@
-package client
+package app
 
 import (
 	"bytes"
 	"fmt"
+	"local-mirror/common/utils"
 	"local-mirror/config"
-	"local-mirror/internal/protocol"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,45 +13,45 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type FileClient struct {
+type fileClient struct {
 	serverAddr string
 }
 
-func NewFileClient(serverAddr string) *FileClient {
+func NewFileClient(serverAddr string) *fileClient {
 	log.Info("Creating file client, server address:", serverAddr)
-	return &FileClient{
+	return &fileClient{
 		serverAddr: serverAddr,
 	}
 }
 
-func (c *FileClient) Connect() (net.Conn, error) {
+func (c *fileClient) Connect() (net.Conn, error) {
 	conn, err := net.Dial("tcp", c.serverAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to server %s: %w", c.serverAddr, err)
 	}
 	log.Infof("Connected to server %s", c.serverAddr)
 
-	handshakeMsg := protocol.HandshakeMessage{
+	handshakeMsg := HandshakeMessage{
 		Version: config.Version,
 		UUID:    config.InstanceID,
 		Role:    config.ModeMap[*config.Mode],
 	}
-	handshakeBytes := protocol.EncodeHandshake(handshakeMsg)
+	handshakeBytes := encodeHandshake(handshakeMsg)
 
-	if err := protocol.SendMessage(conn, protocol.MsgTypeHandshake, handshakeBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
 		return nil, fmt.Errorf("failed to send handshake message: %w", err)
 	}
-	msgType, bodyBytes, err := protocol.ReceiveMessage(conn)
+	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to receive handshake response: %w", err)
 	}
 
-	if msgType != protocol.MsgTypeHandshake {
+	if msgType != MsgTypeHandshake {
 		conn.Close()
 		return nil, fmt.Errorf("invalid handshake response message type, got %d", msgType)
 	}
-	handshakeResponse, err := protocol.DecodeHandshake(bodyBytes)
+	handshakeResponse, err := decodeHandshake(bodyBytes)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to decode handshake response: %w", err)
@@ -62,23 +62,23 @@ func (c *FileClient) Connect() (net.Conn, error) {
 	return conn, nil
 }
 
-func (c *FileClient) Ping(conn net.Conn) error {
-	pingMessage := protocol.HeartbeatPingMessage{
+func (c *fileClient) Ping(conn net.Conn) error {
+	pingMessage := HeartbeatPingMessage{
 		Version:   config.Version,
 		Timestamp: time.Now().Unix(),
 		ClientID:  config.InstanceID,
 	}
-	pingBytes := protocol.EncodeHeartbeatPing(pingMessage)
-	if err := protocol.SendMessage(conn, protocol.MsgTypeHeartbeatPing, pingBytes); err != nil {
+	pingBytes := encodeHeartbeatPing(pingMessage)
+	if err := sendMessage(conn, MsgTypeHeartbeatPing, pingBytes); err != nil {
 		log.Error("Error sending ping message:", err)
 	}
-	msgType, bodyBytes, err := protocol.ReceiveMessage(conn)
+	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
 		log.Error("Error receiving pong:", err)
 		return err
 	}
-	if msgType == protocol.MsgTypeError {
-		errorMsg, err := protocol.DecodeErrorMessage(bodyBytes)
+	if msgType == MsgTypeError {
+		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
 			log.Error("Error decoding error message:", err)
 			return err
@@ -87,12 +87,12 @@ func (c *FileClient) Ping(conn net.Conn) error {
 		log.Error(newError)
 		return newError
 	}
-	if msgType != protocol.MsgTypeHeartbeatPong {
+	if msgType != MsgTypeHeartbeatPong {
 		newError := fmt.Errorf("invalid pong message type, got %d", msgType)
 		log.Error(newError)
 		return newError
 	}
-	pongMessage, err := protocol.DecodeHeartbeatPong(bodyBytes)
+	pongMessage, err := decodeHeartbeatPong(bodyBytes)
 	if err != nil {
 		log.Error("Error decoding pong message:", err)
 	}
@@ -103,39 +103,38 @@ func (c *FileClient) Ping(conn net.Conn) error {
 	return nil
 }
 
-func (c *FileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, error) {
-	request := protocol.TreeRequestMessage{
+func (c *fileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, error) {
+	request := TreeRequestMessage{
 		PathLength: uint16(len(rootPath)),
 		RootPath:   rootPath,
 	}
-	requestBytes := protocol.EncodeTreeRequest(request)
+	requestBytes := encodeTreeRequest(request)
 	serverAddr := conn.RemoteAddr().String()
-	if err := protocol.SendMessage(conn, protocol.MsgTypeTreeRequest, requestBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeTreeRequest, requestBytes); err != nil {
 		return nil, fmt.Errorf("failed to send tree request: %w", err)
 	}
 	log.Debugf("Sent tree request to %s for path: %s", serverAddr, rootPath)
-	msgType, bodyBytes, err := protocol.ReceiveMessage(conn)
+	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive tree response: %w", err)
 	}
-	if msgType == protocol.MsgTypeError {
-		errorMsg, err := protocol.DecodeErrorMessage(bodyBytes)
+	if msgType == MsgTypeError {
+		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode error message: %w", err)
 		}
 
 		return nil, fmt.Errorf("[server error]: %s", errorMsg.ErrorMessage)
 	}
-
-	if msgType != protocol.MsgTypeTreeResponse {
+	if msgType != MsgTypeTreeResponse {
 		return nil, fmt.Errorf("invalid tree response message type, got %d", msgType)
 	}
-	treeResponse, err := protocol.DecodeTreeResponse(bodyBytes)
+	treeResponse, err := decodeTreeResponse(bodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode tree response: %w", err)
 	}
 
-	if treeResponse.Status != protocol.StatusOK {
+	if treeResponse.Status != StatusOK {
 		return nil, fmt.Errorf("tree request failed, status code: %d", treeResponse.Status)
 	}
 	if len(treeResponse.Data) == 0 {
@@ -150,38 +149,38 @@ func (c *FileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, err
 	return treeResponse.Data, nil
 }
 
-func (c *FileClient) DownloadFile(conn net.Conn, filePath string) (string, error) {
-	requestFile := protocol.FileRequestMessage{
+func (c *fileClient) DownloadFile(conn net.Conn, filePath string) (string, error) {
+	requestFile := FileRequestMessage{
 		PathLength: uint16(len(filePath)),
 		FilePath:   filePath,
 		Offset:     0,
 	}
-	requestBytes := protocol.EncodeFileRequest(requestFile)
-	if err := protocol.SendMessage(conn, protocol.MsgTypeFileRequest, requestBytes); err != nil {
+	requestBytes := encodeFileRequest(requestFile)
+	if err := sendMessage(conn, MsgTypeFileRequest, requestBytes); err != nil {
 		return "", fmt.Errorf("failed to send file request: %w", err)
 	}
 
-	msgType, bodyBytes, err := protocol.ReceiveMessage(conn)
+	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
 		return "", fmt.Errorf("failed to receive file response: %w", err)
 	}
 
-	if msgType == protocol.MsgTypeError {
-		errorMsg, err := protocol.DecodeErrorMessage(bodyBytes)
+	if msgType == MsgTypeError {
+		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
 			return "", fmt.Errorf("failed to decode error message: %w", err)
 		}
 		return "", fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
 	}
 
-	if msgType != protocol.MsgTypeFileResponse {
+	if msgType != MsgTypeFileResponse {
 		return "", fmt.Errorf("invalid file response message type, got %d", msgType)
 	}
-	fileResponse, err := protocol.DecodeFileResponse(bodyBytes)
+	fileResponse, err := decodeFileResponse(bodyBytes)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode file response: %w", err)
 	}
-	if fileResponse.Status != protocol.StatusOK {
+	if fileResponse.Status != StatusOK {
 		return "", fmt.Errorf("file transfer rejected, status code: %d", fileResponse.Status)
 	}
 
@@ -200,46 +199,44 @@ func (c *FileClient) DownloadFile(conn net.Conn, filePath string) (string, error
 	cacheFile := new(bytes.Buffer)
 
 	for {
-		msgType, bodyBytes, err := protocol.ReceiveMessage(conn)
+		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
 			return "", fmt.Errorf("error receiving file data: %w", err)
 		}
-
 		switch msgType {
-		case protocol.MsgTypeFileData:
-			dataMsg, err := protocol.DecodeFileData(bodyBytes)
+		case MsgTypeFileData:
+			dataMsg, err := decodeFileData(bodyBytes)
 			if err != nil {
-				return "", fmt.Errorf("error decoding file data: %w", err)
+				return "", fmt.Errorf("error decoding file data message: %w", err)
 			}
+			// todo: check session ID
 			if dataMsg.SessionID != sessionID {
-				return "", fmt.Errorf("invalid session ID in file data, got %s", dataMsg.SessionID)
+				return "", fmt.Errorf("invalid session ID in file data message, got %s", dataMsg.SessionID)
 			}
 
-			receivedSize += uint64(dataMsg.DataLength)
 			if fileResponse.FileSize <= *config.MemFileThreshold {
-				cacheFile.Write(dataMsg.Data)
+				if _, err := cacheFile.Write(dataMsg.Data); err != nil {
+					return "", fmt.Errorf("error writing cached file data: %w", err)
+				}
 			} else {
 				if _, err := file.Write(dataMsg.Data); err != nil {
 					return "", fmt.Errorf("error writing file data: %w", err)
 				}
 			}
-
-			log.Debugf("Received %d bytes, total: %d/%d bytes",
-				dataMsg.DataLength, receivedSize, fileResponse.FileSize)
-
-			ackMsg := protocol.AcknowledgeMessage{
+			receivedSize += uint64(len(dataMsg.Data))
+			ackMsg := AcknowledgeMessage{
 				SessionID: sessionID,
 				Offset:    receivedSize,
-				Status:    protocol.StatusOK,
+				Status:    StatusOK,
 			}
 
-			ackBytes := protocol.EncodeAcknowledge(ackMsg)
-			if err := protocol.SendMessage(conn, protocol.MsgTypeAcknowledge, ackBytes); err != nil {
+			ackBytes := encodeAcknowlege(ackMsg)
+			if err := sendMessage(conn, MsgTypeAcknowledge, ackBytes); err != nil {
 				return "", fmt.Errorf("failed to send acknowledge message: %w", err)
 			}
 			log.Debugf("Sent acknowledge message, session ID: %s, offset: %d", sessionID, receivedSize)
-		case protocol.MsgTypeFileComplete:
-			completeMsg, err := protocol.DecodeFileComplete(bodyBytes)
+		case MsgTypeFileComplete:
+			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
 				return "", fmt.Errorf("error decoding file complete message: %w", err)
 			}
@@ -250,23 +247,35 @@ func (c *FileClient) DownloadFile(conn net.Conn, filePath string) (string, error
 				if _, err := file.Write(cacheFile.Bytes()); err != nil {
 					return "", fmt.Errorf("error writing cached file data: %w", err)
 				}
+				cacheFile.Reset()
 			}
 
-			endTime := time.Now()
-			duration := endTime.Sub(startTime)
-			throughput := float64(receivedSize) / duration.Seconds() / 1024 / 1024 // MB/s
+			if err := file.Close(); err != nil {
+				log.Error("Error closing file:", err)
+				return "", err
+			}
 
-			log.Infof("File download completed: %s, size: %d bytes, duration: %v, throughput: %.2f MB/s",
-				filePath, receivedSize, duration, throughput)
-
-			fileHash := completeMsg.FileHash
+			file.Sync()
+			fileHash, err := utils.CalcBlake3(fullPath)
+			if err != nil {
+				return "", fmt.Errorf("error calculating file hash: %w", err)
+			}
+			if fileHash != completeMsg.FileHash {
+				os.Remove(fullPath)
+				return "", fmt.Errorf("file hash mismatch, expected %s, got %s", completeMsg.FileHash, fileHash)
+			}
+			transferSpeed := float64(fileResponse.FileSize) / time.Since(startTime).Seconds()
+			log.Infof("File transfer complete, file path: %s, file size: %d bytes, transfer speed: %.2f MB/s",
+				fullPath,
+				fileResponse.FileSize,
+				transferSpeed/1024/1024)
 			return fmt.Sprintf("%x", fileHash), nil
-		case protocol.MsgTypeError:
-			errorMsg, err := protocol.DecodeErrorMessage(bodyBytes)
+		case MsgTypeError:
+			errorMsg, err := decodeErrorMessage(bodyBytes)
 			if err != nil {
 				return "", fmt.Errorf("error decoding error message: %w", err)
 			}
-			return "", fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
+			return "", fmt.Errorf("server error: %w", errorMsg)
 		default:
 			return "", fmt.Errorf("invalid file data message type, got %d", msgType)
 		}
