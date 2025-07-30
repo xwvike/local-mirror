@@ -8,8 +8,6 @@ import (
 	"local-mirror/internal/logger"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
-	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"time"
 
@@ -28,12 +26,6 @@ func init() {
 	config.StartPath = wd
 }
 func main() {
-	// 启动 pprof HTTP 服务
-	go func() {
-		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
-			log.Fatalf("pprof HTTP 服务启动失败: %v", err)
-		}
-	}()
 	defer tree.DB.Close()
 	flag.Parse()
 	logger.InitLogger()
