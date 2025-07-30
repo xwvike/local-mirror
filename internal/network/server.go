@@ -151,7 +151,7 @@ func (s *fileServer) handlePingRequest(conn net.Conn, bodyBytes []byte) error {
 	}
 	log.Infof("Received ping request from %s, client ID: %d", conn.RemoteAddr().String(), pingRequest.ClientID)
 	pongMessage := HeartbeatPongMessage{
-		Version:   config.Version,
+		Version:   config.ProtocolVersion,
 		Timestamp: time.Now().Unix(),
 		ServerID:  config.InstanceID,
 	}
@@ -318,7 +318,7 @@ func (s *fileServer) handleHandshake(conn net.Conn) error {
 		handshakeMsg.Version,
 		handshakeMsg.UUID)
 	receiveHandshake := HandshakeMessage{
-		Version: config.Version,
+		Version: config.ProtocolVersion,
 		UUID:    config.InstanceID,
 		Role:    config.ModeMap[*config.Mode],
 	}

@@ -32,7 +32,7 @@ func (c *FileClient) Connect() (net.Conn, error) {
 	log.Infof("Connected to server %s", c.serverAddr)
 
 	handshakeMsg := HandshakeMessage{
-		Version: config.Version,
+		Version: config.ProtocolVersion,
 		UUID:    config.InstanceID,
 		Role:    config.ModeMap[*config.Mode],
 	}
@@ -64,7 +64,7 @@ func (c *FileClient) Connect() (net.Conn, error) {
 
 func (c *FileClient) Ping(conn net.Conn) error {
 	pingMessage := HeartbeatPingMessage{
-		Version:   config.Version,
+		Version:   config.ProtocolVersion,
 		Timestamp: time.Now().Unix(),
 		ClientID:  config.InstanceID,
 	}
