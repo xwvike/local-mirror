@@ -115,7 +115,6 @@ func (sw *ScoreWatch) collectAll() error {
 	for _, dir := range allDir {
 		path := dir.Path
 		score := sw.calculateInitScore(path, dir)
-		fmt.Println("Initial score for path:", path, "is", score)
 		heatScore := &HeatScore{
 			Path:       path,
 			Deepth:     dir.Depth,

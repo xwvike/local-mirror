@@ -37,7 +37,7 @@ func main() {
 
 	if *config.Version {
 		fmt.Printf("Local Mirror version 1.0.0\n")
-		fmt.Printf("Protocol version: 0x%04X\n", config.ProtocolVersion)
+		fmt.Printf("Protocol version: %d\n", config.ProtocolVersion)
 		fmt.Printf("Build date: %s\n", "2025-07-30")
 		fmt.Printf("Go version: %s\n", "go1.21+")
 		fmt.Printf("\nCopyright (c) 2025 Local Mirror Team\n")
@@ -46,12 +46,12 @@ func main() {
 	}
 
 	logger.InitLogger()
-	log.Infof("实例ID: %x", config.InstanceID)
-	log.Infof("协议版本: %x", config.ProtocolVersion)
-	log.Infof("运行模式: %s", *config.Mode)
-	log.Infof("日志级别: %s", *config.LogLevel)
-	log.Infof("启动时间: %d", config.StartTime)
-	log.Infof("当前工作目录: %s", config.StartPath)
+	log.Warnf("实例ID: %x", config.InstanceID)
+	log.Warnf("协议版本: %x", config.ProtocolVersion)
+	log.Warnf("运行模式: %s", *config.Mode)
+	log.Warnf("日志级别: %s", *config.LogLevel)
+	log.Warnf("启动时间: %d", config.StartTime)
+	log.Warnf("当前工作目录: %s", config.StartPath)
 	tree.InitDB()
 	app.App()
 }

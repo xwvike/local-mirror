@@ -1,7 +1,6 @@
 package watcher
 
 import (
-	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
@@ -24,7 +23,6 @@ var deleteTimer *time.Timer
 var deleteTimerActive bool
 
 func eventFilter(event fsnotify.Event) {
-	fmt.Println("eventFilter:", event.Name, "event.Op:", event.Op)
 	ignored := false
 	for _, v := range config.IgnoreFileList {
 		if strings.Contains(event.Name, v) {
@@ -80,6 +78,7 @@ func eventFilter(event fsnotify.Event) {
 				log.Errorf("Failed to add node %s: %v", newLeaf.Name, err)
 				return
 			}
+			tree.AddRecentChangedDir(fatherNode.Path)
 		case remove:
 			deleteEventCache = append(deleteEventCache, strings.Replace(event.Name, config.StartPath, ".", 1))
 			GlobalScoreWatch.removeHeat(strings.Replace(event.Name, config.StartPath, ".", 1))

@@ -275,7 +275,7 @@ func (c *FileClient) DownloadFile(conn net.Conn, filePath string) (string, error
 			if err != nil {
 				return "", fmt.Errorf("error decoding error message: %w", err)
 			}
-			return "", fmt.Errorf("server error: %w", errorMsg)
+			return "", fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
 		default:
 			return "", fmt.Errorf("invalid file data message type, got %d", msgType)
 		}

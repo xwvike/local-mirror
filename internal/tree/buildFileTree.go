@@ -14,6 +14,35 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+var (
+	recentChangedDirs []string
+	maxRecentDirs     = 100
+	mu                sync.Mutex
+)
+
+func AddRecentChangedDir(dirPath string) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	// 查找是否已存在
+	has := -1
+	for i, v := range recentChangedDirs {
+		if v == dirPath {
+			has = i
+			break
+		}
+	}
+	if has > -1 {
+		copy(recentChangedDirs[1:has+1], recentChangedDirs[:has])
+		recentChangedDirs[0] = dirPath
+	} else {
+		recentChangedDirs = append([]string{dirPath}, recentChangedDirs...)
+		if len(recentChangedDirs) > maxRecentDirs {
+			recentChangedDirs = recentChangedDirs[:maxRecentDirs]
+		}
+	}
+}
+
 func BuildFileTree(path string) error {
 	startTime := time.Now().UnixMilli()
 	log.Info("start build file tree with concurrent WalkDir from path:", path)

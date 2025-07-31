@@ -93,14 +93,14 @@ func getDirectory(conn net.Conn, fileClient *network.FileClient, path string) {
 func CreateLink() {
 	switch *config.Mode {
 	case "reality":
-		log.Info("step 3 >> start file server")
+		log.Debug("step 3 >> start file server")
 		fileServer := network.NewFileServer("0.0.0.0:52345")
 		if err := fileServer.Start(); err != nil {
 			log.Fatal("Error starting file server:", err)
 			os.Exit(1)
 		}
 	case "mirror":
-		log.Info("step 3 >> start file client")
+		log.Debug("step 3 >> start file client")
 		fileClient := network.NewFileClient(*config.RealityIP + ":52345")
 		conn, err := fileClient.Connect()
 		if err != nil {
