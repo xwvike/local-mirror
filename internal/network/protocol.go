@@ -13,7 +13,7 @@ import (
 // 协议常量定义
 const (
 	// 魔术字
-	MagicNumber uint32 = 0xF1E2D3C4 // 协议标识符
+	MagicNumber uint32 = 0xFBE322A8 // 协议标识符
 
 	// 消息类型
 	MsgTypeHandshake            uint16 = 0x0001 // 握手请求/响应
@@ -36,13 +36,14 @@ const (
 	StatusInternalError uint16 = 0x0002 // 内部错误
 
 	// 头部大小
-	HeaderSize = 12
+	HeaderSize = 14 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节 + 状态码2字节）
 )
 
 // 消息头定义
 type MessageHeader struct {
 	Magic        uint32 // 魔术字
 	Type         uint16 // 消息类型
+	Status       uint16 // 状态码
 	BodyLength   uint32 // 消息体长度
 	ReservedWord uint16 // 保留字段
 }
@@ -138,6 +139,7 @@ func encodeHeader(header MessageHeader) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, header.Magic)
 	binary.Write(buf, binary.BigEndian, header.Type)
+	binary.Write(buf, binary.BigEndian, header.Status)
 	binary.Write(buf, binary.BigEndian, header.BodyLength)
 	binary.Write(buf, binary.BigEndian, header.ReservedWord)
 	return buf.Bytes()
@@ -153,13 +155,15 @@ func decodeHeader(data []byte) (MessageHeader, error) {
 	if err := binary.Read(buf, binary.BigEndian, &header.Type); err != nil {
 		return header, err
 	}
+	if err := binary.Read(buf, binary.BigEndian, &header.Status); err != nil {
+		return header, err
+	}
 	if err := binary.Read(buf, binary.BigEndian, &header.BodyLength); err != nil {
 		return header, err
 	}
 	if err := binary.Read(buf, binary.BigEndian, &header.ReservedWord); err != nil {
 		return header, err
 	}
-
 	if header.Magic != MagicNumber {
 		return header, fmt.Errorf("invalid magic number, got %d", header.Magic)
 	}
@@ -372,6 +376,7 @@ func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
 	header := MessageHeader{
 		Magic:        MagicNumber,
 		Type:         msgType,
+		Status:       StatusOK,
 		BodyLength:   uint32(len(body)),
 		ReservedWord: 0,
 	}
