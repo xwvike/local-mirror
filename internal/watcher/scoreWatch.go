@@ -85,7 +85,7 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 	GlobalScoreWatch = &ScoreWatch{
 		Watcher:         watcher,
 		maxfilesperproc: _maxWatches,
-		tier1Limit:      4,
+		tier1Limit:      _maxWatches / 2,
 		tier2Interval:   3 * time.Second,
 		heatMap:         make(map[string]*HeatScore),
 		tier1:           make([]*HeatScore, 0),
@@ -215,7 +215,7 @@ func (sw *ScoreWatch) performScan() {
 	})
 	usedWatches := uint16(0)
 	oldTier1 := sw.tier1
-	for i, heat := range dirs {
+	for _, heat := range dirs {
 		fileCount, err := os.ReadDir(heat.Path)
 		if err != nil {
 			log.Warnf("Failed to read directory %s: %v", heat.Path, err)
@@ -234,9 +234,10 @@ func (sw *ScoreWatch) performScan() {
 		}
 		if usedWatches < sw.tier1Limit {
 			sw.Watcher.Add(strings.Replace(heat.Path, ".", config.StartPath, 1))
+			sw.tier1 = append(sw.tier1, heat)
 		} else {
-			sw.tier1 = dirs[:i]
-			dirs = dirs[i:]
+			index := len(sw.tier1) - 1
+			dirs = dirs[index:]
 			sw.tier2 = append(sw.tier2, dirs...)
 			break
 		}

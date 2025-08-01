@@ -16,24 +16,24 @@ const (
 	MagicNumber uint32 = 0xF1E2D3C4 // 协议标识符
 
 	// 消息类型
-	MsgTypeHandshake     uint16 = 0x0001 // 握手请求/响应
-	MsgTypeFileRequest   uint16 = 0x0002 // 文件传输请求
-	MsgTypeFileResponse  uint16 = 0x0003 // 文件传输响应
-	MsgTypeFileData      uint16 = 0x0004 // 文件数据
-	MsgTypeFileComplete  uint16 = 0x0005 // 文件传输完成
-	MsgTypeError         uint16 = 0x0006 // 错误消息
-	MsgTypeAcknowledge   uint16 = 0x0007 // 确认消息
-	MsgTypeTreeRequest   uint16 = 0x0008 // 目录树请求
-	MsgTypeTreeResponse  uint16 = 0x0009 // 目录树响应
-	MsgTypeHeartbeatPing uint16 = 0x000A // 心跳请求
-	MsgTypeHeartbeatPong uint16 = 0x000B // 心跳响应
+	MsgTypeHandshake            uint16 = 0x0001 // 握手请求/响应
+	MsgTypeFileRequest          uint16 = 0x0002 // 文件传输请求
+	MsgTypeFileResponse         uint16 = 0x0003 // 文件传输响应
+	MsgTypeFileData             uint16 = 0x0004 // 文件数据
+	MsgTypeFileComplete         uint16 = 0x0005 // 文件传输完成
+	MsgTypeError                uint16 = 0x0006 // 错误消息
+	MsgTypeAcknowledge          uint16 = 0x0007 // 确认消息
+	MsgTypeTreeRequest          uint16 = 0x0008 // 目录树请求
+	MsgTypeTreeResponse         uint16 = 0x0009 // 目录树响应
+	MsgTypeHeartbeatPing        uint16 = 0x000A // 心跳请求
+	MsgTypeHeartbeatPong        uint16 = 0x000B // 心跳响应
+	MsgTypeRecentChangeRequest  uint16 = 0x000C // 最近变更请求
+	MsgTypeRecentChangeResponse uint16 = 0x000D // 最近变更响应
 
 	// 状态码
 	StatusOK            uint16 = 0x0000 // 正常
-	StatusReject        uint16 = 0x0001 // 拒绝传输
-	StatusFileNotFound  uint16 = 0x0002 // 文件不存在
-	StatusInternalError uint16 = 0x0003 // 内部错误
-	StatusTreeNotFound  uint16 = 0x0004 // 目录树不存在
+	StatusReject        uint16 = 0x0001 // 拒绝
+	StatusInternalError uint16 = 0x0002 // 内部错误
 
 	// 头部大小
 	HeaderSize = 12
@@ -109,6 +109,15 @@ type TreeResponseMessage struct {
 	RootPath   string // 目录树的根路径
 	DataLength uint32 // 数据长度
 	Data       []byte // 请求数据
+}
+
+// 最近变更请求消息
+type RecentChangeRequestMessage struct {
+}
+
+// 最近变更响应消息
+type RecentChangeResponseMessage struct {
+	Changes []string // 最近变更的文件或目录列表
 }
 
 // 心跳请求消息

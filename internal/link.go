@@ -1,7 +1,7 @@
 package app
 
 import (
-	log "github.com/sirupsen/logrus"
+	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/network"
 	"local-mirror/internal/tree"
@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 var NextLevel = stack.NewStack[DiffResult]()
@@ -99,6 +101,14 @@ func CreateLink() {
 			log.Fatal("Error starting file server:", err)
 			os.Exit(1)
 		}
+		go func() {
+			tictik := time.NewTicker(10 * time.Second)
+			defer tictik.Stop()
+			for range tictik.C {
+				fmt.Println("change", tree.RecentChangedDirs)
+			}
+		}()
+
 	case "mirror":
 		log.Debug("step 3 >> start file client")
 		fileClient := network.NewFileClient(*config.RealityIP + ":52345")

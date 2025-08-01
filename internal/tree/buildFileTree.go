@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"fmt"
 	"io/fs"
 	"local-mirror/config"
 	"local-mirror/pkg/utils"
@@ -15,30 +16,42 @@ import (
 )
 
 var (
-	recentChangedDirs []string
+	RecentChangedDirs []string
 	maxRecentDirs     = 100
 	mu                sync.Mutex
 )
 
+func RemoveRecentChangedDir(dirPath string) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	filtered := RecentChangedDirs[:0]
+	for _, v := range RecentChangedDirs {
+		if !strings.HasPrefix(v, dirPath) {
+			filtered = append(filtered, v)
+		}
+	}
+	RecentChangedDirs = filtered
+}
 func AddRecentChangedDir(dirPath string) {
 	mu.Lock()
 	defer mu.Unlock()
 
 	// 查找是否已存在
 	has := -1
-	for i, v := range recentChangedDirs {
+	for i, v := range RecentChangedDirs {
 		if v == dirPath {
 			has = i
 			break
 		}
 	}
 	if has > -1 {
-		copy(recentChangedDirs[1:has+1], recentChangedDirs[:has])
-		recentChangedDirs[0] = dirPath
+		copy(RecentChangedDirs[1:has+1], RecentChangedDirs[:has])
+		RecentChangedDirs[0] = dirPath
 	} else {
-		recentChangedDirs = append([]string{dirPath}, recentChangedDirs...)
-		if len(recentChangedDirs) > maxRecentDirs {
-			recentChangedDirs = recentChangedDirs[:maxRecentDirs]
+		RecentChangedDirs = append([]string{dirPath}, RecentChangedDirs...)
+		if len(RecentChangedDirs) > maxRecentDirs {
+			RecentChangedDirs = RecentChangedDirs[:maxRecentDirs]
 		}
 	}
 }

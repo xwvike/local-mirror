@@ -18,6 +18,9 @@ var (
 	create string = "CREATE"
 	remove string = "REMOVE"
 )
+var createEventCache []*tree.Node
+var createTimer *time.Timer
+var createTimerActive bool
 var deleteEventCache []string
 var deleteTimer *time.Timer
 var deleteTimerActive bool
@@ -73,15 +76,27 @@ func eventFilter(event fsnotify.Event) {
 			if fileInfo.IsDir() {
 				GlobalScoreWatch.addHeat(newLeaf.Path, newLeaf)
 			}
-			nodes := []*tree.Node{newLeaf}
-			if err := tree.AddNodes(nodes); err != nil {
-				log.Errorf("Failed to add node %s: %v", newLeaf.Name, err)
-				return
-			}
+
+			createEventCache = append(createEventCache, newLeaf)
 			tree.AddRecentChangedDir(fatherNode.Path)
+			if createTimerActive {
+				createTimer.Stop()
+			}
+			createTimer = time.AfterFunc(1*time.Second, func() {
+				err := tree.AddNodes(createEventCache)
+				if err != nil {
+					log.Errorf("Failed to add nodes: %v", err)
+				} else {
+					log.Debugf("Added nodes count %d", len(createEventCache))
+					createEventCache = slices.Delete(createEventCache, 0, len(createEventCache))
+				}
+				createTimerActive = false
+			})
+			createTimerActive = true
 		case remove:
 			deleteEventCache = append(deleteEventCache, strings.Replace(event.Name, config.StartPath, ".", 1))
 			GlobalScoreWatch.removeHeat(strings.Replace(event.Name, config.StartPath, ".", 1))
+			tree.AddRecentChangedDir(fatherNode.Path)
 			if deleteTimerActive {
 				deleteTimer.Stop()
 			}
