@@ -5,3 +5,27 @@ dist/
 test/
 .DS_Store
 **/.DS_Store
+
+node_modules
+
+# Output
+/frontend/.output
+/frontend/.vercel
+/frontend/.netlify
+/frontend/.wrangler
+/frontend/.svelte-kit
+/frontend/build
+
+# OS
+Thumbs.db
+**/Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+/frontend/vite.config.js.timestamp-*
+/frontend/vite.config.ts.timestamp-*
