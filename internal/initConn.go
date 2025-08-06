@@ -18,7 +18,7 @@ func InitConn() (*network.FileClient, error) {
 		if err != nil {
 			log.Warnf("Handshake failed, attempt %d/%d: %v", i+1, maxRetries, err)
 			if i == maxRetries-1 {
-				fileClient.Mode = network.Offline
+				fileClient.State = network.Offline
 				return fileClient, err
 			}
 			time.Sleep(time.Duration(i+1) * time.Second)
@@ -26,7 +26,7 @@ func InitConn() (*network.FileClient, error) {
 		}
 		break
 	}
-	if fileClient.State != network.HandshakSuccess {
+	if fileClient.State != network.Online {
 		return nil, fmt.Errorf("failed to establish connection with the server at %s", fileClient.RealityAddr)
 	}
 	return fileClient, nil

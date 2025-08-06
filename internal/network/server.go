@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"local-mirror/config"
+	"local-mirror/internal/appError"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"net"
@@ -66,25 +67,18 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				log.Infof("Client %s disconnected", clientAddr)
+				log.Warnf("Client %s disconnected", clientAddr)
 			} else {
-				log.Errorf("Error receiving message from %s, %v\n", clientAddr, err)
+				log.Error(fmt.Errorf("%w,%w", appError.ErrReceiveMessage, err))
 			}
-			break
+			return
 		}
 
 		switch msgType {
 		case MsgTypeHandshake:
 			if err := s.handleHandshake(conn, bodyBytes); err != nil {
-				log.Error("Error during handshake:", err)
-				errorMsg := ErrorMessage{
-					MessageLen:   uint16(len(err.Error())),
-					ErrorMessage: err.Error(),
-				}
-				errorBytes := encodeErrorMessage(errorMsg)
-				if err := sendMessage(conn, MsgTypeError, StatusError, errorBytes); err != nil {
-					log.Error("Error sending error message:", err)
-				}
+				log.Error(err)
+				return
 			}
 		case MsgTypeHeartbeatPing:
 			if err := s.handlePingRequest(conn, bodyBytes); err != nil {
@@ -244,7 +238,6 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 		s.sessionMap.Store(sessionID, session)
 
 		fileResponse := FileResponseMessage{
-			Status:    StatusOK,
 			SessionID: sessionBytes,
 			FileSize:  uint64(fileInfo.Size()),
 			FileHash:  fileHash,
@@ -306,7 +299,7 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) error {
 	handshakeMsg, err := decodeHandshake(bodyBytes)
 	if err != nil {
-		return fmt.Errorf("error decoding handshake message: %v", err)
+		return fmt.Errorf("%w,%w", appError.ErrHandshakeFailed, err)
 	}
 	log.Infof("Received handshake message: version: %d, clientID: %d",
 		handshakeMsg.Version,

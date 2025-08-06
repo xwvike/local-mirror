@@ -96,7 +96,7 @@ func Mirror() {
 	if err != nil {
 		fileClient.ConnectionClose()
 	}
-	if fileClient.Mode == network.Offline {
+	if fileClient.State == network.Offline {
 		retryConnection := time.NewTicker(10 * time.Second)
 		defer retryConnection.Stop()
 		for range retryConnection.C {
