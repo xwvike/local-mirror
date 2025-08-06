@@ -62,11 +62,6 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Client connected from %s to local port %s", clientAddr, conn.LocalAddr().String())
 
-	if err := s.handleHandshake(conn); err != nil {
-		log.Error("Error during handshake:", err)
-		return
-	}
-
 	for {
 		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
@@ -79,16 +74,27 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 		}
 
 		switch msgType {
-		case MsgTypeHeartbeatPing:
-			if err := s.handlePingRequest(conn, bodyBytes); err != nil {
-				log.Error("ping request:", err)
+		case MsgTypeHandshake:
+			if err := s.handleHandshake(conn, bodyBytes); err != nil {
+				log.Error("Error during handshake:", err)
 				errorMsg := ErrorMessage{
-					ErrorCode:    StatusInternalError,
 					MessageLen:   uint16(len(err.Error())),
 					ErrorMessage: err.Error(),
 				}
 				errorBytes := encodeErrorMessage(errorMsg)
-				if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
+				if err := sendMessage(conn, MsgTypeError, StatusError, errorBytes); err != nil {
+					log.Error("Error sending error message:", err)
+				}
+			}
+		case MsgTypeHeartbeatPing:
+			if err := s.handlePingRequest(conn, bodyBytes); err != nil {
+				log.Error("ping request:", err)
+				errorMsg := ErrorMessage{
+					MessageLen:   uint16(len(err.Error())),
+					ErrorMessage: err.Error(),
+				}
+				errorBytes := encodeErrorMessage(errorMsg)
+				if err := sendMessage(conn, MsgTypeError, StatusError, errorBytes); err != nil {
 					log.Error("Error sending error message:", err)
 				}
 			}
@@ -96,12 +102,11 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			if err := s.handleTreeRequest(conn, bodyBytes); err != nil {
 				log.Error("request:", err)
 				errorMsg := ErrorMessage{
-					ErrorCode:    StatusInternalError,
 					MessageLen:   uint16(len(err.Error())),
 					ErrorMessage: err.Error(),
 				}
 				errorBytes := encodeErrorMessage(errorMsg)
-				if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
+				if err := sendMessage(conn, MsgTypeError, StatusError, errorBytes); err != nil {
 					log.Error("Error sending error message:", err)
 				}
 			}
@@ -109,12 +114,11 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			if err := s.handleFileRequest(conn, bodyBytes); err != nil {
 				log.Error("file request:", err)
 				errorMsg := ErrorMessage{
-					ErrorCode:    StatusInternalError,
 					MessageLen:   uint16(len(err.Error())),
 					ErrorMessage: err.Error(),
 				}
 				errorBytes := encodeErrorMessage(errorMsg)
-				if err := sendMessage(conn, MsgTypeError, errorBytes); err != nil {
+				if err := sendMessage(conn, MsgTypeError, StatusError, errorBytes); err != nil {
 					log.Error("Error sending errorm essage:", err)
 				}
 			}
@@ -140,7 +144,6 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 		}
 
 	}
-	return
 }
 
 func (s *fileServer) handlePingRequest(conn net.Conn, bodyBytes []byte) error {
@@ -156,7 +159,7 @@ func (s *fileServer) handlePingRequest(conn net.Conn, bodyBytes []byte) error {
 		ServerID:  config.InstanceID,
 	}
 	pongBytes := encodeHeartbeatPong(pongMessage)
-	if err := sendMessage(conn, MsgTypeHeartbeatPong, pongBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeHeartbeatPong, StatusOK, pongBytes); err != nil {
 		log.Error("Error sending pong message:", err)
 	}
 	log.Infof("Sent pong response to %s, server ID: %d", conn.RemoteAddr().String(), config.InstanceID)
@@ -179,13 +182,12 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 			return fmt.Errorf("error marshalling tree leaf for path %s: %v", treeRequest.RootPath, err)
 		}
 		treeResponse := TreeResponseMessage{
-			Status:     StatusOK,
 			RootPath:   treeRequest.RootPath,
 			DataLength: uint32(len(treeData)),
 			Data:       []byte(treeData),
 		}
 		responseBytes := encodeTreeResponse(treeResponse)
-		if err := sendMessage(conn, MsgTypeTreeResponse, responseBytes); err != nil {
+		if err := sendMessage(conn, MsgTypeTreeResponse, StatusOK, responseBytes); err != nil {
 			return fmt.Errorf("error sending tree response for path %s: %v", treeRequest.RootPath, err)
 		}
 		log.Infof("Sent tree response to %s for path: %s, data length: %d bytes", clientAddr, treeRequest.RootPath, len(treeData))
@@ -248,7 +250,7 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 			FileHash:  fileHash,
 		}
 		responseBytes := encodeFileResponse(fileResponse)
-		if err := sendMessage(conn, MsgTypeFileResponse, responseBytes); err != nil {
+		if err := sendMessage(conn, MsgTypeFileResponse, StatusOK, responseBytes); err != nil {
 			s.sessionMap.Delete(sessionID)
 			return fmt.Errorf("error sending file response for %s", fileRequest.FilePath)
 		}
@@ -275,7 +277,7 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 				Data:       fileBuf[:n],
 			}
 			//todo: 添加发送失败重试发送的机制
-			if err := sendMessage(conn, MsgTypeFileData, encodeFileData(dataMsg)); err != nil {
+			if err := sendMessage(conn, MsgTypeFileData, StatusOK, encodeFileData(dataMsg)); err != nil {
 				return fmt.Errorf("error sending file data for %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
 			}
 
@@ -294,22 +296,14 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 	}
 
 	completeBytes := encodeFileComplete(completeMsg)
-	if err := sendMessage(conn, MsgTypeFileComplete, completeBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeFileComplete, StatusOK, completeBytes); err != nil {
 		return fmt.Errorf("error sending file complete for %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
 	}
 	log.Infof("Sent file complete message: file path: %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
 	return nil
 }
 
-func (s *fileServer) handleHandshake(conn net.Conn) error {
-	msgType, bodyBytes, err := receiveMessage(conn)
-	if err != nil {
-		return fmt.Errorf("error receiving message: %v", err)
-	}
-	if msgType != MsgTypeHandshake {
-		return fmt.Errorf("invalid message type, got message type %d", msgType)
-	}
-
+func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) error {
 	handshakeMsg, err := decodeHandshake(bodyBytes)
 	if err != nil {
 		return fmt.Errorf("error decoding handshake message: %v", err)
@@ -323,7 +317,7 @@ func (s *fileServer) handleHandshake(conn net.Conn) error {
 		Role:    config.ModeMap[*config.Mode],
 	}
 	handshakeBytes := encodeHandshake(receiveHandshake)
-	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeHandshake, StatusOK, handshakeBytes); err != nil {
 		return fmt.Errorf("error sending handshake message: %v", err)
 	}
 	return nil

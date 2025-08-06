@@ -13,24 +13,53 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+var (
+	UnConnected     uint8 = 0x00 // 未连接
+	Connected       uint8 = 0x01 // 已连接
+	HandshakSuccess uint8 = 0x02 // 握手成功
+	HandshakeError  uint8 = 0x03 // 握手失败
+)
+
+var (
+	Waiting uint8 = 0x00 // 等待
+	Online  uint8 = 0x01 // 在线
+	Offline uint8 = 0x02 // 离线
+)
+
 type FileClient struct {
-	serverAddr string
+	RealityAddr      string
+	Alias            string
+	connectionManage *utils.ConnectionManager
+	realityVersion   uint16
+	realityID        uint32
+	State            uint8
+	Mode             uint8
 }
 
-func NewFileClient(serverAddr string) *FileClient {
-	log.Info("Creating file client, server address:", serverAddr)
+func NewFileClient(realityAddr string, serverAlias string) *FileClient {
+	log.Info("Creating file client, server address:", realityAddr)
 	return &FileClient{
-		serverAddr: serverAddr,
+		RealityAddr:      realityAddr,
+		Alias:            serverAlias,
+		connectionManage: utils.NewConnectionManager(realityAddr),
+		State:            UnConnected,
+		Mode:             Waiting,
 	}
 }
 
-func (c *FileClient) Connect() (net.Conn, error) {
-	conn, err := net.Dial("tcp", c.serverAddr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to server %s: %w", c.serverAddr, err)
+func (c *FileClient) ConnectionClose() {
+	c.State = UnConnected
+	if c.connectionManage != nil {
+		c.connectionManage.Close()
 	}
-	log.Infof("Connected to server %s", c.serverAddr)
+}
 
+func (c *FileClient) Handshake() error {
+	conn, err := c.connectionManage.GetConnection()
+	if err != nil {
+		return fmt.Errorf("failed to get connection: %w", err)
+	}
+	c.State = Connected
 	handshakeMsg := HandshakeMessage{
 		Version: config.ProtocolVersion,
 		UUID:    config.InstanceID,
@@ -38,28 +67,33 @@ func (c *FileClient) Connect() (net.Conn, error) {
 	}
 	handshakeBytes := encodeHandshake(handshakeMsg)
 
-	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
-		return nil, fmt.Errorf("failed to send handshake message: %w", err)
+	if err := sendMessage(conn, MsgTypeHandshake, StatusOK, handshakeBytes); err != nil {
+		c.State = HandshakeError
+		return fmt.Errorf("failed to send handshake message: %w", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to receive handshake response: %w", err)
+		c.State = HandshakeError
+		return fmt.Errorf("receive message: %w", err)
 	}
 
 	if msgType != MsgTypeHandshake {
-		conn.Close()
-		return nil, fmt.Errorf("invalid handshake response message type, got %d", msgType)
+		c.State = HandshakeError
+		return fmt.Errorf("invalid handshake response message type, got %d", msgType)
 	}
 	handshakeResponse, err := decodeHandshake(bodyBytes)
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to decode handshake response: %w", err)
+		c.State = HandshakeError
+		return fmt.Errorf("failed to decode handshake response: %w", err)
 	}
-	log.Infof("Received handshake response: version: %d, clientID: %d",
+	c.realityVersion = handshakeResponse.Version
+	c.realityID = handshakeResponse.UUID
+	c.State = HandshakSuccess
+	c.Mode = Online
+	log.Infof("Received handshake response: version: %d, realityID: %d",
 		handshakeResponse.Version,
 		handshakeResponse.UUID)
-	return conn, nil
+	return nil
 }
 
 func (c *FileClient) Ping(conn net.Conn) error {
@@ -69,7 +103,7 @@ func (c *FileClient) Ping(conn net.Conn) error {
 		ClientID:  config.InstanceID,
 	}
 	pingBytes := encodeHeartbeatPing(pingMessage)
-	if err := sendMessage(conn, MsgTypeHeartbeatPing, pingBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeHeartbeatPing, StatusOK, pingBytes); err != nil {
 		log.Error("Error sending ping message:", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
@@ -103,17 +137,18 @@ func (c *FileClient) Ping(conn net.Conn) error {
 	return nil
 }
 
-func (c *FileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, error) {
+func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
+	conn, err := c.connectionManage.GetConnection()
 	request := TreeRequestMessage{
 		PathLength: uint16(len(rootPath)),
 		RootPath:   rootPath,
 	}
 	requestBytes := encodeTreeRequest(request)
-	serverAddr := conn.RemoteAddr().String()
-	if err := sendMessage(conn, MsgTypeTreeRequest, requestBytes); err != nil {
+	realityAddr := conn.RemoteAddr().String()
+	if err := sendMessage(conn, MsgTypeTreeRequest, StatusOK, requestBytes); err != nil {
 		return nil, fmt.Errorf("failed to send tree request: %w", err)
 	}
-	log.Debugf("Sent tree request to %s for path: %s", serverAddr, rootPath)
+	log.Debugf("Sent tree request to %s for path: %s", realityAddr, rootPath)
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive tree response: %w", err)
@@ -134,29 +169,29 @@ func (c *FileClient) GetRealityTree(conn net.Conn, rootPath string) ([]byte, err
 		return nil, fmt.Errorf("failed to decode tree response: %w", err)
 	}
 
-	if treeResponse.Status != StatusOK {
-		return nil, fmt.Errorf("tree request failed, status code: %d", treeResponse.Status)
-	}
 	if len(treeResponse.Data) == 0 {
-		log.Warnf("Received empty tree response from %s, path: %s", serverAddr, rootPath)
+		log.Warnf("Received empty tree response from %s, path: %s", realityAddr, rootPath)
 		return []byte{}, nil
 	}
 	log.Infof("Received tree response from %s, status: %d, data length: %d bytes",
-		serverAddr,
-		treeResponse.Status,
+		realityAddr,
 		len(treeResponse.Data))
 	log.Debugf("Received tree response: %s", treeResponse.Data)
 	return treeResponse.Data, nil
 }
 
-func (c *FileClient) DownloadFile(conn net.Conn, filePath string) (string, error) {
+func (c *FileClient) DownloadFile(filePath string) (string, error) {
+	conn, err := c.connectionManage.GetConnection()
+	if err != nil {
+		return "", fmt.Errorf("failed to get connection: %w", err)
+	}
 	requestFile := FileRequestMessage{
 		PathLength: uint16(len(filePath)),
 		FilePath:   filePath,
 		Offset:     0,
 	}
 	requestBytes := encodeFileRequest(requestFile)
-	if err := sendMessage(conn, MsgTypeFileRequest, requestBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeFileRequest, StatusOK, requestBytes); err != nil {
 		return "", fmt.Errorf("failed to send file request: %w", err)
 	}
 
@@ -227,11 +262,10 @@ func (c *FileClient) DownloadFile(conn net.Conn, filePath string) (string, error
 			ackMsg := AcknowledgeMessage{
 				SessionID: sessionID,
 				Offset:    receivedSize,
-				Status:    StatusOK,
 			}
 
 			ackBytes := encodeAcknowlege(ackMsg)
-			if err := sendMessage(conn, MsgTypeAcknowledge, ackBytes); err != nil {
+			if err := sendMessage(conn, MsgTypeAcknowledge, StatusOK, ackBytes); err != nil {
 				return "", fmt.Errorf("failed to send acknowledge message: %w", err)
 			}
 			log.Debugf("Sent acknowledge message, session ID: %s, offset: %d", sessionID, receivedSize)

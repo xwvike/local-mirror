@@ -1,7 +1,6 @@
 package tree
 
 import (
-	"fmt"
 	"io/fs"
 	"local-mirror/config"
 	"local-mirror/pkg/utils"

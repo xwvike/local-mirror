@@ -20,13 +20,21 @@ func App() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer _watcher.Close()
+	defer func() {
+		log.Info("正在关闭监视器...")
+		if err := _watcher.Close(); err != nil {
+			log.Errorf("关闭监视器时出错: %v", err)
+		}
+	}()
 	tree.BuildFileTree(config.StartPath)
 	watcher.InitWatcher(_watcher)
-	CreateLink()
+	switch *config.Mode {
+	case "reality":
+		Reality()
+	case "mirror":
+		Mirror()
+	}
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
-
-	_watcher.Close()
 }

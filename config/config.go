@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	// Mode constants
+	// 运行模式
 	RealityMode = 0x0001
 	MirrorMode  = 0x0002
 )

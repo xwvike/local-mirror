@@ -31,9 +31,9 @@ const (
 	MsgTypeRecentChangeResponse uint16 = 0x000D // 最近变更响应
 
 	// 状态码
-	StatusOK            uint16 = 0x0000 // 正常
-	StatusReject        uint16 = 0x0001 // 拒绝
-	StatusInternalError uint16 = 0x0002 // 内部错误
+	StatusOK     uint16 = 0x0000 // 正常
+	StatusReject uint16 = 0x0001 // 拒绝
+	StatusError  uint16 = 0x0002 // 内部错误
 
 	// 头部大小
 	HeaderSize = 14 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节 + 状态码2字节）
@@ -86,7 +86,6 @@ type FileCompleteMessage struct {
 
 // 错误消息
 type ErrorMessage struct {
-	ErrorCode    uint16 // 错误码
 	MessageLen   uint16 // 消息长度
 	ErrorMessage string // 错误消息
 }
@@ -95,7 +94,6 @@ type ErrorMessage struct {
 type AcknowledgeMessage struct {
 	SessionID [16]byte // 会话ID
 	Offset    uint64   // 确认偏移
-	Status    uint16   // 确认状态
 }
 
 // 树形结构请求消息
@@ -106,7 +104,6 @@ type TreeRequestMessage struct {
 
 // 树形结构响应消息
 type TreeResponseMessage struct {
-	Status     uint16 // 状态码
 	RootPath   string // 目录树的根路径
 	DataLength uint32 // 数据长度
 	Data       []byte // 请求数据
@@ -301,7 +298,6 @@ func encodeAcknowlege(msg AcknowledgeMessage) []byte {
 	buf := new(bytes.Buffer)
 	buf.Write(msg.SessionID[:])
 	binary.Write(buf, binary.BigEndian, msg.Offset)
-	binary.Write(buf, binary.BigEndian, msg.Status)
 	return buf.Bytes()
 }
 
@@ -315,10 +311,6 @@ func decodeAcknowledge(data []byte) (AcknowledgeMessage, error) {
 
 	if err := binary.Read(buf, binary.BigEndian, &msg.Offset); err != nil {
 		return msg, fmt.Errorf("error decoding acknowledge offset: %w", err)
-	}
-
-	if err := binary.Read(buf, binary.BigEndian, &msg.Status); err != nil {
-		return msg, fmt.Errorf("error decoding acknowledge status: %w", err)
 	}
 	return msg, nil
 }
@@ -345,7 +337,6 @@ func decodeFileComplete(data []byte) (FileCompleteMessage, error) {
 
 func encodeErrorMessage(msg ErrorMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.ErrorCode)
 	binary.Write(buf, binary.BigEndian, msg.MessageLen)
 	buf.Write([]byte(msg.ErrorMessage))
 	return buf.Bytes()
@@ -355,10 +346,6 @@ func decodeErrorMessage(data []byte) (ErrorMessage, error) {
 	var msg ErrorMessage
 	buf := bytes.NewReader(data)
 
-	if err := binary.Read(buf, binary.BigEndian, &msg.ErrorCode); err != nil {
-		log.Error("Error decoding error message:", err)
-		return msg, err
-	}
 	if err := binary.Read(buf, binary.BigEndian, &msg.MessageLen); err != nil {
 		log.Error("Error decoding error message length:", err)
 		return msg, err
@@ -372,11 +359,11 @@ func decodeErrorMessage(data []byte) (ErrorMessage, error) {
 	return msg, nil
 }
 
-func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
+func sendMessage(conn net.Conn, msgType uint16, Status uint16, body []byte) error {
 	header := MessageHeader{
 		Magic:        MagicNumber,
 		Type:         msgType,
-		Status:       StatusOK,
+		Status:       Status,
 		BodyLength:   uint32(len(body)),
 		ReservedWord: 0,
 	}
@@ -395,7 +382,8 @@ func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
 func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 	headerBytes := make([]byte, HeaderSize)
 	if _, err := io.ReadFull(conn, headerBytes); err != nil {
-		return 0, nil, err
+		_error := fmt.Errorf("error reading message header from %s: %w", conn.RemoteAddr().String(), err)
+		return 0, nil, _error
 	}
 
 	header, err := decodeHeader(headerBytes)
@@ -408,7 +396,8 @@ func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 	bodyBytes := make([]byte, header.BodyLength)
 	if header.BodyLength > 0 {
 		if _, err := io.ReadFull(conn, bodyBytes); err != nil {
-			return 0, nil, err
+			_error := fmt.Errorf("error reading message body from %s: %w", conn.RemoteAddr().String(), err)
+			return 0, nil, _error
 		}
 	}
 
@@ -441,7 +430,6 @@ func decodeTreeRequest(data []byte) (TreeRequestMessage, error) {
 
 func encodeTreeResponse(msg TreeResponseMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.Status)
 	pathBytes := []byte(msg.RootPath)
 	binary.Write(buf, binary.BigEndian, uint16(len(pathBytes)))
 	buf.Write(pathBytes)
@@ -453,11 +441,6 @@ func encodeTreeResponse(msg TreeResponseMessage) []byte {
 func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 	var msg TreeResponseMessage
 	buf := bytes.NewReader(data)
-
-	if err := binary.Read(buf, binary.BigEndian, &msg.Status); err != nil {
-		log.Error("Error decoding tree response status:", err)
-		return msg, err
-	}
 
 	var pathLength uint16
 	if err := binary.Read(buf, binary.BigEndian, &pathLength); err != nil {
