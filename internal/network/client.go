@@ -62,7 +62,7 @@ func (c *FileClient) Handshake() error {
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return fmt.Errorf("%w,%w", appError.ErrReceiveMessage, err)
+		return fmt.Errorf("failed to receive message: %w", err)
 	}
 
 	if msgType != MsgTypeHandshake {
@@ -70,7 +70,7 @@ func (c *FileClient) Handshake() error {
 	}
 	handshakeResponse, err := decodeHandshake(bodyBytes)
 	if err != nil {
-		return fmt.Errorf("%w, %w", appError.ErrHandshakeFailed, err)
+		return fmt.Errorf("failed to decode handshake:  %w", err)
 	}
 	c.realityVersion = handshakeResponse.Version
 	c.realityID = handshakeResponse.UUID
@@ -93,7 +93,7 @@ func (c *FileClient) Ping(conn net.Conn) error {
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return fmt.Errorf("%w,%w", appError.ErrReceiveMessage, err)
+		return fmt.Errorf("failed to receive message: %w", err)
 	}
 	if msgType == MsgTypeError {
 		errorMsg, err := decodeErrorMessage(bodyBytes)
@@ -130,27 +130,27 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 	requestBytes := encodeTreeRequest(request)
 	realityAddr := conn.RemoteAddr().String()
 	if err := sendMessage(conn, MsgTypeTreeRequest, StatusOK, requestBytes); err != nil {
-		return nil, fmt.Errorf("failed to send tree request: %w", err)
+		return nil, fmt.Errorf("%w, failed to send tree request: %w", appError.ErrConnection, err)
 	}
 	log.Debugf("Sent tree request to %s for path: %s", realityAddr, rootPath)
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return nil, fmt.Errorf("%w,%w", appError.ErrReceiveMessage, err)
+		return nil, fmt.Errorf("%w, failed to receive message: %w", appError.ErrConnection, err)
 	}
 	if msgType == MsgTypeError {
 		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode error message: %w", err)
+			return nil, fmt.Errorf("%w, failed to decode error message: %w", appError.ErrConnection, err)
 		}
 
-		return nil, fmt.Errorf("[server error]: %s", errorMsg.ErrorMessage)
+		return nil, fmt.Errorf("[reality error]: %s", errorMsg.ErrorMessage)
 	}
 	if msgType != MsgTypeTreeResponse {
 		return nil, fmt.Errorf("invalid tree response message type, got %d", msgType)
 	}
 	treeResponse, err := decodeTreeResponse(bodyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode tree response: %w", err)
+		return nil, fmt.Errorf("%w, failed to decode tree response: %w", appError.ErrConnection, err)
 	}
 
 	if len(treeResponse.Data) == 0 {
@@ -181,7 +181,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return "", fmt.Errorf("%w,%w", appError.ErrReceiveMessage, err)
+		return "", fmt.Errorf("failed to receive message: %w", err)
 	}
 
 	if msgType == MsgTypeError {
@@ -217,7 +217,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	for {
 		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
-			return "", fmt.Errorf("%w,%w", appError.ErrReceiveMessage, err)
+			return "", fmt.Errorf("failed to receive message: %w", err)
 		}
 		switch msgType {
 		case MsgTypeFileData:

@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"local-mirror/config"
+	"local-mirror/internal/appError"
 	"local-mirror/internal/network"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/stack"
@@ -18,7 +20,12 @@ var NextLevel = stack.NewStack[DiffResult]()
 func getDirectory(fileClient *network.FileClient, path string) {
 	treejson, err := fileClient.GetRealityTree(path)
 	if err != nil {
-		log.Errorf("get reality tree for path %s: %v", path, err)
+		if errors.Is(err, appError.ErrConnection) {
+			log.Error("Connection error, retrying...")
+			fileClient.ConnectionClose()
+		} else {
+			log.Errorf("Failed to get reality tree for path %s: %v", path, err)
+		}
 		return
 	}
 	log.Debug("start analyzing diff 🫨")

@@ -69,7 +69,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				log.Warnf("Client %s disconnected", clientAddr)
 			} else {
-				log.Error(fmt.Errorf("%w,%w", appError.ErrReceiveMessage, err))
+				log.Error(fmt.Errorf("failed to receive message: %w", err))
 			}
 			return
 		}
@@ -299,7 +299,7 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) error {
 	handshakeMsg, err := decodeHandshake(bodyBytes)
 	if err != nil {
-		return fmt.Errorf("%w,%w", appError.ErrHandshakeFailed, err)
+		return fmt.Errorf("failed to decode handshake: %w", err)
 	}
 	log.Infof("Received handshake message: version: %d, clientID: %d",
 		handshakeMsg.Version,

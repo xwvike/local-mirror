@@ -373,23 +373,23 @@ func sendMessage(conn net.Conn, msgType uint16, Status uint16, body []byte) erro
 func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 	headerBytes := make([]byte, HeaderSize)
 	if _, err := io.ReadFull(conn, headerBytes); err != nil {
-		return 0, nil, fmt.Errorf("%w from %s: %w", appError.ErrReadingHeader, conn.RemoteAddr().String(), err)
+		return 0, nil, fmt.Errorf("%s: %w", conn.RemoteAddr().String(), err)
 	}
 
 	header, err := decodeHeader(headerBytes)
 	if err != nil {
 		remoteAddr := conn.RemoteAddr().String()
-		return 0, nil, fmt.Errorf("%w from %s: %w", appError.ErrDecodingHeader, remoteAddr, err)
+		return 0, nil, fmt.Errorf("%s: %w", remoteAddr, err)
 	}
 
 	if header.Magic != MagicNumber {
-		return 0, nil, fmt.Errorf("%w from %s, expected %d, got %d", appError.ErrInvalidMgicNumber, conn.RemoteAddr().String(), MagicNumber, header.Magic)
+		return 0, nil, fmt.Errorf("invalid magic number in message header form %s, expected %d, got %d", conn.RemoteAddr().String(), MagicNumber, header.Magic)
 	}
 
 	bodyBytes := make([]byte, header.BodyLength)
 	if header.BodyLength > 0 {
 		if _, err := io.ReadFull(conn, bodyBytes); err != nil {
-			return 0, nil, fmt.Errorf("%w from %s: %w", appError.ErrReadingBody, conn.RemoteAddr().String(), err)
+			return 0, nil, fmt.Errorf("error reading message body from %s: %w", conn.RemoteAddr().String(), err)
 		}
 	}
 
