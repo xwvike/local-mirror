@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/appError"
 	"local-mirror/internal/network"
@@ -17,22 +18,22 @@ import (
 
 var NextLevel = stack.NewStack[DiffResult]()
 
-func getDirectory(fileClient *network.FileClient, path string) {
+func getDirectory(fileClient *network.FileClient, path string) error {
 	treejson, err := fileClient.GetRealityTree(path)
 	if err != nil {
 		if errors.Is(err, appError.ErrConnection) {
-			log.Error("Connection error, retrying...")
 			fileClient.ConnectionClose()
+			return err
 		} else {
-			log.Errorf("Failed to get reality tree for path %s: %v", path, err)
+			_error := fmt.Errorf("failed to get reality tree for path %s: %w", path, err)
+			return _error
 		}
-		return
 	}
 	log.Debug("start analyzing diff 🫨")
 	err = Diff(treejson, path)
 	if err != nil {
-		log.Errorf("Diff error: %v", err)
-		return
+		_error := fmt.Errorf("error analyzing diff for path %s: %w", path, err)
+		return _error
 	}
 	log.Infof("Diff count: %d", diffQueue.Size())
 	for diffQueue.Size() > 0 {
@@ -95,6 +96,7 @@ func getDirectory(fileClient *network.FileClient, path string) {
 			}
 		}
 	}
+	return nil
 }
 
 func Mirror() {
@@ -145,7 +147,18 @@ func Mirror() {
 			coolTime = time.Now().UnixMilli()
 			log.Infof("Processing next level item: %v 【%d】remaining", v, NextLevel.Size())
 			if v.IsDir {
-				getDirectory(fileClient, v.Path)
+				err := getDirectory(fileClient, v.Path)
+				if err != nil {
+					log.Errorf("Error processing directory %s: %v", v.Path, err)
+					if errors.Is(err, appError.ErrConnection) {
+						err := fileClient.Reconnect()
+						if err != nil {
+							log.Errorf("Reconnection failed: %v", err)
+							return
+						}
+						fileClient.State = network.Online
+					}
+				}
 			} else {
 				log.Error("Unexpected file type in NextLevel stack, expected directory but got file:", v.Path)
 			}

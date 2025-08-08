@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"local-mirror/internal/appError"
 	"net"
 
 	log "github.com/sirupsen/logrus"
@@ -30,6 +29,8 @@ const (
 	MsgTypeHeartbeatPong        uint16 = 0x000B // 心跳响应
 	MsgTypeRecentChangeRequest  uint16 = 0x000C // 最近变更请求
 	MsgTypeRecentChangeResponse uint16 = 0x000D // 最近变更响应
+	MsgTypeReverify             uint16 = 0x000E // 重新验证请求
+	MsgTypeReverifyResponse     uint16 = 0x000F // 重新验证响应
 
 	// 状态码
 	StatusOK     uint16 = 0x0000 // 正常
@@ -130,6 +131,11 @@ type HeartbeatPongMessage struct {
 	Version   uint16 // 协议版本
 	Timestamp int64  // 时间戳（秒）
 	ServerID  uint32 // 服务端标识
+}
+
+type ReverifyResponse struct {
+	Version  uint16 // 协议版本
+	ServerID uint32 // 客户端标识
 }
 
 func encodeHeader(header MessageHeader) []byte {
@@ -510,6 +516,28 @@ func decodeHeartbeatPong(data []byte) (HeartbeatPongMessage, error) {
 	}
 	if err := binary.Read(buf, binary.BigEndian, &msg.ServerID); err != nil {
 		log.Error("Error decoding heartbeat pong server ID:", err)
+		return msg, err
+	}
+	return msg, nil
+}
+
+func encodeReverifyResponse(msg ReverifyResponse) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, msg.Version)
+	binary.Write(buf, binary.BigEndian, msg.ServerID)
+	return buf.Bytes()
+}
+
+func decodeReverifyResponse(data []byte) (ReverifyResponse, error) {
+	var msg ReverifyResponse
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.Version); err != nil {
+		log.Error("Error decoding reverify response version:", err)
+		return msg, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.ServerID); err != nil {
+		log.Error("Error decoding reverify response server ID:", err)
 		return msg, err
 	}
 	return msg, nil

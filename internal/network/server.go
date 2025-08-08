@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"local-mirror/config"
-	"local-mirror/internal/appError"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"net"
@@ -80,6 +79,12 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 				log.Error(err)
 				return
 			}
+		case MsgTypeReverify:
+			if err := s.handleReverify(conn); err != nil {
+				log.Error(err)
+				return
+			}
+
 		case MsgTypeHeartbeatPing:
 			if err := s.handlePingRequest(conn, bodyBytes); err != nil {
 				log.Error("ping request:", err)
@@ -312,6 +317,18 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) error {
 	handshakeBytes := encodeHandshake(receiveHandshake)
 	if err := sendMessage(conn, MsgTypeHandshake, StatusOK, handshakeBytes); err != nil {
 		return fmt.Errorf("error sending handshake message: %v", err)
+	}
+	return nil
+}
+
+func (s *fileServer) handleReverify(conn net.Conn) error {
+	reverifyResponse := ReverifyResponse{
+		Version:  config.ProtocolVersion,
+		ServerID: config.InstanceID,
+	}
+	responseBytes := encodeReverifyResponse(reverifyResponse)
+	if err := sendMessage(conn, MsgTypeReverifyResponse, StatusOK, responseBytes); err != nil {
+		return fmt.Errorf("error sending reverify response: %v", err)
 	}
 	return nil
 }

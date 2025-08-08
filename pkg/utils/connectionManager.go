@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -17,10 +18,16 @@ type ConnectionManager struct {
 }
 
 func NewConnectionManager(addr string) *ConnectionManager {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		log.Errorf("Failed to connect to %s: %v", addr, err)
+		return nil
+	}
 	return &ConnectionManager{
 		connectAddr: addr,
 		maxRetries:  3,
 		retryDelay:  3 * time.Second,
+		conn:        conn,
 	}
 }
 
@@ -33,10 +40,10 @@ func (cm *ConnectionManager) GetConnection() (net.Conn, error) {
 		}
 	}
 	cm.mutex.RUnlock()
-
-	return cm.reconnect()
+	return nil, fmt.Errorf("connection is invalid")
 }
 
+// todo: 需要改成使用心跳检测连接是否有效
 func (cm *ConnectionManager) isConnValid() bool {
 	if cm.conn == nil {
 		return false
@@ -54,7 +61,7 @@ func (cm *ConnectionManager) isConnValid() bool {
 	return err == nil
 }
 
-func (cm *ConnectionManager) reconnect() (net.Conn, error) {
+func (cm *ConnectionManager) Reconnect() error {
 	cm.mutex.Lock()
 	defer cm.mutex.Unlock()
 
@@ -70,7 +77,7 @@ func (cm *ConnectionManager) reconnect() (net.Conn, error) {
 		cm.conn, err = net.Dial("tcp", cm.connectAddr)
 		if err == nil {
 			log.Info("Reconnection successful")
-			return cm.conn, nil
+			return nil
 		}
 
 		log.Errorf("Reconnection attempt %d failed: %v", i+1, err)
@@ -79,7 +86,7 @@ func (cm *ConnectionManager) reconnect() (net.Conn, error) {
 		}
 	}
 
-	return nil, err
+	return err
 }
 
 func (cm *ConnectionManager) Close() {

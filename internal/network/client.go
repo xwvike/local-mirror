@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	Waiting uint8 = 0x00 // 等待
-	Online  uint8 = 0x01 // 在线
-	Offline uint8 = 0x02 // 离线
+	Waiting    uint8 = 0x00 // 等待
+	Online     uint8 = 0x01 // 在线
+	Offline    uint8 = 0x02 // 离线
+	Deprecated uint8 = 0x03 // 废弃
 )
 
 type FileClient struct {
@@ -43,6 +44,46 @@ func (c *FileClient) ConnectionClose() {
 	if c.connectionManage != nil {
 		c.connectionManage.Close()
 	}
+}
+
+func (c *FileClient) Reconnect() error {
+	log.Warnf("Reconnecting to server at %s", c.RealityAddr)
+	if err := c.connectionManage.Reconnect(); err != nil {
+		return fmt.Errorf("failed to reconnect: %w", err)
+	}
+	c.State = Waiting
+	err := c.Reverify()
+	if err != nil {
+		c.State = Deprecated
+		c.connectionManage.Close()
+		log.Errorf("Reverification failed, Abandon this client: %v", err)
+	}
+	log.Info("Reconnected successfully")
+	return nil
+}
+
+func (c *FileClient) Reverify() error {
+	conn, _ := c.connectionManage.GetConnection()
+	if err := sendMessage(conn, MsgTypeHandshake, StatusOK, nil); err != nil {
+		return fmt.Errorf("failed to send reverify message: %w", err)
+	}
+	msgType, bodyBytes, err := receiveMessage(conn)
+	if err != nil {
+		return fmt.Errorf("failed to receive reverify response: %w", err)
+	}
+	if msgType != MsgTypeReverifyResponse {
+		return fmt.Errorf("invalid reverify response message type, got %d", msgType)
+	}
+	reverifyResponse, err := decodeReverifyResponse(bodyBytes)
+	if err != nil {
+		return fmt.Errorf("failed to decode reverify response: %w", err)
+	}
+	if reverifyResponse.Version != config.ProtocolVersion || reverifyResponse.ServerID != config.InstanceID {
+		return fmt.Errorf("reverify failed, expected version %d and server ID %d, got version %d and server ID %d",
+			c.realityVersion, c.realityID,
+			reverifyResponse.Version, reverifyResponse.ServerID)
+	}
+	return nil
 }
 
 func (c *FileClient) Handshake() error {
@@ -123,6 +164,9 @@ func (c *FileClient) Ping(conn net.Conn) error {
 
 func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 	conn, err := c.connectionManage.GetConnection()
+	if err != nil {
+		return nil, fmt.Errorf("%w, failed to get connection: %w", appError.ErrConnection, err)
+	}
 	request := TreeRequestMessage{
 		PathLength: uint16(len(rootPath)),
 		RootPath:   rootPath,
