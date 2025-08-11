@@ -76,6 +76,10 @@ func getDirectory(fileClient *network.FileClient, path string) error {
 				} else {
 					hash, err := fileClient.DownloadFile(v.Path)
 					if err != nil {
+						if errors.Is(err, appError.ErrConnection) {
+							fileClient.ConnectionClose()
+							return err
+						}
 						log.Errorf("Error downloading file %s: %v", v.Path, err)
 					} else {
 						uuid, _ := utils.RandomString(16)
@@ -157,6 +161,7 @@ func Mirror() {
 							return
 						}
 						fileClient.State = network.Online
+						NextLevel.Push(v) // Re-push the directory to retry
 					}
 				}
 			} else {

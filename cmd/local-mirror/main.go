@@ -26,7 +26,6 @@ func init() {
 	config.StartPath = wd
 }
 func main() {
-	defer tree.DB.Close()
 	flag.Parse()
 
 	// 处理帮助和版本信息
@@ -53,5 +52,12 @@ func main() {
 	log.Warnf("启动时间: %d", config.StartTime)
 	log.Warnf("当前工作目录: %s", config.StartPath)
 	tree.InitDB()
+	defer func() {
+		if tree.DB != nil {
+			if err := tree.DB.Close(); err != nil {
+				log.Errorf("关闭数据库时出错: %v", err)
+			}
+		}
+	}()
 	app.App()
 }

@@ -27,12 +27,12 @@ func App() {
 		}
 	}()
 	tree.BuildFileTree(config.StartPath)
-	watcher.InitWatcher(_watcher)
 	switch *config.Mode {
 	case "reality":
-		Reality()
+		watcher.InitWatcher(_watcher)
+		go Reality()
 	case "mirror":
-		Mirror()
+		go Mirror()
 	}
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

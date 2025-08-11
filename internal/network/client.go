@@ -187,7 +187,7 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 			return nil, fmt.Errorf("%w, failed to decode error message: %w", appError.ErrConnection, err)
 		}
 
-		return nil, fmt.Errorf("[reality error]: %s", errorMsg.ErrorMessage)
+		return nil, fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
 	}
 	if msgType != MsgTypeTreeResponse {
 		return nil, fmt.Errorf("invalid tree response message type, got %d", msgType)
@@ -201,7 +201,7 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 		log.Warnf("Received empty tree response from %s, path: %s", realityAddr, rootPath)
 		return []byte{}, nil
 	}
-	log.Infof("Received tree response from %s, status: %d, data length: %d bytes",
+	log.Infof("Received tree response from %s, data length: %d bytes",
 		realityAddr,
 		len(treeResponse.Data))
 	log.Debugf("Received tree response: %s", treeResponse.Data)
@@ -211,7 +211,7 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
-		return "", fmt.Errorf("failed to get connection: %w", err)
+		return "", fmt.Errorf("%w, failed to get connection: %w", appError.ErrConnection, err)
 	}
 	requestFile := FileRequestMessage{
 		PathLength: uint16(len(filePath)),
@@ -220,20 +220,20 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	}
 	requestBytes := encodeFileRequest(requestFile)
 	if err := sendMessage(conn, MsgTypeFileRequest, StatusOK, requestBytes); err != nil {
-		return "", fmt.Errorf("failed to send file request: %w", err)
+		return "", fmt.Errorf("%w, failed to send file request: %w", appError.ErrConnection, err)
 	}
 
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return "", fmt.Errorf("failed to receive message: %w", err)
+		return "", fmt.Errorf("%w, failed to receive message: %w", appError.ErrConnection, err)
 	}
 
 	if msgType == MsgTypeError {
 		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
-			return "", fmt.Errorf("failed to decode error message: %w", err)
+			return "", fmt.Errorf("%w, failed to decode error message: %w", appError.ErrConnection, err)
 		}
-		return "", fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
+		return "", fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
 	}
 
 	if msgType != MsgTypeFileResponse {
@@ -241,7 +241,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	}
 	fileResponse, err := decodeFileResponse(bodyBytes)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode file response: %w", err)
+		return "", fmt.Errorf("%w, failed to decode file response: %w", appError.ErrConnection, err)
 	}
 
 	fullPath := filepath.Join(config.StartPath, filePath)
@@ -261,13 +261,13 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	for {
 		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
-			return "", fmt.Errorf("failed to receive message: %w", err)
+			return "", fmt.Errorf("%w, failed to receive message: %w", appError.ErrConnection, err)
 		}
 		switch msgType {
 		case MsgTypeFileData:
 			dataMsg, err := decodeFileData(bodyBytes)
 			if err != nil {
-				return "", fmt.Errorf("error decoding file data message: %w", err)
+				return "", fmt.Errorf("%w, error decoding file data message: %w", appError.ErrConnection, err)
 			}
 			// todo: check session ID
 			if dataMsg.SessionID != sessionID {
@@ -291,13 +291,13 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 
 			ackBytes := encodeAcknowlege(ackMsg)
 			if err := sendMessage(conn, MsgTypeAcknowledge, StatusOK, ackBytes); err != nil {
-				return "", fmt.Errorf("failed to send acknowledge message: %w", err)
+				return "", fmt.Errorf("%w, failed to send acknowledge message: %w", appError.ErrConnection, err)
 			}
 			log.Debugf("Sent acknowledge message, session ID: %s, offset: %d", sessionID, receivedSize)
 		case MsgTypeFileComplete:
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
-				return "", fmt.Errorf("error decoding file complete message: %w", err)
+				return "", fmt.Errorf("%w, error decoding file complete message: %w", appError.ErrConnection, err)
 			}
 			if completeMsg.SessionID != sessionID {
 				return "", fmt.Errorf("invalid session ID in file complete message, got %s", completeMsg.SessionID)
@@ -334,7 +334,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("error decoding error message: %w", err)
 			}
-			return "", fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
+			return "", fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
 		default:
 			return "", fmt.Errorf("invalid file data message type, got %d", msgType)
 		}
