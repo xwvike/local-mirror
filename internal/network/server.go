@@ -164,7 +164,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 						ErrorMessage: err.Error(),
 					}
 					errorBytes := encodeErrorMessage(errorMsg)
-					sendMessage(conn, MsgTypeError, StatusError, errorBytes)
+					sendMessage(conn, MsgTypeError, errorBytes)
 				}
 
 			}
@@ -182,7 +182,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 						ErrorMessage: err.Error(),
 					}
 					errorBytes := encodeErrorMessage(errorMsg)
-					sendMessage(conn, MsgTypeError, StatusError, errorBytes)
+					sendMessage(conn, MsgTypeError, errorBytes)
 				}
 			}
 		case MsgTypeFileRequest:
@@ -199,7 +199,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 						ErrorMessage: err.Error(),
 					}
 					errorBytes := encodeErrorMessage(errorMsg)
-					sendMessage(conn, MsgTypeError, StatusError, errorBytes)
+					sendMessage(conn, MsgTypeError, errorBytes)
 				}
 			}
 		case MsgTypeAcknowledge:
@@ -248,7 +248,7 @@ func (s *fileServer) handlePingRequest(ID uint32, bodyBytes []byte) error {
 		ServerID:  config.InstanceID,
 	}
 	pongBytes := encodeHeartbeatPong(pongMessage)
-	if err := sendMessage(conn, MsgTypeHeartbeatPong, StatusOK, pongBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeHeartbeatPong, pongBytes); err != nil {
 		log.Error("%w, Error sending pong message:", appError.ErrConnection, err)
 	}
 	log.Infof("Sent pong response to %s, server ID: %d", conn.RemoteAddr().String(), config.InstanceID)
@@ -281,7 +281,7 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 			Data:       []byte(treeData),
 		}
 		responseBytes := encodeTreeResponse(treeResponse)
-		if err := sendMessage(conn, MsgTypeTreeResponse, StatusOK, responseBytes); err != nil {
+		if err := sendMessage(conn, MsgTypeTreeResponse, responseBytes); err != nil {
 			return fmt.Errorf("%w, error sending tree response for path %s: %v", appError.ErrConnection, treeRequest.RootPath, err)
 		}
 		log.Infof("Sent tree response to %s for path: %s, data length: %d bytes", clientAddr, treeRequest.RootPath, len(treeData))
@@ -348,7 +348,7 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 			FileHash:  fileHash,
 		}
 		responseBytes := encodeFileResponse(fileResponse)
-		if err := sendMessage(conn, MsgTypeFileResponse, StatusOK, responseBytes); err != nil {
+		if err := sendMessage(conn, MsgTypeFileResponse, responseBytes); err != nil {
 			s.sessionMap.Delete(sessionID)
 			return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
 		}
@@ -379,7 +379,7 @@ func (s *fileServer) sendFileData(ID uint32, session *session, offset uint64) er
 				DataLength: uint32(n),
 				Data:       fileBuf[:n],
 			}
-			if err := sendMessage(conn, MsgTypeFileData, StatusOK, encodeFileData(dataMsg)); err != nil {
+			if err := sendMessage(conn, MsgTypeFileData, encodeFileData(dataMsg)); err != nil {
 				return fmt.Errorf("%w, error sending file data for %s", appError.ErrConnection, strings.Replace(session.FilePath, config.StartPath, ".", 1))
 			}
 
@@ -398,7 +398,7 @@ func (s *fileServer) sendFileData(ID uint32, session *session, offset uint64) er
 	}
 
 	completeBytes := encodeFileComplete(completeMsg)
-	if err := sendMessage(conn, MsgTypeFileComplete, StatusOK, completeBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeFileComplete, completeBytes); err != nil {
 		return fmt.Errorf("%w, error sending file complete for %s", appError.ErrConnection, strings.Replace(session.FilePath, config.StartPath, ".", 1))
 	}
 	log.Infof("Sent file complete message: file path: %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
@@ -419,7 +419,7 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*Handshak
 		Role:    config.ModeMap[*config.Mode],
 	}
 	handshakeBytes := encodeHandshake(receiveHandshake)
-	if err := sendMessage(conn, MsgTypeHandshake, StatusOK, handshakeBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
 		return nil, fmt.Errorf("%w, error sending handshake message: %v", appError.ErrConnection, err)
 	}
 	return &handshakeMsg, nil
@@ -436,7 +436,7 @@ func (s *fileServer) handleReverify(ID uint32) error {
 		ServerID: config.InstanceID,
 	}
 	responseBytes := encodeReverifyResponse(reverifyResponse)
-	if err := sendMessage(conn, MsgTypeReverifyResponse, StatusOK, responseBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeReverifyResponse, responseBytes); err != nil {
 		return fmt.Errorf("%w, error sending reverify response: %v", appError.ErrConnection, err)
 	}
 	return nil

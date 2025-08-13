@@ -32,20 +32,14 @@ const (
 	MsgTypeReverify             uint16 = 0x000E // 重新验证请求
 	MsgTypeReverifyResponse     uint16 = 0x000F // 重新验证响应
 
-	// 状态码
-	StatusOK     uint16 = 0x0000 // 正常
-	StatusReject uint16 = 0x0001 // 拒绝
-	StatusError  uint16 = 0x0002 // 内部错误
-
 	// 头部大小
-	HeaderSize = 14 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节 + 状态码2字节）
+	HeaderSize = 14 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节）
 )
 
 // 消息头定义
 type MessageHeader struct {
 	Magic        uint32 // 魔术字
 	Type         uint16 // 消息类型
-	Status       uint16 // 状态码
 	BodyLength   uint32 // 消息体长度
 	ReservedWord uint16 // 保留字段
 }
@@ -142,7 +136,6 @@ func encodeHeader(header MessageHeader) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, header.Magic)
 	binary.Write(buf, binary.BigEndian, header.Type)
-	binary.Write(buf, binary.BigEndian, header.Status)
 	binary.Write(buf, binary.BigEndian, header.BodyLength)
 	binary.Write(buf, binary.BigEndian, header.ReservedWord)
 	return buf.Bytes()
@@ -156,9 +149,6 @@ func decodeHeader(data []byte) (MessageHeader, error) {
 		return header, err
 	}
 	if err := binary.Read(buf, binary.BigEndian, &header.Type); err != nil {
-		return header, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &header.Status); err != nil {
 		return header, err
 	}
 	if err := binary.Read(buf, binary.BigEndian, &header.BodyLength); err != nil {
@@ -356,11 +346,10 @@ func decodeErrorMessage(data []byte) (ErrorMessage, error) {
 	return msg, nil
 }
 
-func sendMessage(conn net.Conn, msgType uint16, Status uint16, body []byte) error {
+func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
 	header := MessageHeader{
 		Magic:        MagicNumber,
 		Type:         msgType,
-		Status:       Status,
 		BodyLength:   uint32(len(body)),
 		ReservedWord: 0,
 	}

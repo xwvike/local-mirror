@@ -64,7 +64,7 @@ func (c *FileClient) Reconnect() error {
 
 func (c *FileClient) Reverify() error {
 	conn, _ := c.connectionManage.GetConnection()
-	if err := sendMessage(conn, MsgTypeHandshake, StatusOK, nil); err != nil {
+	if err := sendMessage(conn, MsgTypeHandshake, nil); err != nil {
 		return fmt.Errorf("failed to send reverify message: %w", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
@@ -98,7 +98,7 @@ func (c *FileClient) Handshake() error {
 	}
 	handshakeBytes := encodeHandshake(handshakeMsg)
 
-	if err := sendMessage(conn, MsgTypeHandshake, StatusOK, handshakeBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
 		return fmt.Errorf("failed to send handshake message: %w", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
@@ -129,7 +129,7 @@ func (c *FileClient) Ping(conn net.Conn) error {
 		ClientID:  config.InstanceID,
 	}
 	pingBytes := encodeHeartbeatPing(pingMessage)
-	if err := sendMessage(conn, MsgTypeHeartbeatPing, StatusOK, pingBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeHeartbeatPing, pingBytes); err != nil {
 		log.Error("Error sending ping message:", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
@@ -173,7 +173,7 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 	}
 	requestBytes := encodeTreeRequest(request)
 	realityAddr := conn.RemoteAddr().String()
-	if err := sendMessage(conn, MsgTypeTreeRequest, StatusOK, requestBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeTreeRequest, requestBytes); err != nil {
 		return nil, fmt.Errorf("%w, failed to send tree request: %w", appError.ErrConnection, err)
 	}
 	log.Debugf("Sent tree request to %s for path: %s", realityAddr, rootPath)
@@ -219,7 +219,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 		Offset:     0,
 	}
 	requestBytes := encodeFileRequest(requestFile)
-	if err := sendMessage(conn, MsgTypeFileRequest, StatusOK, requestBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeFileRequest, requestBytes); err != nil {
 		return "", fmt.Errorf("%w, failed to send file request: %w", appError.ErrConnection, err)
 	}
 
@@ -290,7 +290,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 			}
 
 			ackBytes := encodeAcknowlege(ackMsg)
-			if err := sendMessage(conn, MsgTypeAcknowledge, StatusOK, ackBytes); err != nil {
+			if err := sendMessage(conn, MsgTypeAcknowledge, ackBytes); err != nil {
 				return "", fmt.Errorf("%w, failed to send acknowledge message: %w", appError.ErrConnection, err)
 			}
 			log.Debugf("Sent acknowledge message, session ID: %s, offset: %d", sessionID, receivedSize)
