@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"local-mirror/config"
+	"local-mirror/internal/appError"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"net"
@@ -21,6 +22,7 @@ import (
 type fileServer struct {
 	listenAddr string
 	sessionMap sync.Map
+	clientMap  sync.Map
 }
 
 type session struct {
@@ -31,11 +33,50 @@ type session struct {
 	fileHash [32]byte // 文件哈希值
 }
 
+type client struct {
+	ID             uint32    // 客户端ID
+	Alias          string    // 客户端别名
+	Addr           string    // 客户端地址
+	Role           uint8     // 客户端角色
+	LastActiveTime time.Time // 最后一次通讯时间
+	Version        uint16    // 客户端协议版本
+	Connected      bool      // 当前是否已连接
+	Conn           net.Conn  // 客户端连接
+	SessionIDs     []string  // 活跃的会话ID列表
+}
+
+func (c *client) AddSessionID(sessionID string) {
+	c.SessionIDs = append(c.SessionIDs, sessionID)
+}
+func (c *client) RemoveSessionID(sessionID string) {
+	for i, id := range c.SessionIDs {
+		if id == sessionID {
+			c.SessionIDs = append(c.SessionIDs[:i], c.SessionIDs[i+1:]...)
+			return
+		}
+	}
+}
+func (c *client) UpdateLastActiveTime() {
+	c.LastActiveTime = time.Now()
+}
+
+func (s *fileServer) GetAllClients() []*client {
+	clients := make([]*client, 0)
+	s.clientMap.Range(func(key, value interface{}) bool {
+		if c, ok := value.(*client); ok {
+			clients = append(clients, c)
+		}
+		return true
+	})
+	return clients
+}
+
 func NewFileServer(listenAddr string) *fileServer {
 	log.Info("Creating file server, listen address:", listenAddr)
 	return &fileServer{
 		listenAddr: listenAddr,
 		sessionMap: sync.Map{},
+		clientMap:  sync.Map{},
 	}
 }
 
@@ -57,10 +98,26 @@ func (s *fileServer) Start() error {
 }
 
 func (s *fileServer) handleConnection(conn net.Conn) {
-	defer conn.Close()
-
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Client connected from %s to local port %s", clientAddr, conn.LocalAddr().String())
+	client := &client{
+		ID:             0,
+		Alias:          "",
+		Addr:           clientAddr,
+		Role:           0,
+		LastActiveTime: time.Now(),
+		Version:        0,
+		Connected:      false,
+		Conn:           conn,
+		SessionIDs:     []string{},
+	}
+
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Errorf("Error closing connection for %s: %v", clientAddr, err)
+		}
+		s.clientMap.Delete(client.ID)
+	}()
 
 	for {
 		msgType, bodyBytes, err := receiveMessage(conn)
@@ -72,19 +129,27 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			}
 			return
 		}
+		client.UpdateLastActiveTime()
 
 		switch msgType {
 		case MsgTypeHandshake:
-			if err := s.handleHandshake(conn, bodyBytes); err != nil {
+			clientBase, err := s.handleHandshake(conn, bodyBytes)
+			if err != nil {
+				conn.Close()
 				log.Error(err)
 				return
 			}
+			client.ID = clientBase.UUID
+			client.Alias = ""
+			client.Role = clientBase.Role
+			client.Version = clientBase.Version
+			client.Connected = true
+			s.clientMap.Store(clientBase.UUID, client)
 		case MsgTypeReverify:
 			if err := s.handleReverify(conn); err != nil {
 				log.Error(err)
 				return
 			}
-
 		case MsgTypeHeartbeatPing:
 			if err := s.handlePingRequest(conn, bodyBytes); err != nil {
 				log.Error("ping request:", err)
@@ -99,41 +164,55 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			}
 		case MsgTypeTreeRequest:
 			if err := s.handleTreeRequest(conn, bodyBytes); err != nil {
-				log.Error("request:", err)
-				errorMsg := ErrorMessage{
-					MessageLen:   uint16(len(err.Error())),
-					ErrorMessage: err.Error(),
-				}
-				errorBytes := encodeErrorMessage(errorMsg)
-				if err := sendMessage(conn, MsgTypeError, StatusError, errorBytes); err != nil {
-					log.Error("Error sending error message:", err)
+				log.Error(err)
+				if errors.Is(err, appError.ErrConnection) {
+					conn.Close()
+					s.clientMap.Delete(client.ID)
+					log.Warnf("Connection closed for %s due to error: %v", clientAddr, err)
+					return
+				} else {
+					errorMsg := ErrorMessage{
+						MessageLen:   uint16(len(err.Error())),
+						ErrorMessage: err.Error(),
+					}
+					errorBytes := encodeErrorMessage(errorMsg)
+					sendMessage(conn, MsgTypeError, StatusError, errorBytes)
 				}
 			}
 		case MsgTypeFileRequest:
 			if err := s.handleFileRequest(conn, bodyBytes); err != nil {
-				log.Error("file request:", err)
-				errorMsg := ErrorMessage{
-					MessageLen:   uint16(len(err.Error())),
-					ErrorMessage: err.Error(),
-				}
-				errorBytes := encodeErrorMessage(errorMsg)
-				if err := sendMessage(conn, MsgTypeError, StatusError, errorBytes); err != nil {
-					log.Error("Error sending errorm essage:", err)
+				log.Error(err)
+				if errors.Is(err, appError.ErrConnection) {
+					conn.Close()
+					s.clientMap.Delete(client.ID)
+					log.Warnf("Connection closed for %s due to error: %v", clientAddr, err)
+					return
+				} else {
+					errorMsg := ErrorMessage{
+						MessageLen:   uint16(len(err.Error())),
+						ErrorMessage: err.Error(),
+					}
+					errorBytes := encodeErrorMessage(errorMsg)
+					sendMessage(conn, MsgTypeError, StatusError, errorBytes)
 				}
 			}
 		case MsgTypeAcknowledge:
 			ackMsg, err := decodeAcknowledge(bodyBytes)
 			if err != nil {
-				log.Error("acknowledge message:", err)
-				//todo: 给客户端发送错误消息
+				conn.Close()
+				s.clientMap.Delete(client.ID)
+				log.Warn("acknowledge message:", err)
+				//todo: 给客户端发送回复
 				return
 			}
 			log.Infof("Received acknowledge message: session ID: %s, offset: %d", ackMsg.SessionID, ackMsg.Offset)
 		case MsgTypeFileComplete:
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
-				log.Error("Error decoding file complete message:", err)
-				//todo: 给客户端发送错误消息
+				conn.Close()
+				s.clientMap.Delete(client.ID)
+				log.Warn("Error decoding file complete message:", err)
+				//todo: 给客户端发送回复
 				return
 			}
 			log.Infof("Received file complete message: session ID: %s", completeMsg.SessionID)
@@ -168,7 +247,7 @@ func (s *fileServer) handlePingRequest(conn net.Conn, bodyBytes []byte) error {
 func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 	treeRequest, err := decodeTreeRequest(bodyBytes)
 	if err != nil {
-		return fmt.Errorf("error decoding tree request: %v", err)
+		return fmt.Errorf("%w, error decoding tree request: %v", appError.ErrConnection, err)
 	}
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Received tree request from %s for path: %s", clientAddr, treeRequest.RootPath)
@@ -187,7 +266,7 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 		}
 		responseBytes := encodeTreeResponse(treeResponse)
 		if err := sendMessage(conn, MsgTypeTreeResponse, StatusOK, responseBytes); err != nil {
-			return fmt.Errorf("error sending tree response for path %s: %v", treeRequest.RootPath, err)
+			return fmt.Errorf("%w, error sending tree response for path %s: %v", appError.ErrConnection, treeRequest.RootPath, err)
 		}
 		log.Infof("Sent tree response to %s for path: %s, data length: %d bytes", clientAddr, treeRequest.RootPath, len(treeData))
 		return nil
@@ -197,7 +276,7 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 	fileRequest, err := decodeFileRequest(bodyBytes)
 	if err != nil {
-		return fmt.Errorf("error decoding file request: %v", err)
+		return fmt.Errorf("%w, error decoding file request: %v", appError.ErrConnection, err)
 	}
 	log.Debugf("Received file request: %s, offset: %d", fileRequest.FilePath, fileRequest.Offset)
 	fullPath := filepath.Join(config.StartPath, fileRequest.FilePath)
@@ -250,7 +329,7 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 		responseBytes := encodeFileResponse(fileResponse)
 		if err := sendMessage(conn, MsgTypeFileResponse, StatusOK, responseBytes); err != nil {
 			s.sessionMap.Delete(sessionID)
-			return fmt.Errorf("error sending file response for %s", fileRequest.FilePath)
+			return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
 		}
 		log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
 		if err := s.sendFileData(conn, session, fileRequest.Offset); err != nil {
@@ -274,9 +353,8 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 				DataLength: uint32(n),
 				Data:       fileBuf[:n],
 			}
-			//todo: 添加发送失败重试发送的机制
 			if err := sendMessage(conn, MsgTypeFileData, StatusOK, encodeFileData(dataMsg)); err != nil {
-				return fmt.Errorf("error sending file data for %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
+				return fmt.Errorf("%w, error sending file data for %s", appError.ErrConnection, strings.Replace(session.FilePath, config.StartPath, ".", 1))
 			}
 
 			offset += uint64(n)
@@ -295,16 +373,16 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64
 
 	completeBytes := encodeFileComplete(completeMsg)
 	if err := sendMessage(conn, MsgTypeFileComplete, StatusOK, completeBytes); err != nil {
-		return fmt.Errorf("error sending file complete for %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
+		return fmt.Errorf("%w, error sending file complete for %s", appError.ErrConnection, strings.Replace(session.FilePath, config.StartPath, ".", 1))
 	}
 	log.Infof("Sent file complete message: file path: %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
 	return nil
 }
 
-func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) error {
+func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*HandshakeMessage, error) {
 	handshakeMsg, err := decodeHandshake(bodyBytes)
 	if err != nil {
-		return fmt.Errorf("failed to decode handshake: %w", err)
+		return nil, fmt.Errorf("%w, failed to decode handshake: %w", appError.ErrConnection, err)
 	}
 	log.Infof("Received handshake message: version: %d, clientID: %d",
 		handshakeMsg.Version,
@@ -316,9 +394,9 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) error {
 	}
 	handshakeBytes := encodeHandshake(receiveHandshake)
 	if err := sendMessage(conn, MsgTypeHandshake, StatusOK, handshakeBytes); err != nil {
-		return fmt.Errorf("error sending handshake message: %v", err)
+		return nil, fmt.Errorf("%w, error sending handshake message: %v", appError.ErrConnection, err)
 	}
-	return nil
+	return &handshakeMsg, nil
 }
 
 func (s *fileServer) handleReverify(conn net.Conn) error {
@@ -328,7 +406,7 @@ func (s *fileServer) handleReverify(conn net.Conn) error {
 	}
 	responseBytes := encodeReverifyResponse(reverifyResponse)
 	if err := sendMessage(conn, MsgTypeReverifyResponse, StatusOK, responseBytes); err != nil {
-		return fmt.Errorf("error sending reverify response: %v", err)
+		return fmt.Errorf("%w, error sending reverify response: %v", appError.ErrConnection, err)
 	}
 	return nil
 }
