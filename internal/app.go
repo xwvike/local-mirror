@@ -21,9 +21,11 @@ func App() {
 		log.Fatal(err)
 	}
 	defer func() {
-		log.Info("正在关闭监视器...")
-		if err := _watcher.Close(); err != nil {
-			log.Errorf("关闭监视器时出错: %v", err)
+		if *config.Mode == "reality" {
+			log.Info("正在关闭监视器...")
+			if err := _watcher.Close(); err != nil {
+				log.Errorf("关闭监视器时出错: %v", err)
+			}
 		}
 	}()
 	tree.BuildFileTree(config.StartPath)

@@ -146,24 +146,30 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			client.Connected = true
 			s.clientMap.Store(clientBase.UUID, client)
 		case MsgTypeReverify:
-			if err := s.handleReverify(conn); err != nil {
+			if err := s.handleReverify(client.ID); err != nil {
 				log.Error(err)
 				return
 			}
 		case MsgTypeHeartbeatPing:
-			if err := s.handlePingRequest(conn, bodyBytes); err != nil {
-				log.Error("ping request:", err)
-				errorMsg := ErrorMessage{
-					MessageLen:   uint16(len(err.Error())),
-					ErrorMessage: err.Error(),
+			if err := s.handlePingRequest(client.ID, bodyBytes); err != nil {
+				log.Error(err)
+				if errors.Is(err, appError.ErrConnection) {
+					conn.Close()
+					s.clientMap.Delete(client.ID)
+					log.Warnf("Connection closed for %s due to error: %v", clientAddr, err)
+					return
+				} else {
+					errorMsg := ErrorMessage{
+						MessageLen:   uint16(len(err.Error())),
+						ErrorMessage: err.Error(),
+					}
+					errorBytes := encodeErrorMessage(errorMsg)
+					sendMessage(conn, MsgTypeError, StatusError, errorBytes)
 				}
-				errorBytes := encodeErrorMessage(errorMsg)
-				if err := sendMessage(conn, MsgTypeError, StatusError, errorBytes); err != nil {
-					log.Error("Error sending error message:", err)
-				}
+
 			}
 		case MsgTypeTreeRequest:
-			if err := s.handleTreeRequest(conn, bodyBytes); err != nil {
+			if err := s.handleTreeRequest(client.ID, bodyBytes); err != nil {
 				log.Error(err)
 				if errors.Is(err, appError.ErrConnection) {
 					conn.Close()
@@ -180,7 +186,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 				}
 			}
 		case MsgTypeFileRequest:
-			if err := s.handleFileRequest(conn, bodyBytes); err != nil {
+			if err := s.handleFileRequest(client.ID, bodyBytes); err != nil {
 				log.Error(err)
 				if errors.Is(err, appError.ErrConnection) {
 					conn.Close()
@@ -224,10 +230,15 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *fileServer) handlePingRequest(conn net.Conn, bodyBytes []byte) error {
+func (s *fileServer) handlePingRequest(ID uint32, bodyBytes []byte) error {
+	_client, ok := s.clientMap.Load(ID)
+	if !ok {
+		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
+	}
+	conn := _client.(*client).Conn
 	pingRequest, err := decodeHeartbeatPing(bodyBytes)
 	if err != nil {
-		log.Error("Error decoding ping request message:", err)
+		log.Error("%w, Error decoding ping request message:", appError.ErrConnection, err)
 		return err
 	}
 	log.Infof("Received ping request from %s, client ID: %d", conn.RemoteAddr().String(), pingRequest.ClientID)
@@ -238,13 +249,18 @@ func (s *fileServer) handlePingRequest(conn net.Conn, bodyBytes []byte) error {
 	}
 	pongBytes := encodeHeartbeatPong(pongMessage)
 	if err := sendMessage(conn, MsgTypeHeartbeatPong, StatusOK, pongBytes); err != nil {
-		log.Error("Error sending pong message:", err)
+		log.Error("%w, Error sending pong message:", appError.ErrConnection, err)
 	}
 	log.Infof("Sent pong response to %s, server ID: %d", conn.RemoteAddr().String(), config.InstanceID)
 	return nil
 }
 
-func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
+func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
+	_client, ok := s.clientMap.Load(ID)
+	if !ok {
+		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
+	}
+	conn := _client.(*client).Conn
 	treeRequest, err := decodeTreeRequest(bodyBytes)
 	if err != nil {
 		return fmt.Errorf("%w, error decoding tree request: %v", appError.ErrConnection, err)
@@ -273,7 +289,12 @@ func (s *fileServer) handleTreeRequest(conn net.Conn, bodyBytes []byte) error {
 	}
 }
 
-func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
+func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
+	_client, ok := s.clientMap.Load(ID)
+	if !ok {
+		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
+	}
+	conn := _client.(*client).Conn
 	fileRequest, err := decodeFileRequest(bodyBytes)
 	if err != nil {
 		return fmt.Errorf("%w, error decoding file request: %v", appError.ErrConnection, err)
@@ -332,14 +353,19 @@ func (s *fileServer) handleFileRequest(conn net.Conn, bodyBytes []byte) error {
 			return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
 		}
 		log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
-		if err := s.sendFileData(conn, session, fileRequest.Offset); err != nil {
+		if err := s.sendFileData(ID, session, fileRequest.Offset); err != nil {
 			return err
 		}
 		return nil
 	}
 }
 
-func (s *fileServer) sendFileData(conn net.Conn, session *session, offset uint64) error {
+func (s *fileServer) sendFileData(ID uint32, session *session, offset uint64) error {
+	_client, ok := s.clientMap.Load(ID)
+	if !ok {
+		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
+	}
+	conn := _client.(*client).Conn
 	defer session.file.Close()
 	defer s.sessionMap.Delete(session.ID)
 
@@ -399,7 +425,12 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*Handshak
 	return &handshakeMsg, nil
 }
 
-func (s *fileServer) handleReverify(conn net.Conn) error {
+func (s *fileServer) handleReverify(ID uint32) error {
+	_client, ok := s.clientMap.Load(ID)
+	if !ok {
+		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
+	}
+	conn := _client.(*client).Conn
 	reverifyResponse := ReverifyResponse{
 		Version:  config.ProtocolVersion,
 		ServerID: config.InstanceID,
