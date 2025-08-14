@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -21,10 +22,131 @@ var (
 	Deprecated uint8 = 0x03 // 废弃
 )
 
+type ConnectionManager struct {
+	conn        net.Conn
+	mutex       sync.RWMutex
+	connectAddr string
+	maxRetries  int
+	retryDelay  time.Duration
+}
+
+func NewConnectionManager(addr string) (*ConnectionManager, error) {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
+	}
+	return &ConnectionManager{
+		connectAddr: addr,
+		maxRetries:  3,
+		retryDelay:  3 * time.Second,
+		conn:        conn,
+	}, nil
+}
+
+func (cm *ConnectionManager) GetConnection() (net.Conn, error) {
+	cm.mutex.RLock()
+	if cm.conn != nil {
+		if cm.isConnValid() {
+			defer cm.mutex.RUnlock()
+			return cm.conn, nil
+		}
+	}
+	cm.mutex.RUnlock()
+	return nil, fmt.Errorf("connection is invalid")
+}
+
+// todo: 需要改成使用心跳检测连接是否有效
+func (cm *ConnectionManager) isConnValid() bool {
+	if cm.conn == nil {
+		return false
+	}
+	cm.conn.SetReadDeadline(time.Now().Add(1000 * time.Millisecond))
+	defer cm.conn.SetReadDeadline(time.Time{})
+
+	pingMessage := HeartbeatPingMessage{
+		Version:   config.ProtocolVersion,
+		Timestamp: time.Now().Unix(),
+		ClientID:  config.InstanceID,
+	}
+	pingBytes := encodeHeartbeatPing(pingMessage)
+	if err := sendMessage(cm.conn, MsgTypeHeartbeatPing, pingBytes); err != nil {
+		log.Error("Error sending ping message:", err)
+		return false
+	}
+	msgType, bodyBytes, err := receiveMessage(cm.conn)
+	if err != nil {
+		log.Error("Error receiving pong message:", err)
+		return false
+	}
+	if msgType == MsgTypeError {
+		errorMsg, err := decodeErrorMessage(bodyBytes)
+		if err != nil {
+			log.Error("Error decoding error message:", err)
+			return false
+		}
+		newError := fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
+		log.Error(newError)
+		return false
+	}
+	if msgType != MsgTypeHeartbeatPong {
+		newError := fmt.Errorf("invalid pong message type, got %d", msgType)
+		log.Error(newError)
+		return false
+	}
+	pongMessage, err := decodeHeartbeatPong(bodyBytes)
+	if err != nil {
+		log.Error("Error decoding pong message:", err)
+		return false
+	}
+	log.Infof("Received pong message: version: %d, timestamp: %d, clientID: %d",
+		pongMessage.Version,
+		pongMessage.Timestamp,
+		pongMessage.ServerID)
+	return true
+}
+
+func (cm *ConnectionManager) Reconnect() error {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+
+	if cm.conn != nil {
+		cm.conn.Close()
+		cm.conn = nil
+	}
+
+	var err error
+	for i := 0; i < cm.maxRetries; i++ {
+		log.Infof("Attempting to reconnect (attempt %d/%d)", i+1, cm.maxRetries)
+
+		cm.conn, err = net.Dial("tcp", cm.connectAddr)
+		if err == nil {
+			log.Info("Reconnection successful")
+			return nil
+		}
+
+		log.Errorf("Reconnection attempt %d failed: %v", i+1, err)
+		if i < cm.maxRetries-1 {
+			time.Sleep(cm.retryDelay)
+		}
+	}
+
+	return err
+}
+
+func (cm *ConnectionManager) Close() {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+
+	if cm.conn != nil {
+		cm.conn.Close()
+		cm.conn = nil
+	}
+}
+
 type FileClient struct {
 	RealityAddr      string
 	Alias            string
-	connectionManage *utils.ConnectionManager
+	connectionManage *ConnectionManager
 	realityVersion   uint16
 	realityID        uint32
 	State            uint8
@@ -32,7 +154,7 @@ type FileClient struct {
 
 func NewFileClient(realityAddr string, serverAlias string) (*FileClient, error) {
 	log.Info("Creating file client, server address:", realityAddr)
-	connetion, err := utils.NewConnectionManager(realityAddr)
+	connetion, err := NewConnectionManager(realityAddr)
 	if err != nil {
 		return &FileClient{
 			RealityAddr:      realityAddr,
