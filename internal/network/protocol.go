@@ -33,7 +33,7 @@ const (
 	MsgTypeReverifyResponse     uint16 = 0x000F // 重新验证响应
 
 	// 头部大小
-	HeaderSize = 14 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节）
+	HeaderSize = 12 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节）
 )
 
 // 消息头定义

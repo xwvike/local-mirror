@@ -114,7 +114,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 
 	defer func() {
 		if err := conn.Close(); err != nil {
-			log.Errorf("Error closing connection for %s: %v", clientAddr, err)
+			log.Error(err)
 		}
 		s.clientMap.Delete(client.ID)
 	}()

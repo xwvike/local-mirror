@@ -17,18 +17,17 @@ type ConnectionManager struct {
 	retryDelay  time.Duration
 }
 
-func NewConnectionManager(addr string) *ConnectionManager {
+func NewConnectionManager(addr string) (*ConnectionManager, error) {
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		log.Errorf("Failed to connect to %s: %v", addr, err)
-		return nil
+		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
 	}
 	return &ConnectionManager{
 		connectAddr: addr,
 		maxRetries:  3,
 		retryDelay:  3 * time.Second,
 		conn:        conn,
-	}
+	}, nil
 }
 
 func (cm *ConnectionManager) GetConnection() (net.Conn, error) {

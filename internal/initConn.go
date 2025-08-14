@@ -11,9 +11,13 @@ import (
 
 func InitConn() (*network.FileClient, error) {
 	maxRetries := 3
-	fileClient := network.NewFileClient(*config.RealityIP+":52345", "default")
+	fileClient, err := network.NewFileClient(*config.RealityIP+":52345", "default")
+	if err != nil {
+		return fileClient, fmt.Errorf("failed to create file client: %w", err)
+	}
 	for i := 0; i < maxRetries; i++ {
 		log.Warnf("Attempting to connect to server at %s, attempt %d/%d", fileClient.RealityAddr, i+1, maxRetries)
+		log.Debugf("Connecting to server at %s", fileClient.RealityAddr)
 		err := fileClient.Handshake()
 		if err != nil {
 			log.Warnf("Handshake failed, attempt %d/%d: %v", i+1, maxRetries, err)
@@ -27,7 +31,7 @@ func InitConn() (*network.FileClient, error) {
 		break
 	}
 	if fileClient.State != network.Online {
-		return nil, fmt.Errorf("failed to establish connection with the server at %s", fileClient.RealityAddr)
+		return fileClient, fmt.Errorf("failed to establish connection with the server at %s", fileClient.RealityAddr)
 	}
 	return fileClient, nil
 }

@@ -92,7 +92,7 @@ func startRemoteServer() error {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}
 	// 使用 SSH 远程启动服务器，添加密钥参数
-	sshCmd := fmt.Sprintf(" cd ./test && chmod +x %s && nohup %s -mode=mirror -realityip=192.168.100.29 -cooldown=30 -loglevel=info > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
+	sshCmd := fmt.Sprintf(" cd ./test && chmod +x %s && nohup %s -mode=mirror -realityip=10.10.0.5 -cooldown=30 -loglevel=debug > /dev/null 2>&1 &", remoteBinPath, remoteBinPath)
 	fmt.Println("sshCmd:", sshCmd)
 	cmd := exec.Command("ssh", "-p", remotePort, "-i", sshKeyPath, fmt.Sprintf("%s@%s", remoteUser, remoteHost), sshCmd)
 	cmd.Stdout = logFile

@@ -30,14 +30,23 @@ type FileClient struct {
 	State            uint8
 }
 
-func NewFileClient(realityAddr string, serverAlias string) *FileClient {
+func NewFileClient(realityAddr string, serverAlias string) (*FileClient, error) {
 	log.Info("Creating file client, server address:", realityAddr)
+	connetion, err := utils.NewConnectionManager(realityAddr)
+	if err != nil {
+		return &FileClient{
+			RealityAddr:      realityAddr,
+			Alias:            serverAlias,
+			connectionManage: nil,
+			State:            Offline,
+		}, fmt.Errorf("failed to create connection manager: %w", err)
+	}
 	return &FileClient{
 		RealityAddr:      realityAddr,
 		Alias:            serverAlias,
-		connectionManage: utils.NewConnectionManager(realityAddr),
+		connectionManage: connetion,
 		State:            Waiting,
-	}
+	}, nil
 }
 
 func (c *FileClient) ConnectionClose() {
