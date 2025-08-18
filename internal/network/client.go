@@ -426,3 +426,47 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 		}
 	}
 }
+
+func (c *FileClient) GetTreeChange(limit uint8) ([]string, error) {
+	conn, err := c.connectionManage.GetConnection()
+	if err != nil {
+		return nil, fmt.Errorf("%w, failed to get connection: %w", appError.ErrConnection, err)
+	}
+
+	request := RecentChangeRequestMessage{
+		ClientID: config.InstanceID,
+		Limit:    limit,
+	}
+	requestBytes := encodeRecentChangeRequest(request)
+	if err := sendMessage(conn, MsgTypeRecentChangeRequest, requestBytes); err != nil {
+		return nil, fmt.Errorf("%w, failed to send recent change request: %w", appError.ErrConnection, err)
+	}
+	msgType, bodyBytes, err := receiveMessage(conn)
+	if err != nil {
+		return nil, fmt.Errorf("%w, failed to receive message: %w", appError.ErrConnection, err)
+	}
+	if msgType == MsgTypeError {
+		errorMsg, err := decodeErrorMessage(bodyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("%w, failed to decode error message: %w", appError.ErrConnection, err)
+		}
+		return nil, fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
+	}
+	if msgType != MsgTypeRecentChangeResponse {
+		return nil, fmt.Errorf("invalid recent change response message type, got %d", msgType)
+	}
+	recentChangeResponse, err := decodeRecentChangeResponse(bodyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w, failed to decode recent change response: %w", appError.ErrConnection, err)
+	}
+	if len(recentChangeResponse.Changes) == 0 {
+		log.Warnf("Received empty recent change response from %s", c.RealityAddr)
+		return []string{}, nil
+	}
+	log.Infof("Received recent change response from %s, changes count: %d",
+		c.RealityAddr,
+		len(recentChangeResponse.Changes))
+	log.Debugf("Received recent change response: %v", recentChangeResponse.Changes)
+	return recentChangeResponse.Changes, nil
+
+}

@@ -106,11 +106,14 @@ type TreeResponseMessage struct {
 
 // 最近变更请求消息
 type RecentChangeRequestMessage struct {
+	ClientID uint32 // 客户端标识
+	Limit    uint8  // 限制返回的变更数量
 }
 
 // 最近变更响应消息
 type RecentChangeResponseMessage struct {
-	Changes []string // 最近变更的文件或目录列表
+	Changes  []string // 最近变更的目录列表
+	ServerID uint32   // 客户端标识
 }
 
 // 心跳请求消息
@@ -529,5 +532,75 @@ func decodeReverifyResponse(data []byte) (ReverifyResponse, error) {
 		log.Error("Error decoding reverify response server ID:", err)
 		return msg, err
 	}
+	return msg, nil
+}
+
+func encodeRecentChangeRequest(msg RecentChangeRequestMessage) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, msg.ClientID)
+	binary.Write(buf, binary.BigEndian, msg.Limit)
+	return buf.Bytes()
+}
+
+func decodeRecentChangeRequest(data []byte) (RecentChangeRequestMessage, error) {
+	var msg RecentChangeRequestMessage
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.ClientID); err != nil {
+		log.Error("Error decoding recent change request client ID:", err)
+		return msg, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.Limit); err != nil {
+		log.Error("Error decoding recent change request limit:", err)
+		return msg, err
+	}
+	return msg, nil
+}
+
+func encodeRecentChangeResponse(msg RecentChangeResponseMessage) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, msg.ServerID)
+
+	changeCount := len(msg.Changes)
+	binary.Write(buf, binary.BigEndian, uint32(changeCount))
+	for _, change := range msg.Changes {
+		changeBytes := []byte(change)
+		binary.Write(buf, binary.BigEndian, uint16(len(changeBytes)))
+		buf.Write(changeBytes)
+	}
+
+	return buf.Bytes()
+}
+
+func decodeRecentChangeResponse(data []byte) (RecentChangeResponseMessage, error) {
+	var msg RecentChangeResponseMessage
+	buf := bytes.NewReader(data)
+
+	if err := binary.Read(buf, binary.BigEndian, &msg.ServerID); err != nil {
+		log.Error("Error decoding recent change response server ID:", err)
+		return msg, err
+	}
+
+	var changeCount uint32
+	if err := binary.Read(buf, binary.BigEndian, &changeCount); err != nil {
+		log.Error("Error decoding recent change response change count:", err)
+		return msg, err
+	}
+
+	msg.Changes = make([]string, changeCount)
+	for i := uint32(0); i < changeCount; i++ {
+		var changeLength uint16
+		if err := binary.Read(buf, binary.BigEndian, &changeLength); err != nil {
+			log.Error("Error decoding recent change response change length:", err)
+			return msg, err
+		}
+		changeBytes := make([]byte, changeLength)
+		if _, err := buf.Read(changeBytes); err != nil {
+			log.Error("Error reading recent change response change data:", err)
+			return msg, err
+		}
+		msg.Changes[i] = string(changeBytes)
+	}
+
 	return msg, nil
 }
