@@ -55,53 +55,8 @@ func (cm *ConnectionManager) GetConnection() (net.Conn, error) {
 	return nil, fmt.Errorf("connection is invalid")
 }
 
-// todo: 需要改成使用心跳检测连接是否有效
+// todo: 需要添加使用心跳检测连接是否有效
 func (cm *ConnectionManager) isConnValid() bool {
-	if cm.conn == nil {
-		return false
-	}
-	cm.conn.SetReadDeadline(time.Now().Add(1000 * time.Millisecond))
-	defer cm.conn.SetReadDeadline(time.Time{})
-
-	pingMessage := HeartbeatPingMessage{
-		Version:   config.ProtocolVersion,
-		Timestamp: time.Now().Unix(),
-		ClientID:  config.InstanceID,
-	}
-	pingBytes := encodeHeartbeatPing(pingMessage)
-	if err := sendMessage(cm.conn, MsgTypeHeartbeatPing, pingBytes); err != nil {
-		log.Error("Error sending ping message:", err)
-		return false
-	}
-	msgType, bodyBytes, err := receiveMessage(cm.conn)
-	if err != nil {
-		log.Error("Error receiving pong message:", err)
-		return false
-	}
-	if msgType == MsgTypeError {
-		errorMsg, err := decodeErrorMessage(bodyBytes)
-		if err != nil {
-			log.Error("Error decoding error message:", err)
-			return false
-		}
-		newError := fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
-		log.Error(newError)
-		return false
-	}
-	if msgType != MsgTypeHeartbeatPong {
-		newError := fmt.Errorf("invalid pong message type, got %d", msgType)
-		log.Error(newError)
-		return false
-	}
-	pongMessage, err := decodeHeartbeatPong(bodyBytes)
-	if err != nil {
-		log.Error("Error decoding pong message:", err)
-		return false
-	}
-	log.Infof("Received pong message: version: %d, timestamp: %d, clientID: %d",
-		pongMessage.Version,
-		pongMessage.Timestamp,
-		pongMessage.ServerID)
 	return true
 }
 

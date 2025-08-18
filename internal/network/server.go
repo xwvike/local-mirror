@@ -21,7 +21,6 @@ import (
 
 type fileServer struct {
 	listenAddr string
-	sessionMap sync.Map
 	clientMap  sync.Map
 }
 
@@ -42,20 +41,9 @@ type client struct {
 	Version        uint16    // 客户端协议版本
 	Connected      bool      // 当前是否已连接
 	Conn           net.Conn  // 客户端连接
-	SessionIDs     []string  // 活跃的会话ID列表
+	SessionMap     sync.Map  // 活跃的会话列表
 }
 
-func (c *client) AddSessionID(sessionID string) {
-	c.SessionIDs = append(c.SessionIDs, sessionID)
-}
-func (c *client) RemoveSessionID(sessionID string) {
-	for i, id := range c.SessionIDs {
-		if id == sessionID {
-			c.SessionIDs = append(c.SessionIDs[:i], c.SessionIDs[i+1:]...)
-			return
-		}
-	}
-}
 func (c *client) UpdateLastActiveTime() {
 	c.LastActiveTime = time.Now()
 }
@@ -75,7 +63,6 @@ func NewFileServer(listenAddr string) *fileServer {
 	log.Info("Creating file server, listen address:", listenAddr)
 	return &fileServer{
 		listenAddr: listenAddr,
-		sessionMap: sync.Map{},
 		clientMap:  sync.Map{},
 	}
 }
@@ -109,7 +96,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 		Version:        0,
 		Connected:      false,
 		Conn:           conn,
-		SessionIDs:     []string{},
+		SessionMap:     sync.Map{},
 	}
 
 	defer func() {
@@ -222,7 +209,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 				return
 			}
 			log.Infof("Received file complete message: session ID: %s", completeMsg.SessionID)
-			s.sessionMap.Delete(completeMsg.SessionID)
+			client.SessionMap.Delete(completeMsg.SessionID)
 		default:
 			log.Errorf("Unknown message type: %d", msgType)
 		}
@@ -340,7 +327,7 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 			fileHash: fileHash,
 		}
 
-		s.sessionMap.Store(sessionID, session)
+		_client.(*client).SessionMap.Store(session.ID, session)
 
 		fileResponse := FileResponseMessage{
 			SessionID: sessionBytes,
@@ -349,7 +336,7 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 		}
 		responseBytes := encodeFileResponse(fileResponse)
 		if err := sendMessage(conn, MsgTypeFileResponse, responseBytes); err != nil {
-			s.sessionMap.Delete(sessionID)
+			s.clientMap.Delete(ID)
 			return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
 		}
 		log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
@@ -367,7 +354,7 @@ func (s *fileServer) sendFileData(ID uint32, session *session, offset uint64) er
 	}
 	conn := _client.(*client).Conn
 	defer session.file.Close()
-	defer s.sessionMap.Delete(session.ID)
+	defer _client.(*client).SessionMap.Delete(session.ID)
 
 	fileBuf := make([]byte, *config.FileBufferSize)
 	for {
