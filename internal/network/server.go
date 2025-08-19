@@ -155,6 +155,8 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 				}
 
 			}
+		case MsgTypeRecentChangeRequest:
+			s.handleRecentChangeRequest(client.ID, bodyBytes)
 		case MsgTypeTreeRequest:
 			if err := s.handleTreeRequest(client.ID, bodyBytes); err != nil {
 				log.Error(err)
@@ -427,4 +429,38 @@ func (s *fileServer) handleReverify(ID uint32) error {
 		return fmt.Errorf("%w, error sending reverify response: %v", appError.ErrConnection, err)
 	}
 	return nil
+}
+
+func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) {
+	_client, ok := s.clientMap.Load(ID)
+	if !ok {
+		log.Errorf("Client not found for ID: %d", ID)
+		return
+	}
+	conn := _client.(*client).Conn
+	recentChangeRequest, err := decodeRecentChangeRequest(bodyBytes)
+	if err != nil {
+		log.Error("Error decoding recent change request:", err)
+		return
+	}
+	log.Infof("Received recent change request from %s, client ID: %d, limit: %d",
+		conn.RemoteAddr().String(), recentChangeRequest.ClientID, recentChangeRequest.Limit)
+
+	var recentChanges []string
+	if recentChangeRequest.Limit == 0 || uint8(len(tree.RecentChangedDirs)) <= recentChangeRequest.Limit {
+		recentChanges = tree.RecentChangedDirs
+	} else {
+		recentChanges = tree.RecentChangedDirs[:recentChangeRequest.Limit]
+	}
+
+	responseMsg := RecentChangeResponseMessage{
+		Changes:  tree.RecentChangedDirs,
+		ServerID: config.InstanceID,
+	}
+	responseBytes := encodeRecentChangeResponse(responseMsg)
+
+	if err := sendMessage(conn, MsgTypeRecentChangeResponse, responseBytes); err != nil {
+		log.Error("Error sending recent change response:", err)
+	}
+	log.Infof("Sent recent change response to %s, changes count: %d", conn.RemoteAddr().String(), len(recentChanges))
 }

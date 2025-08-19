@@ -357,7 +357,6 @@ func (sw *ScoreWatch) handleEvents() {
 
 func (sw *ScoreWatch) addHeat(path string, node *tree.Node) {
 	score := sw.calculateInitScore(path, node)
-	fmt.Println("Adding heat for path:", path, "with score:", score)
 	heatScore := &HeatScore{
 		Path:       path,
 		Deepth:     node.Depth,

@@ -124,6 +124,37 @@ func Mirror() {
 			}
 		}
 	}
+	fullScan(fileClient)
+
+	fullScanTicker := time.NewTicker(time.Duration(*config.CoolDown) * time.Second)
+	changeTicker := time.NewTicker(10 * time.Second)
+	defer fullScanTicker.Stop()
+	defer changeTicker.Stop()
+	for {
+		select {
+		case <-fullScanTicker.C:
+			fullScanTicker.Reset(24 * time.Hour)
+			log.Info("Starting full scan...")
+			err := fullScan(fileClient)
+			fullScanTicker.Reset(time.Duration(*config.CoolDown) * time.Second)
+			if err != nil {
+				log.Errorf("Error during full scan: %v", err)
+			}
+		case <-changeTicker.C:
+			changeTicker.Reset(24 * time.Hour)
+			log.Info("Tracking changes...")
+			err := TrackingChanges(fileClient)
+			changeTicker.Reset(10 * time.Second)
+			if err != nil {
+				log.Errorf("Error tracking changes: %v", err)
+			}
+		}
+	}
+
+}
+
+func fullScan(fileClient *network.FileClient) error {
+	startTime := time.Now().UnixMilli()
 	rootNode := DiffResult{
 		Path:   ".",
 		IsDir:  true,
@@ -132,41 +163,46 @@ func Mirror() {
 		Size:   0,
 	}
 	NextLevel.Push(rootNode)
-	var coolTime = time.Now().UnixMilli()
 	for NextLevel.Size() > 0 {
-		v, has := NextLevel.Pop()
-		if !has {
-			elapsed := time.Now().UnixMilli() - coolTime
-			if elapsed > *config.CoolDown*1000 {
-				NextLevel.Push(rootNode)
-				coolTime = time.Now().UnixMilli()
-				log.Infof("Cool down period elapsed, restarting from root")
-			} else {
-				remaining := *config.CoolDown*1000 - elapsed
-				sleepTime := min(1000, remaining/10)
-				time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-			}
-			continue
-		} else {
-			coolTime = time.Now().UnixMilli()
-			log.Infof("Processing next level item: %v 【%d】remaining", v, NextLevel.Size())
-			if v.IsDir {
-				err := getDirectory(fileClient, v.Path)
-				if err != nil {
-					log.Errorf("Error processing directory %s: %v", v.Path, err)
-					if errors.Is(err, appError.ErrConnection) {
-						err := fileClient.Reconnect()
-						if err != nil {
-							log.Errorf("Reconnection failed: %v", err)
-							return
-						}
-						fileClient.State = network.Online
-						NextLevel.Push(v) // Re-push the directory to retry
+		v, _ := NextLevel.Pop()
+		log.Infof("Processing next level item: %v 【%d】remaining", v, NextLevel.Size())
+		if v.IsDir {
+			err := getDirectory(fileClient, v.Path)
+			if err != nil {
+				log.Errorf("Error processing directory %s: %v", v.Path, err)
+				if errors.Is(err, appError.ErrConnection) {
+					err := fileClient.Reconnect()
+					if err != nil {
+						log.Errorf("Reconnection failed: %v", err)
+						return err
 					}
+					fileClient.State = network.Online
+					NextLevel.Push(v) // Re-push the directory to retry
 				}
-			} else {
-				log.Error("Unexpected file type in NextLevel stack, expected directory but got file:", v.Path)
 			}
+		} else {
+			log.Error("Unexpected file type in NextLevel stack, expected directory but got file:", v.Path)
+		}
+
+	}
+	log.Info("Full scan completed, total time taken:", (time.Now().UnixMilli()-startTime)/1000, "seconds")
+	return nil
+}
+
+func TrackingChanges(fileClient *network.FileClient) error {
+	change, err := fileClient.GetTreeChange(100)
+	if err != nil {
+		if errors.Is(err, appError.ErrConnection) {
+			fileClient.ConnectionClose()
+			return err
+		} else {
+			return fmt.Errorf("failed to get tree change: %w", err)
 		}
 	}
+	if len(change) == 0 {
+		log.Info("No changes detected in the tree")
+		return nil
+	}
+	fmt.Print(change)
+	return nil
 }
