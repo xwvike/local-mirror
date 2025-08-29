@@ -16,145 +16,194 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// Keep NextLevel as global to maintain compatibility with external callers
 var NextLevel = stack.NewStack[DiffResult]()
 
-func getDirectory(fileClient *network.FileClient, path string) error {
-	treejson, err := fileClient.GetRealityTree(path)
+// handleConnectionError wraps connection error handling to reduce duplication
+func handleConnectionError(err error, fileClient *network.FileClient) error {
+	if errors.Is(err, appError.ErrConnection) {
+		fileClient.ConnectionClose()
+	}
+	return err
+}
+
+// createNodeFromDiff creates a tree node from diff info to avoid code duplication
+func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
+	uuid, _ := utils.RandomString(16)
+	return &tree.Node{
+		ID:       uuid,
+		Path:     v.Path,
+		Name:     v.Name,
+		ParentID: v.ParentID,
+		IsDir:    v.IsDir,
+		Size:     v.Size,
+		ModTime:  time.Now(),
+		Hash:     hash,
+	}
+}
+
+// processDiffItem handles a single diff item (file or directory)
+func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
+	switch v.Action {
+	case "delete":
+		if err := os.RemoveAll(filepath.Join(config.StartPath, v.Path)); err != nil {
+			tree.DeleteNode(v.Path)
+		}
+		return nil
+
+	case "create", "modify":
+		if v.IsDir {
+			return processDirectoryDiff(v)
+		}
+		return processFileDiff(v, fileClient)
+
+	default:
+		log.Warnf("Unknown action type: %s", v.Action)
+		return nil
+	}
+}
+
+func processDirectoryDiff(v DiffResult) error {
+	if err := os.MkdirAll(v.Path, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", v.Path, err)
+	}
+
+	hasPath, err := tree.HasPath(v.Path)
+	if err != nil {
+		log.Fatalf("Error checking path %s: %v", v.Path, err)
+		return err
+	}
+
+	if !hasPath {
+		node := createNodeFromDiff(v, "")
+		tree.AddNodes([]*tree.Node{node})
+	}
+
+	NextLevel.Push(v)
+	return nil
+}
+
+func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
+	hash, err := fileClient.DownloadFile(v.Path)
 	if err != nil {
 		if errors.Is(err, appError.ErrConnection) {
 			fileClient.ConnectionClose()
 			return err
-		} else {
-			_error := fmt.Errorf("failed to get reality tree for path %s: %w", path, err)
-			return _error
 		}
+		log.Errorf("Error downloading file %s: %v", v.Path, err)
+		return err
 	}
-	log.Debug("start analyzing diff 🫨")
-	err = Diff(treejson, path)
+
+	fileNode := createNodeFromDiff(v, hash)
+	tree.AddNodes([]*tree.Node{fileNode})
+	log.Infof("File downloaded successfully: %s", v.Path)
+	return nil
+}
+
+func getDirectory(fileClient *network.FileClient, path string) error {
+	treejson, err := fileClient.GetRealityTree(path)
 	if err != nil {
-		_error := fmt.Errorf("error analyzing diff for path %s: %w", path, err)
-		return _error
+		return handleConnectionError(err, fileClient)
 	}
+
+	log.Debug("start analyzing diff 🫨")
+	if err = Diff(treejson, path); err != nil {
+		return fmt.Errorf("error analyzing diff for path %s: %w", path, err)
+	}
+
 	log.Infof("Diff count: %d", diffQueue.Size())
 	for diffQueue.Size() > 0 {
 		v, has := diffQueue.Pop()
 		if !has {
 			log.Warn("Diff queue is empty")
 			continue
-		} else {
-			log.Debugf("Processing diff item: %v 【%d】remaining", v, diffQueue.Size())
-			switch v.Action {
-			case "delete":
-				err := os.RemoveAll(filepath.Join(config.StartPath, v.Path))
-				if err != nil {
-					tree.DeleteNode(v.Path)
-				}
-			case "create", "modify":
-				if v.IsDir {
-					os.MkdirAll(v.Path, 0755)
-					hasPaht, err := tree.HasPath(v.Path)
-					if err == nil {
-						if !hasPaht {
-							uuid, _ := utils.RandomString(16)
-							node := &tree.Node{
-								ID:       uuid,
-								Path:     v.Path,
-								Name:     v.Name,
-								ParentID: v.ParentID,
-								IsDir:    v.IsDir,
-								Size:     v.Size,
-								ModTime:  time.Now(),
-								Hash:     "",
-							}
+		}
 
-							tree.AddNodes([]*tree.Node{node})
-						}
-						NextLevel.Push(v)
-					} else {
-						log.Fatalf("Error checking path %s: %v", v.Path, err)
-					}
-				} else {
-					hash, err := fileClient.DownloadFile(v.Path)
-					if err != nil {
-						if errors.Is(err, appError.ErrConnection) {
-							fileClient.ConnectionClose()
-							return err
-						}
-						log.Errorf("Error downloading file %s: %v", v.Path, err)
-					} else {
-						uuid, _ := utils.RandomString(16)
-						fileNode := &tree.Node{
-							ID:       uuid,
-							Path:     v.Path,
-							Name:     v.Name,
-							ParentID: v.ParentID,
-							IsDir:    v.IsDir,
-							Size:     v.Size,
-							ModTime:  time.Now(),
-							Hash:     hash,
-						}
-						tree.AddNodes([]*tree.Node{fileNode})
-						log.Infof("File downloaded successfully: %s", v.Path)
-					}
-				}
-			}
+		log.Debugf("Processing diff item: %v 【%d】remaining", v, diffQueue.Size())
+		if err := processDiffItem(v, fileClient); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func Mirror() {
-	log.Debug("step 3 >> start file client")
+// ensureConnected makes sure we have a valid connection, retrying if needed
+func ensureConnected() (*network.FileClient, error) {
 	fileClient, err := InitConn()
 	if err != nil {
 		fileClient.ConnectionClose()
 	}
-	if fileClient.State == network.Offline {
-		retryConnection := time.NewTicker(10 * time.Second)
-		defer retryConnection.Stop()
-		for range retryConnection.C {
-			log.Info("Retrying connection to reality server...")
-			fileClient, err = InitConn()
-			if err == nil {
-				log.Info("Successfully connected to reality server")
-				retryConnection.Stop()
-				break
-			} else {
-				log.Errorf("Failed to connect to reality server: %v", err)
-			}
-		}
-	}
-	fullScan(fileClient)
 
-	fullScanTicker := time.NewTicker(time.Duration(*config.CoolDown) * time.Second)
-	changeTicker := time.NewTicker(10 * time.Second)
+	if fileClient.State != network.Offline {
+		return fileClient, nil
+	}
+
+	// Connection is offline, try to reconnect
+	log.Info("Connection offline, attempting to reconnect...")
+	retryConnection := time.NewTicker(10 * time.Second)
+	defer retryConnection.Stop()
+
+	for range retryConnection.C {
+		log.Info("Retrying connection to reality server...")
+		fileClient, err = InitConn()
+		if err == nil {
+			log.Info("Successfully connected to reality server")
+			return fileClient, nil
+		}
+		log.Errorf("Failed to connect to reality server: %v", err)
+	}
+
+	return fileClient, fmt.Errorf("failed to establish connection")
+}
+
+func Mirror() {
+	log.Debug("step 3 >> start file client")
+	fileClient, err := ensureConnected()
+	if err != nil {
+		log.Fatal("Failed to connect: ", err)
+		return
+	}
+
+	// Initial full scan
+	if err := fullScan(fileClient); err != nil {
+		log.Errorf("Initial scan failed: %v", err)
+	}
+
+	// Set up tickers for periodic operations
+	cooldownSeconds := time.Duration(*config.CoolDown) * time.Second
+	fullScanInterval := cooldownSeconds
+	changeTrackInterval := 10 * time.Second
+
+	fullScanTicker := time.NewTicker(fullScanInterval)
+	changeTicker := time.NewTicker(changeTrackInterval)
 	defer fullScanTicker.Stop()
 	defer changeTicker.Stop()
+
 	for {
 		select {
 		case <-fullScanTicker.C:
-			fullScanTicker.Reset(24 * time.Hour)
 			log.Info("Starting full scan...")
-			err := fullScan(fileClient)
-			fullScanTicker.Reset(time.Duration(*config.CoolDown) * time.Second)
-			if err != nil {
+			if err := fullScan(fileClient); err != nil {
 				log.Errorf("Error during full scan: %v", err)
 			}
+
 		case <-changeTicker.C:
-			changeTicker.Reset(24 * time.Hour)
 			log.Info("Tracking changes...")
-			err := TrackingChanges(fileClient)
-			changeTicker.Reset(10 * time.Second)
-			if err != nil {
+			if err := TrackingChanges(fileClient); err != nil {
 				log.Errorf("Error tracking changes: %v", err)
 			}
 		}
 	}
-
 }
 
 func fullScan(fileClient *network.FileClient) error {
 	startTime := time.Now().UnixMilli()
+
+	// Clear the stack and start with root node
+	for NextLevel.Size() > 0 {
+		NextLevel.Pop()
+	}
+
 	rootNode := DiffResult{
 		Path:   ".",
 		IsDir:  true,
@@ -163,46 +212,47 @@ func fullScan(fileClient *network.FileClient) error {
 		Size:   0,
 	}
 	NextLevel.Push(rootNode)
+
 	for NextLevel.Size() > 0 {
 		v, _ := NextLevel.Pop()
 		log.Infof("Processing next level item: %v 【%d】remaining", v, NextLevel.Size())
-		if v.IsDir {
-			err := getDirectory(fileClient, v.Path)
-			if err != nil {
-				log.Errorf("Error processing directory %s: %v", v.Path, err)
-				if errors.Is(err, appError.ErrConnection) {
-					err := fileClient.Reconnect()
-					if err != nil {
-						log.Errorf("Reconnection failed: %v", err)
-						return err
-					}
-					fileClient.State = network.Online
-					NextLevel.Push(v) // Re-push the directory to retry
-				}
-			}
-		} else {
+
+		if !v.IsDir {
 			log.Error("Unexpected file type in NextLevel stack, expected directory but got file:", v.Path)
+			continue
 		}
 
+		err := getDirectory(fileClient, v.Path)
+		if err == nil {
+			continue
+		}
+
+		log.Errorf("Error processing directory %s: %v", v.Path, err)
+		if errors.Is(err, appError.ErrConnection) {
+			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
+				return fmt.Errorf("reconnection failed: %w", reconnectErr)
+			}
+			fileClient.State = network.Online
+			NextLevel.Push(v) // Re-push the directory to retry
+		}
 	}
-	log.Info("Full scan completed, total time taken:", (time.Now().UnixMilli()-startTime)/1000, "seconds")
+
+	elapsedSeconds := (time.Now().UnixMilli() - startTime) / 1000
+	log.Info("Full scan completed, total time taken:", elapsedSeconds, "seconds")
 	return nil
 }
 
 func TrackingChanges(fileClient *network.FileClient) error {
 	change, err := fileClient.GetTreeChange(100)
 	if err != nil {
-		if errors.Is(err, appError.ErrConnection) {
-			fileClient.ConnectionClose()
-			return err
-		} else {
-			return fmt.Errorf("failed to get tree change: %w", err)
-		}
+		return handleConnectionError(err, fileClient)
 	}
+
 	if len(change) == 0 {
 		log.Info("No changes detected in the tree")
 		return nil
 	}
+
 	fmt.Print(change)
 	return nil
 }
