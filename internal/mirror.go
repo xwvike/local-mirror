@@ -11,6 +11,7 @@ import (
 	"local-mirror/pkg/utils"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -18,6 +19,11 @@ import (
 
 // Keep NextLevel as global to maintain compatibility with external callers
 var NextLevel = stack.NewStack[DiffResult]()
+
+var (
+	taskMutex    sync.Mutex // 确保任务串行执行
+	isTaskActive bool       // 标识当前是否有任务在执行
+)
 
 // handleConnectionError wraps connection error handling to reduce duplication
 func handleConnectionError(err error, fileClient *network.FileClient) error {
@@ -40,6 +46,24 @@ func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
 		ModTime:  time.Now(),
 		Hash:     hash,
 	}
+}
+
+func executeTask(taskName string, taskFunc func() error) {
+	taskMutex.Lock()
+	defer taskMutex.Unlock()
+
+	isTaskActive = true
+	defer func() { isTaskActive = false }()
+
+	log.Infof("开始执行任务: %s", taskName)
+	startTime := time.Now()
+
+	if err := taskFunc(); err != nil {
+		log.Errorf("任务执行失败 %s: %v", taskName, err)
+	}
+
+	duration := time.Since(startTime)
+	log.Infof("任务完成: %s, 耗时: %v", taskName, duration)
 }
 
 // processDiffItem handles a single diff item (file or directory)
@@ -165,33 +189,62 @@ func Mirror() {
 	}
 
 	// Initial full scan
-	if err := fullScan(fileClient); err != nil {
-		log.Errorf("Initial scan failed: %v", err)
-	}
+	executeTask("初始化全量扫描", func() error {
+		return fullScan(fileClient)
+	})
 
 	// Set up tickers for periodic operations
 	cooldownSeconds := time.Duration(*config.CoolDown) * time.Second
 	fullScanInterval := cooldownSeconds
 	changeTrackInterval := 10 * time.Second
 
-	fullScanTicker := time.NewTicker(fullScanInterval)
-	changeTicker := time.NewTicker(changeTrackInterval)
-	defer fullScanTicker.Stop()
-	defer changeTicker.Stop()
+	fullScanChan := make(chan struct{})
+	changeChan := make(chan struct{})
+
+	go func() {
+		fullScanTicker := time.NewTicker(fullScanInterval)
+		defer fullScanTicker.Stop()
+
+		for range fullScanTicker.C {
+			taskMutex.Lock()
+			if !isTaskActive {
+				taskMutex.Unlock()
+				fullScanChan <- struct{}{}
+			} else {
+				taskMutex.Unlock()
+				log.Info("全量扫描跳过 - 有任务正在执行")
+			}
+		}
+	}()
+
+	go func() {
+		changeTicker := time.NewTicker(changeTrackInterval)
+		defer changeTicker.Stop()
+
+		for range changeTicker.C {
+			taskMutex.Lock()
+			if !isTaskActive {
+				taskMutex.Unlock()
+				changeChan <- struct{}{}
+			} else {
+				taskMutex.Unlock()
+				log.Info("变更追踪跳过 - 有任务正在执行")
+			}
+
+		}
+	}()
 
 	for {
 		select {
-		case <-fullScanTicker.C:
-			log.Info("Starting full scan...")
-			if err := fullScan(fileClient); err != nil {
-				log.Errorf("Error during full scan: %v", err)
-			}
+		case <-fullScanChan:
+			executeTask("全量扫描", func() error {
+				return fullScan(fileClient)
+			})
 
-		case <-changeTicker.C:
-			log.Info("Tracking changes...")
-			if err := TrackingChanges(fileClient); err != nil {
-				log.Errorf("Error tracking changes: %v", err)
-			}
+		case <-changeChan:
+			executeTask("变更追踪", func() error {
+				return TrackingChanges(fileClient)
+			})
 		}
 	}
 }

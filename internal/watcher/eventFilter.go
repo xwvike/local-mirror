@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
@@ -94,6 +95,7 @@ func eventFilter(event fsnotify.Event) {
 			})
 			createTimerActive = true
 		case remove:
+			fmt.Println("remove event:", event)
 			deleteEventCache = append(deleteEventCache, strings.Replace(event.Name, config.StartPath, ".", 1))
 			GlobalScoreWatch.removeHeat(strings.Replace(event.Name, config.StartPath, ".", 1))
 			tree.AddRecentChangedDir(fatherNode.Path)
