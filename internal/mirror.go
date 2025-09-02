@@ -100,7 +100,8 @@ func processDirectoryDiff(v DiffResult) error {
 
 	if !hasPath {
 		node := createNodeFromDiff(v, "")
-		tree.AddNodes([]*tree.Node{node})
+		tree.
+			([]*tree.Node{node})
 	}
 
 	NextLevel.Push(v)

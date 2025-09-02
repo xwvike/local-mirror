@@ -1,0 +1,17 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+  {
+    "adapter": "Delve",
+    "label": "Debug main program",
+    "request": "launch",
+    "mode": "debug",
+    "program": ".",
+    "cwd": "/Users/xiazhike/Project/local-mirror/cmd/local-mirror",
+    "args": [],
+    "buildFlags": [],
+    "env": {}
+  }
+]

@@ -15,44 +15,26 @@ import (
 )
 
 var (
-	RecentChangedDirs []string
-	maxRecentDirs     = 100
+	RecentChangedDirs []ChangedDir
 	mu                sync.Mutex
 )
 
-func RemoveRecentChangedDir(dirPath string) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	filtered := RecentChangedDirs[:0]
-	for _, v := range RecentChangedDirs {
-		if !strings.HasPrefix(v, dirPath) {
-			filtered = append(filtered, v)
-		}
-	}
-	RecentChangedDirs = filtered
-}
 func AddRecentChangedDir(dirPath string) {
 	mu.Lock()
 	defer mu.Unlock()
+	timeStamp := uint64(time.Now().Unix())
 
-	// 查找是否已存在
-	has := -1
 	for i, v := range RecentChangedDirs {
-		if v == dirPath {
-			has = i
-			break
+		if timeStamp == v.timeStamp {
+			RecentChangedDirs[i].path = append(RecentChangedDirs[i].path, dirPath)
+			return
 		}
 	}
-	if has > -1 {
-		copy(RecentChangedDirs[1:has+1], RecentChangedDirs[:has])
-		RecentChangedDirs[0] = dirPath
-	} else {
-		RecentChangedDirs = append([]string{dirPath}, RecentChangedDirs...)
-		if len(RecentChangedDirs) > maxRecentDirs {
-			RecentChangedDirs = RecentChangedDirs[:maxRecentDirs]
-		}
+	dirs := ChangedDir{
+		timeStamp: timeStamp,
+		path:      []string{dirPath},
 	}
+	RecentChangedDirs = append(RecentChangedDirs, dirs)
 }
 
 func BuildFileTree(path string) error {
@@ -98,16 +80,16 @@ func BuildFileTree(path string) error {
 	var wg sync.WaitGroup
 
 	// 启动工作池
-	for i := 0; i < workerCount; i++ {
+	for range workerCount {
 		wg.Add(1)
-		go func(workerID int) {
+		go func() {
 			defer wg.Done()
 			for node := range nodeChan {
 				mu.Lock()
 				allNodes = append(allNodes, node)
 				mu.Unlock()
 			}
-		}(i)
+		}()
 	}
 
 	// 先添加根节点
@@ -186,9 +168,7 @@ func BuildFileTree(path string) error {
 	batchSize := 1000
 	for i := 0; i < len(allNodes); i += batchSize {
 		end := i + batchSize
-		if end > len(allNodes) {
-			end = len(allNodes)
-		}
+		end = min(end, len(allNodes))
 		batch := allNodes[i:end]
 		if err := AddNodes(batch); err != nil {
 			log.Error("Failed to add nodes to database:", err)

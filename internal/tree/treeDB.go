@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"local-mirror/config"
 	"os"
-
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -27,6 +26,9 @@ import (
 4. meta: 存储元数据，如文件和目录计数
    - key: 元数据键 (如 "file_count", "dir_count")
    - value: uint64类型的计数值
+5. changed_dirs: 存储目录变动信息，支持按时间范围查询
+   - key: unix秒时间戳
+   - value: 目录路径数组
 */
 
 var DB *bolt.DB
@@ -48,6 +50,11 @@ type Children struct {
 	ChildIDs []string `json:"child_ids"` // 子节点ID列表
 }
 
+type ChangedDir struct {
+	timeStamp uint64
+	path      []string
+}
+
 func InitDB() {
 	var err error
 	DB, err = bolt.Open("./.local-mirror/cache.db", 0600, nil)
@@ -56,7 +63,7 @@ func InitDB() {
 		os.Exit(1)
 	}
 	err = DB.Update(func(tx *bolt.Tx) error {
-		buckets := []string{"nodes", "children", "path_index", "meta"}
+		buckets := []string{"nodes", "children", "path_index", "meta", "changed_dirs"}
 		for _, bucketName := range buckets {
 			// 删除旧的 bucket（如果存在）
 			if tx.Bucket([]byte(bucketName)) != nil {
@@ -504,4 +511,66 @@ func GetAllDirNodes() ([]*Node, error) {
 		})
 	})
 	return dirNodes, err
+}
+
+func addChangedDir(path []*ChangedDir) error {
+	err := DB.Update(func(tx *bolt.Tx) error {
+		changedDirsBucket := tx.Bucket([]byte("changed_dirs"))
+		if changedDirsBucket == nil {
+			log.Error("Database buckets not initialized")
+			return os.ErrNotExist
+		}
+
+		oneHourAgo := uint64(time.Now().Add(-1 * time.Hour).Unix())
+		c := changedDirsBucket.Cursor()
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			if binary.BigEndian.Uint64(k) < oneHourAgo {
+				if err := changedDirsBucket.Delete(k); err != nil {
+					log.Warnf("Failed to delete old changed dir record: %v", err)
+				}
+			} else {
+				break
+			}
+		}
+
+		// 添加新的变更目录
+		for _, dir := range path {
+			timeStampBytes := make([]byte, 8)
+			binary.BigEndian.PutUint64(timeStampBytes, dir.timeStamp)
+			dirData, err := json.Marshal(dir.path)
+			if err != nil {
+				log.Error("Failed to marshal changed dir:", err)
+				dirData = []byte("[]")
+			}
+			changedDirsBucket.Put(timeStampBytes, dirData)
+		}
+		return nil
+	})
+	return err
+}
+
+func GetChangedDirs(start time.Time, end time.Time) ([]string, error) {
+	var dirs []string
+	err := DB.View(func(tx *bolt.Tx) error {
+		changedDirsBucket := tx.Bucket([]byte("changed_dirs"))
+		if changedDirsBucket == nil {
+			return fmt.Errorf("changed_dirs bucket not found")
+		}
+		c := changedDirsBucket.Cursor()
+		startStamp := uint64(start.Unix())
+		endStamp := uint64(end.Unix())
+		startStampBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(startStampBytes, startStamp)
+
+		for k, v := c.Seek(startStampBytes); k != nil && binary.BigEndian.Uint64(k) <= endStamp; k, v = c.Next() {
+			var _dirs []string
+			if err := json.Unmarshal(v, &_dirs); err != nil {
+				log.Error("Failed to unmarshal changed dir:", err)
+				continue
+			}
+			dirs = append(dirs, _dirs...)
+		}
+		return nil
+	})
+	return dirs, err
 }
