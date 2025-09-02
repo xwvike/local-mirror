@@ -106,8 +106,9 @@ type TreeResponseMessage struct {
 
 // 最近变更请求消息
 type RecentChangeRequestMessage struct {
-	ClientID uint32 // 客户端标识
-	Limit    uint8  // 限制返回的变更数量
+	ClientID  uint32 // 客户端标识
+	startTime int64  // 开始时间（秒）
+	endTime   int64  // 结束时间（秒）
 }
 
 // 最近变更响应消息
@@ -538,7 +539,8 @@ func decodeReverifyResponse(data []byte) (ReverifyResponse, error) {
 func encodeRecentChangeRequest(msg RecentChangeRequestMessage) []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, msg.ClientID)
-	binary.Write(buf, binary.BigEndian, msg.Limit)
+	binary.Write(buf, binary.BigEndian, msg.startTime)
+	binary.Write(buf, binary.BigEndian, msg.endTime)
 	return buf.Bytes()
 }
 
@@ -550,8 +552,12 @@ func decodeRecentChangeRequest(data []byte) (RecentChangeRequestMessage, error) 
 		log.Error("Error decoding recent change request client ID:", err)
 		return msg, err
 	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.Limit); err != nil {
-		log.Error("Error decoding recent change request limit:", err)
+	if err := binary.Read(buf, binary.BigEndian, &msg.startTime); err != nil {
+		log.Error("Error decoding recent change request startTime:", err)
+		return msg, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.endTime); err != nil {
+		log.Error("Error decoding recent change request endTime:", err)
 		return msg, err
 	}
 	return msg, nil

@@ -15,13 +15,16 @@ import (
 )
 
 var (
-	RecentChangedDirs []ChangedDir
-	mu                sync.Mutex
+	RecentChangedDirs    []*ChangedDir
+	mu                   sync.Mutex
+	addChangeTimer       *time.Timer
+	addChangeTimerActive bool
 )
 
 func AddRecentChangedDir(dirPath string) {
 	mu.Lock()
 	defer mu.Unlock()
+
 	timeStamp := uint64(time.Now().Unix())
 
 	for i, v := range RecentChangedDirs {
@@ -30,11 +33,23 @@ func AddRecentChangedDir(dirPath string) {
 			return
 		}
 	}
-	dirs := ChangedDir{
+	dirs := &ChangedDir{
 		timeStamp: timeStamp,
 		path:      []string{dirPath},
 	}
 	RecentChangedDirs = append(RecentChangedDirs, dirs)
+	if addChangeTimerActive {
+		addChangeTimer.Stop()
+	}
+	addChangeTimer = time.AfterFunc(5*time.Second, func() {
+		err := addChangedDir(RecentChangedDirs)
+		if err != nil {
+			log.Error("Failed to add changed directories:", err)
+		}
+		RecentChangedDirs = []*ChangedDir{}
+		addChangeTimerActive = false
+	})
+	addChangeTimerActive = true
 }
 
 func BuildFileTree(path string) error {

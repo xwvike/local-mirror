@@ -427,15 +427,17 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	}
 }
 
-func (c *FileClient) GetTreeChange(limit uint8) ([]string, error) {
+func (c *FileClient) GetTreeChange() ([]string, error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
 		return nil, fmt.Errorf("%w, failed to get connection: %w", appError.ErrConnection, err)
 	}
-
+	endTime := time.Now().Unix()
+	startTime := endTime - *config.DiffInterval
 	request := RecentChangeRequestMessage{
-		ClientID: config.InstanceID,
-		Limit:    limit,
+		ClientID:  config.InstanceID,
+		startTime: startTime,
+		endTime:   endTime,
 	}
 	requestBytes := encodeRecentChangeRequest(request)
 	if err := sendMessage(conn, MsgTypeRecentChangeRequest, requestBytes); err != nil {

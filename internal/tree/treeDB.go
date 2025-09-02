@@ -549,7 +549,7 @@ func addChangedDir(path []*ChangedDir) error {
 	return err
 }
 
-func GetChangedDirs(start time.Time, end time.Time) ([]string, error) {
+func GetChangedDirs(start int64, end int64) ([]string, error) {
 	var dirs []string
 	err := DB.View(func(tx *bolt.Tx) error {
 		changedDirsBucket := tx.Bucket([]byte("changed_dirs"))
@@ -557,8 +557,8 @@ func GetChangedDirs(start time.Time, end time.Time) ([]string, error) {
 			return fmt.Errorf("changed_dirs bucket not found")
 		}
 		c := changedDirsBucket.Cursor()
-		startStamp := uint64(start.Unix())
-		endStamp := uint64(end.Unix())
+		startStamp := uint64(start)
+		endStamp := uint64(end)
 		startStampBytes := make([]byte, 8)
 		binary.BigEndian.PutUint64(startStampBytes, startStamp)
 

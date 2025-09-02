@@ -447,18 +447,13 @@ func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) {
 		log.Error("Error decoding recent change request:", err)
 		return
 	}
-	log.Infof("Received recent change request from %s, client ID: %d, limit: %d",
-		conn.RemoteAddr().String(), recentChangeRequest.ClientID, recentChangeRequest.Limit)
+	log.Infof("Received recent change request from %s, client ID: %d, startTime: %d, endTime: %d",
+		conn.RemoteAddr().String(), recentChangeRequest.ClientID, recentChangeRequest.startTime, recentChangeRequest.endTime)
 
-	var recentChanges []string
-	if recentChangeRequest.Limit == 0 || uint8(len(tree.RecentChangedDirs)) <= recentChangeRequest.Limit {
-		recentChanges = tree.RecentChangedDirs
-	} else {
-		recentChanges = tree.RecentChangedDirs[:recentChangeRequest.Limit]
-	}
+	recentChanges, err := tree.GetChangedDirs(recentChangeRequest.startTime, recentChangeRequest.endTime)
 
 	responseMsg := RecentChangeResponseMessage{
-		Changes:  tree.RecentChangedDirs,
+		Changes:  recentChanges,
 		ServerID: config.InstanceID,
 	}
 	responseBytes := encodeRecentChangeResponse(responseMsg)

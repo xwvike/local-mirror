@@ -27,6 +27,7 @@ var (
 	Mode             *string
 	LogLevel         *string
 	CoolDown         *int64
+	DiffInterval     *int64
 	FileBufferSize   *uint64
 	MemFileThreshold *uint64
 	RealityIP        *string
@@ -55,7 +56,8 @@ func init() {
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fmt.Fprintf(os.Stderr, "  -m, --mode string            运行模式: reality(服务器) 或 mirror(客户端) (default \"reality\")\n")
 		fmt.Fprintf(os.Stderr, "  -l, --loglevel string        日志级别: debug, info, warn, error (default \"error\")\n")
-		fmt.Fprintf(os.Stderr, "  -cd, --cooldown int          冷却时间(秒): 服务器目录扫描间隔，客户端下载后等待时间 (default 300)\n")
+		fmt.Fprintf(os.Stderr, "  -c, --cooldown int           冷却时间(秒): 服务器目录扫描间隔，客户端下载后等待时间 (default 300)\n")
+		fmt.Fprintf(os.Stderr, "  -d, --diffinterval int       差异扫描间隔(秒): 客户端扫描本地目录与服务器目录差异的时间间隔 (default 10)\n")
 		fmt.Fprintf(os.Stderr, "  -f, --filebuffersize uint    文件缓冲区大小，单位字节 (default 65536)\n")
 		fmt.Fprintf(os.Stderr, "  -t, --memfilethreshold uint  内存文件阈值，超过此大小使用磁盘存储 (default 655360)\n")
 		fmt.Fprintf(os.Stderr, "  -r, --realityip string       服务器IP地址，空值表示自动检测 (仅客户端模式)\n")
@@ -88,7 +90,10 @@ func init() {
 	flag.StringVar(LogLevel, "l", "error", "同 --loglevel")
 
 	CoolDown = flag.Int64("cooldown", 300, "冷却时间(秒): 服务器全局目录树遍历间隔，客户端下载完成后等待时间")
-	flag.Int64Var(CoolDown, "cd", 300, "同 --cooldown")
+	flag.Int64Var(CoolDown, "c", 300, "同 --cooldown")
+
+	DiffInterval = flag.Int64("diffinterval", 10, "差异扫描间隔(秒): 客户端扫描本地目录与服务器目录差异的时间间隔")
+	flag.Int64Var(DiffInterval, "d", 10, "同 --diffinterval")
 
 	FileBufferSize = flag.Uint64("filebuffersize", 64*1024, "文件缓冲区大小，默认 64KB")
 	flag.Uint64Var(FileBufferSize, "f", 64*1024, "同 --filebuffersize")

@@ -100,8 +100,7 @@ func processDirectoryDiff(v DiffResult) error {
 
 	if !hasPath {
 		node := createNodeFromDiff(v, "")
-		tree.
-			([]*tree.Node{node})
+		tree.AddNodes([]*tree.Node{node})
 	}
 
 	NextLevel.Push(v)
@@ -197,7 +196,7 @@ func Mirror() {
 	// Set up tickers for periodic operations
 	cooldownSeconds := time.Duration(*config.CoolDown) * time.Second
 	fullScanInterval := cooldownSeconds
-	changeTrackInterval := 10 * time.Second
+	changeTrackInterval := time.Duration(*config.DiffInterval) * time.Second
 
 	fullScanChan := make(chan struct{})
 	changeChan := make(chan struct{})
@@ -297,7 +296,7 @@ func fullScan(fileClient *network.FileClient) error {
 }
 
 func TrackingChanges(fileClient *network.FileClient) error {
-	change, err := fileClient.GetTreeChange(100)
+	change, err := fileClient.GetTreeChange()
 	if err != nil {
 		return handleConnectionError(err, fileClient)
 	}
