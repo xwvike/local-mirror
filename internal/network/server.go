@@ -260,6 +260,10 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 	if err != nil {
 		return fmt.Errorf("error getting tree contents for path %s: %v", treeRequest.RootPath, err)
 	} else {
+		for i := range treeLeaf {
+			treeLeaf[i].ID = ""
+			treeLeaf[i].ParentID = ""
+		}
 		treeData, err := json.Marshal(treeLeaf)
 		if err != nil {
 			return fmt.Errorf("error marshalling tree leaf for path %s: %v", treeRequest.RootPath, err)

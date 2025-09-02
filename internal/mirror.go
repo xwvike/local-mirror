@@ -306,6 +306,19 @@ func TrackingChanges(fileClient *network.FileClient) error {
 		return nil
 	}
 
-	fmt.Print(change)
+	for _, v := range change {
+		log.Infof("Processing change: %v", v)
+		err := getDirectory(fileClient, v)
+		if err == nil {
+			continue
+		}
+		log.Errorf("Error processing directory %s: %v", v, err)
+		if errors.Is(err, appError.ErrConnection) {
+			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
+				return fmt.Errorf("reconnection failed: %w", reconnectErr)
+			}
+			fileClient.State = network.Online
+		}
+	}
 	return nil
 }
