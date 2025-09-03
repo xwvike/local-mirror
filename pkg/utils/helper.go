@@ -3,10 +3,11 @@ package utils
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"github.com/zeebo/blake3"
 	"io"
 	"os"
 	"runtime"
+
+	"github.com/zeebo/blake3"
 )
 
 type OSInfo struct {
@@ -72,4 +73,16 @@ func RandomString(length int) (string, error) {
 		b[i] = charset[b[i]%byte(len(charset))]
 	}
 	return string(b), nil
+}
+
+func UniqueStrings(input []string) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(input))
+	for _, v := range input {
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			result = append(result, v)
+		}
+	}
+	return result
 }

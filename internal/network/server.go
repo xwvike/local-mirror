@@ -453,7 +453,7 @@ func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) {
 	recentChanges, err := tree.GetChangedDirs(recentChangeRequest.startTime, recentChangeRequest.endTime)
 
 	responseMsg := RecentChangeResponseMessage{
-		Changes:  recentChanges,
+		Changes:  utils.UniqueStrings(recentChanges),
 		ServerID: config.InstanceID,
 	}
 	responseBytes := encodeRecentChangeResponse(responseMsg)

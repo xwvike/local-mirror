@@ -11,6 +11,8 @@ import (
 	"local-mirror/pkg/utils"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,10 +72,11 @@ func executeTask(taskName string, taskFunc func() error) {
 func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 	switch v.Action {
 	case "delete":
-		if err := os.RemoveAll(filepath.Join(config.StartPath, v.Path)); err != nil {
+		err := os.RemoveAll(filepath.Join(config.StartPath, v.Path))
+		if err == nil {
 			tree.DeleteNode(v.Path)
 		}
-		return nil
+		return err
 
 	case "create", "modify":
 		if v.IsDir {
@@ -145,7 +148,8 @@ func getDirectory(fileClient *network.FileClient, path string) error {
 
 		log.Debugf("Processing diff item: %v 【%d】remaining", v, diffQueue.Size())
 		if err := processDiffItem(v, fileClient); err != nil {
-			return err
+			log.Errorf("Error processing diff item %v: %v", v, err)
+			continue
 		}
 	}
 	return nil
@@ -305,8 +309,8 @@ func TrackingChanges(fileClient *network.FileClient) error {
 		log.Info("No changes detected in the tree")
 		return nil
 	}
-
-	for _, v := range change {
+	allPaths := extractMinimalPathsFromChanges(change)
+	for _, v := range allPaths {
 		log.Infof("Processing change: %v", v)
 		err := getDirectory(fileClient, v)
 		if err == nil {
@@ -321,4 +325,56 @@ func TrackingChanges(fileClient *network.FileClient) error {
 		}
 	}
 	return nil
+}
+
+func extractMinimalPathsFromChanges(changePaths []string) []string {
+	var neededPaths []string
+	processedPaths := make(map[string]bool)
+
+	for _, path := range changePaths {
+		if path == "" || path == "/" {
+			continue
+		}
+
+		// 检查路径的父目录链，只添加不存在的父目录
+		pathsToAdd := []string{path} // 总是包含变更的路径本身
+
+		currentPath := filepath.Dir(path)
+		for currentPath != "." && currentPath != "/" && currentPath != "" {
+			// 检查父目录是否存在于本地
+			exists, err := tree.HasPath(currentPath)
+			if err != nil {
+				log.Errorf("Error checking path %s: %v", currentPath, err)
+				break
+			}
+
+			if !exists {
+				pathsToAdd = append([]string{currentPath}, pathsToAdd...) // 前置插入
+				currentPath = filepath.Dir(currentPath)
+			} else {
+				// 父目录存在，无需继续向上查找
+				break
+			}
+		}
+
+		// 添加到需要处理的路径列表
+		for _, p := range pathsToAdd {
+			if !processedPaths[p] {
+				neededPaths = append(neededPaths, p)
+				processedPaths[p] = true
+			}
+		}
+	}
+
+	// 按深度排序
+	sort.Slice(neededPaths, func(i, j int) bool {
+		depthI := strings.Count(neededPaths[i], string(filepath.Separator))
+		depthJ := strings.Count(neededPaths[j], string(filepath.Separator))
+		if depthI == depthJ {
+			return neededPaths[i] < neededPaths[j]
+		}
+		return depthI < depthJ
+	})
+
+	return neededPaths
 }
