@@ -15,14 +15,14 @@ func InitConn() (*network.FileClient, error) {
 	if err != nil {
 		return fileClient, fmt.Errorf("failed to create file client: %w", err)
 	}
-	for i := 0; i < maxRetries; i++ {
+	for i := range make([]struct{}, maxRetries) {
 		log.Warnf("Attempting to connect to server at %s, attempt %d/%d", fileClient.RealityAddr, i+1, maxRetries)
 		log.Debugf("Connecting to server at %s", fileClient.RealityAddr)
 		err := fileClient.Handshake()
 		if err != nil {
 			log.Warnf("Handshake failed, attempt %d/%d: %v", i+1, maxRetries, err)
 			if i == maxRetries-1 {
-				fileClient.State = network.Offline
+				fileClient.State = network.Deprecated
 				return fileClient, err
 			}
 			time.Sleep(time.Duration(i+1) * time.Second)

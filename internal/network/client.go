@@ -143,7 +143,9 @@ func (c *FileClient) Reconnect() error {
 		c.State = Deprecated
 		c.connectionManage.Close()
 		log.Errorf("Reverification failed, Abandon this client: %v", err)
+		return err
 	}
+	c.State = Online
 	log.Info("Reconnected successfully")
 	return nil
 }

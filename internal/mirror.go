@@ -50,7 +50,11 @@ func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
 	}
 }
 
-func executeTask(taskName string, taskFunc func() error) {
+func executeTaskWithClient(taskName string, fileClient *network.FileClient, taskFunc func(*network.FileClient) error) error {
+	if fileClient.State == network.Deprecated {
+		return fmt.Errorf("client is deprecated")
+	}
+
 	taskMutex.Lock()
 	defer taskMutex.Unlock()
 
@@ -60,12 +64,16 @@ func executeTask(taskName string, taskFunc func() error) {
 	log.Infof("开始执行任务: %s", taskName)
 	startTime := time.Now()
 
-	if err := taskFunc(); err != nil {
+	if err := taskFunc(fileClient); err != nil {
 		log.Errorf("任务执行失败 %s: %v", taskName, err)
+		if errors.Is(err, appError.ErrConnection) {
+			return fmt.Errorf("client became deprecated during task: %w", err)
+		}
 	}
 
 	duration := time.Since(startTime)
 	log.Infof("任务完成: %s, 耗时: %v", taskName, duration)
+	return nil
 }
 
 // processDiffItem handles a single diff item (file or directory)
@@ -155,30 +163,15 @@ func getDirectory(fileClient *network.FileClient, path string) error {
 	return nil
 }
 
-// ensureConnected makes sure we have a valid connection, retrying if needed
+// ensureConnected makes sure we have a valid connection
 func ensureConnected() (*network.FileClient, error) {
 	fileClient, err := InitConn()
 	if err != nil {
 		fileClient.ConnectionClose()
 	}
 
-	if fileClient.State != network.Offline {
+	if fileClient.State == network.Online {
 		return fileClient, nil
-	}
-
-	// Connection is offline, try to reconnect
-	log.Info("Connection offline, attempting to reconnect...")
-	retryConnection := time.NewTicker(10 * time.Second)
-	defer retryConnection.Stop()
-
-	for range retryConnection.C {
-		log.Info("Retrying connection to reality server...")
-		fileClient, err = InitConn()
-		if err == nil {
-			log.Info("Successfully connected to reality server")
-			return fileClient, nil
-		}
-		log.Errorf("Failed to connect to reality server: %v", err)
 	}
 
 	return fileClient, fmt.Errorf("failed to establish connection")
@@ -186,18 +179,35 @@ func ensureConnected() (*network.FileClient, error) {
 
 func Mirror() {
 	log.Debug("step 3 >> start file client")
-	fileClient, err := ensureConnected()
-	if err != nil {
-		log.Fatal("Failed to connect: ", err)
-		return
+	baseDelay := 5 * time.Second
+	maxDelay := 60 * time.Second
+	currentDelay := baseDelay
+	for {
+		fileClient, err := ensureConnected()
+		if err != nil {
+			log.Error("Failed to connect: ", err)
+			time.Sleep(currentDelay)
+			currentDelay = time.Duration(float64(currentDelay) * 1.5)
+			currentDelay = min(currentDelay, maxDelay)
+			continue
+		}
+		currentDelay = baseDelay
+		if err := runMirrorTasks(fileClient); err != nil {
+			log.Errorf("Error running mirror tasks: %v", err)
+			fileClient.ConnectionClose()
+			time.Sleep(5 * time.Second)
+			continue
+		}
+	}
+}
+
+func runMirrorTasks(fileClient *network.FileClient) error {
+	if err := executeTaskWithClient("初始化全量扫描", fileClient, func(client *network.FileClient) error {
+		return fullScan(client)
+	}); err != nil {
+		return err
 	}
 
-	// Initial full scan
-	executeTask("初始化全量扫描", func() error {
-		return fullScan(fileClient)
-	})
-
-	// Set up tickers for periodic operations
 	cooldownSeconds := time.Duration(*config.CoolDown) * time.Second
 	fullScanInterval := cooldownSeconds
 	changeTrackInterval := time.Duration(*config.DiffInterval) * time.Second
@@ -241,14 +251,18 @@ func Mirror() {
 	for {
 		select {
 		case <-fullScanChan:
-			executeTask("全量扫描", func() error {
-				return fullScan(fileClient)
-			})
+			if err := executeTaskWithClient("全量扫描", fileClient, func(client *network.FileClient) error {
+				return fullScan(client)
+			}); err != nil {
+				return err
+			}
 
 		case <-changeChan:
-			executeTask("变更追踪", func() error {
-				return TrackingChanges(fileClient)
-			})
+			if err := executeTaskWithClient("变更追踪", fileClient, func(client *network.FileClient) error {
+				return TrackingChanges(client)
+			}); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -287,10 +301,9 @@ func fullScan(fileClient *network.FileClient) error {
 		log.Errorf("Error processing directory %s: %v", v.Path, err)
 		if errors.Is(err, appError.ErrConnection) {
 			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
-				return fmt.Errorf("reconnection failed: %w", reconnectErr)
+				return err
 			}
-			fileClient.State = network.Online
-			NextLevel.Push(v) // Re-push the directory to retry
+			NextLevel.Push(v)
 		}
 	}
 
@@ -319,9 +332,8 @@ func TrackingChanges(fileClient *network.FileClient) error {
 		log.Errorf("Error processing directory %s: %v", v, err)
 		if errors.Is(err, appError.ErrConnection) {
 			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
-				return fmt.Errorf("reconnection failed: %w", reconnectErr)
+				return err
 			}
-			fileClient.State = network.Online
 		}
 	}
 	return nil
