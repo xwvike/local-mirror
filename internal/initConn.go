@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/network"
+	"local-mirror/internal/transport"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -22,7 +23,7 @@ func InitConn() (*network.FileClient, error) {
 		if err != nil {
 			log.Warnf("Handshake failed, attempt %d/%d: %v", i+1, maxRetries, err)
 			if i == maxRetries-1 {
-				fileClient.State = network.Deprecated
+				fileClient.State = transport.Deprecated
 				return fileClient, err
 			}
 			time.Sleep(time.Duration(i+1) * time.Second)
@@ -30,7 +31,7 @@ func InitConn() (*network.FileClient, error) {
 		}
 		break
 	}
-	if fileClient.State != network.Online {
+	if fileClient.State != transport.Online {
 		return fileClient, fmt.Errorf("failed to establish connection with the server at %s", fileClient.RealityAddr)
 	}
 	return fileClient, nil

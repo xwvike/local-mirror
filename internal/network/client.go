@@ -5,103 +5,20 @@ import (
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/appError"
+	"local-mirror/internal/transport"
 	"local-mirror/pkg/utils"
 	"net"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
-var (
-	Waiting    uint8 = 0x00 // 等待
-	Online     uint8 = 0x01 // 在线
-	Offline    uint8 = 0x02 // 离线
-	Deprecated uint8 = 0x03 // 废弃
-)
-
-type ConnectionManager struct {
-	conn        net.Conn
-	mutex       sync.RWMutex
-	connectAddr string
-	maxRetries  int
-	retryDelay  time.Duration
-}
-
-func NewConnectionManager(addr string) (*ConnectionManager, error) {
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
-	}
-	return &ConnectionManager{
-		connectAddr: addr,
-		maxRetries:  3,
-		retryDelay:  3 * time.Second,
-		conn:        conn,
-	}, nil
-}
-
-func (cm *ConnectionManager) GetConnection() (net.Conn, error) {
-	cm.mutex.RLock()
-	if cm.conn != nil {
-		if cm.isConnValid() {
-			defer cm.mutex.RUnlock()
-			return cm.conn, nil
-		}
-	}
-	cm.mutex.RUnlock()
-	return nil, fmt.Errorf("connection is invalid")
-}
-
-// todo: 需要添加使用心跳检测连接是否有效
-func (cm *ConnectionManager) isConnValid() bool {
-	return true
-}
-
-func (cm *ConnectionManager) Reconnect() error {
-	cm.mutex.Lock()
-	defer cm.mutex.Unlock()
-
-	if cm.conn != nil {
-		cm.conn.Close()
-		cm.conn = nil
-	}
-
-	var err error
-	for i := 0; i < cm.maxRetries; i++ {
-		log.Infof("Attempting to reconnect (attempt %d/%d)", i+1, cm.maxRetries)
-
-		cm.conn, err = net.Dial("tcp", cm.connectAddr)
-		if err == nil {
-			log.Info("Reconnection successful")
-			return nil
-		}
-
-		log.Errorf("Reconnection attempt %d failed: %v", i+1, err)
-		if i < cm.maxRetries-1 {
-			time.Sleep(cm.retryDelay)
-		}
-	}
-
-	return err
-}
-
-func (cm *ConnectionManager) Close() {
-	cm.mutex.Lock()
-	defer cm.mutex.Unlock()
-
-	if cm.conn != nil {
-		cm.conn.Close()
-		cm.conn = nil
-	}
-}
-
 type FileClient struct {
 	RealityAddr      string
 	Alias            string
-	connectionManage *ConnectionManager
+	connectionManage *transport.ConnectionManager
 	realityVersion   uint16
 	realityID        uint32
 	State            uint8
@@ -109,20 +26,20 @@ type FileClient struct {
 
 func NewFileClient(realityAddr string, serverAlias string) (*FileClient, error) {
 	log.Info("Creating file client, server address:", realityAddr)
-	connetion, err := NewConnectionManager(realityAddr)
+	connetion, err := transport.NewConnectionManager(realityAddr)
 	if err != nil {
 		return &FileClient{
 			RealityAddr:      realityAddr,
 			Alias:            serverAlias,
 			connectionManage: nil,
-			State:            Offline,
+			State:            transport.Offline,
 		}, fmt.Errorf("failed to create connection manager: %w", err)
 	}
 	return &FileClient{
 		RealityAddr:      realityAddr,
 		Alias:            serverAlias,
 		connectionManage: connetion,
-		State:            Waiting,
+		State:            transport.Waiting,
 	}, nil
 }
 
@@ -137,15 +54,15 @@ func (c *FileClient) Reconnect() error {
 	if err := c.connectionManage.Reconnect(); err != nil {
 		return fmt.Errorf("failed to reconnect: %w", err)
 	}
-	c.State = Waiting
+	c.State = transport.Waiting
 	err := c.Reverify()
 	if err != nil {
-		c.State = Deprecated
+		c.State = transport.Deprecated
 		c.connectionManage.Close()
 		log.Errorf("Reverification failed, Abandon this client: %v", err)
 		return err
 	}
-	c.State = Online
+	c.State = transport.Online
 	log.Info("Reconnected successfully")
 	return nil
 }
@@ -203,7 +120,7 @@ func (c *FileClient) Handshake() error {
 	}
 	c.realityVersion = handshakeResponse.Version
 	c.realityID = handshakeResponse.UUID
-	c.State = Online
+	c.State = transport.Online
 	log.Infof("Received handshake response: version: %d, realityID: %d",
 		handshakeResponse.Version,
 		handshakeResponse.UUID)

@@ -6,6 +6,7 @@ import (
 	"local-mirror/config"
 	"local-mirror/internal/appError"
 	"local-mirror/internal/network"
+	"local-mirror/internal/transport"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/stack"
 	"local-mirror/pkg/utils"
@@ -51,7 +52,7 @@ func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
 }
 
 func executeTaskWithClient(taskName string, fileClient *network.FileClient, taskFunc func(*network.FileClient) error) error {
-	if fileClient.State == network.Deprecated {
+	if fileClient.State == transport.Deprecated {
 		return fmt.Errorf("client is deprecated")
 	}
 
@@ -170,7 +171,7 @@ func ensureConnected() (*network.FileClient, error) {
 		fileClient.ConnectionClose()
 	}
 
-	if fileClient.State == network.Online {
+	if fileClient.State == transport.Online {
 		return fileClient, nil
 	}
 

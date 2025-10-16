@@ -31,6 +31,10 @@ const (
 	MsgTypeRecentChangeResponse uint16 = 0x000D // 最近变更响应
 	MsgTypeReverify             uint16 = 0x000E // 重新验证请求
 	MsgTypeReverifyResponse     uint16 = 0x000F // 重新验证响应
+	MsgTypeStreamStart          uint16 = 0x0010 // 流式传输开始
+	MsgTypeStreamChunk          uint16 = 0x0011 // 流式传输数据
+	MsgTypeStreamComplete       uint16 = 0x0012 // 流式传输完成
+	MsgTypeStreamAck            uint16 = 0x0013 // 流式传输确认
 
 	// 头部大小
 	HeaderSize = 12 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节）
@@ -134,6 +138,35 @@ type HeartbeatPongMessage struct {
 type ReverifyResponse struct {
 	Version  uint16 // 协议版本
 	ServerID uint32 // 客户端标识
+}
+
+// 流数据传输启动消息
+type StreamStartMessage struct {
+	PayloadType uint8    // 数据流类型
+	SessionID   [16]byte // 会话标识
+	TotalSize   uint64   // 总大小（字节）
+	MetaLength  uint32   // 元数据长度（字节）
+	Meta        []byte   // 元数据
+}
+
+// 流数据传输消息
+type StreamChunkMessage struct {
+	SessionID  [16]byte // 会话标识
+	Offset     uint64   // 偏移量（字节）
+	DataLength uint32   // 数据长度（字节）
+	Data       []byte   // 数据
+}
+
+// 流数据传输完成消息
+type StreamCompleteMessage struct {
+	SessionID [16]byte // 会话标识
+	Checksum  [32]byte // 校验和
+}
+
+// 流数据传输确认消息
+type StreamAckMessage struct {
+	SessionID [16]byte // 会话标识
+	AckOffset uint64   // 确认偏移量（字节）
 }
 
 func encodeHeader(header MessageHeader) []byte {
