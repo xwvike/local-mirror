@@ -36,14 +36,14 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 		pathA := nodeA.Path
 		nodeB, exists := bMap[pathA]
 		if !exists {
-			// 如果b中没有对应节点，标记为add
+			// nodeB 不存在时是零值，ParentID 应取 nodeA 的
 			diffs = append(diffs, DiffResult{
 				Path:     pathA,
 				IsDir:    nodeA.IsDir,
 				Action:   "create",
 				Name:     nodeA.Name,
 				Size:     nodeA.Size,
-				ParentID: nodeB.ParentID,
+				ParentID: nodeA.ParentID,
 			})
 		}
 		// 如果b中有对应节点，比较属性

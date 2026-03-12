@@ -136,12 +136,15 @@ type ReverifyResponse struct {
 	ServerID uint32 // 客户端标识
 }
 
+// encode 系列函数写入 bytes.Buffer，其 Write 方法在内存不足时 panic 而非返回 error，
+// 因此 binary.Write 对 bytes.Buffer 实际上不会返回 error。
+// 用 _ = 显式表达"有意忽略"，避免 errcheck 等工具误报。
 func encodeHeader(header MessageHeader) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, header.Magic)
-	binary.Write(buf, binary.BigEndian, header.Type)
-	binary.Write(buf, binary.BigEndian, header.BodyLength)
-	binary.Write(buf, binary.BigEndian, header.ReservedWord)
+	_ = binary.Write(buf, binary.BigEndian, header.Magic)
+	_ = binary.Write(buf, binary.BigEndian, header.Type)
+	_ = binary.Write(buf, binary.BigEndian, header.BodyLength)
+	_ = binary.Write(buf, binary.BigEndian, header.ReservedWord)
 	return buf.Bytes()
 }
 
@@ -167,9 +170,9 @@ func decodeHeader(data []byte) (MessageHeader, error) {
 
 func encodeHandshake(msg HandshakeMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.Version)
-	binary.Write(buf, binary.BigEndian, msg.UUID)
-	binary.Write(buf, binary.BigEndian, msg.Role)
+	_ = binary.Write(buf, binary.BigEndian, msg.Version)
+	_ = binary.Write(buf, binary.BigEndian, msg.UUID)
+	_ = binary.Write(buf, binary.BigEndian, msg.Role)
 	return buf.Bytes()
 }
 
@@ -190,9 +193,9 @@ func decodeHandshake(data []byte) (HandshakeMessage, error) {
 
 func encodeFileRequest(msg FileRequestMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.PathLength)
+	_ = binary.Write(buf, binary.BigEndian, msg.PathLength)
 	buf.Write([]byte(msg.FilePath))
-	binary.Write(buf, binary.BigEndian, msg.Offset)
+	_ = binary.Write(buf, binary.BigEndian, msg.Offset)
 	return buf.Bytes()
 }
 
@@ -222,7 +225,7 @@ func decodeFileRequest(data []byte) (FileRequestMessage, error) {
 func encodeFileResponse(msg FileResponseMessage) []byte {
 	buf := new(bytes.Buffer)
 	buf.Write(msg.SessionID[:])
-	binary.Write(buf, binary.BigEndian, msg.FileSize)
+	_ = binary.Write(buf, binary.BigEndian, msg.FileSize)
 	buf.Write(msg.FileHash[:])
 	return buf.Bytes()
 }
@@ -252,8 +255,8 @@ func decodeFileResponse(data []byte) (FileResponseMessage, error) {
 func encodeFileData(msg FileDataMessage) []byte {
 	buf := new(bytes.Buffer)
 	buf.Write(msg.SessionID[:])
-	binary.Write(buf, binary.BigEndian, msg.Offset)
-	binary.Write(buf, binary.BigEndian, msg.DataLength)
+	_ = binary.Write(buf, binary.BigEndian, msg.Offset)
+	_ = binary.Write(buf, binary.BigEndian, msg.DataLength)
 	buf.Write(msg.Data)
 	return buf.Bytes()
 }
@@ -288,7 +291,7 @@ func decodeFileData(data []byte) (FileDataMessage, error) {
 func encodeAcknowlege(msg AcknowledgeMessage) []byte {
 	buf := new(bytes.Buffer)
 	buf.Write(msg.SessionID[:])
-	binary.Write(buf, binary.BigEndian, msg.Offset)
+	_ = binary.Write(buf, binary.BigEndian, msg.Offset)
 	return buf.Bytes()
 }
 
@@ -328,7 +331,7 @@ func decodeFileComplete(data []byte) (FileCompleteMessage, error) {
 
 func encodeErrorMessage(msg ErrorMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.MessageLen)
+	_ = binary.Write(buf, binary.BigEndian, msg.MessageLen)
 	buf.Write([]byte(msg.ErrorMessage))
 	return buf.Bytes()
 }
@@ -397,7 +400,7 @@ func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 
 func encodeTreeRequest(msg TreeRequestMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.PathLength)
+	_ = binary.Write(buf, binary.BigEndian, msg.PathLength)
 	buf.Write([]byte(msg.RootPath))
 	return buf.Bytes()
 }
@@ -422,9 +425,9 @@ func decodeTreeRequest(data []byte) (TreeRequestMessage, error) {
 func encodeTreeResponse(msg TreeResponseMessage) []byte {
 	buf := new(bytes.Buffer)
 	pathBytes := []byte(msg.RootPath)
-	binary.Write(buf, binary.BigEndian, uint16(len(pathBytes)))
+	_ = binary.Write(buf, binary.BigEndian, uint16(len(pathBytes)))
 	buf.Write(pathBytes)
-	binary.Write(buf, binary.BigEndian, msg.DataLength)
+	_ = binary.Write(buf, binary.BigEndian, msg.DataLength)
 	buf.Write(msg.Data)
 	return buf.Bytes()
 }
@@ -462,9 +465,9 @@ func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 
 func encodeHeartbeatPing(msg HeartbeatPingMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.Version)
-	binary.Write(buf, binary.BigEndian, msg.Timestamp)
-	binary.Write(buf, binary.BigEndian, msg.ClientID)
+	_ = binary.Write(buf, binary.BigEndian, msg.Version)
+	_ = binary.Write(buf, binary.BigEndian, msg.Timestamp)
+	_ = binary.Write(buf, binary.BigEndian, msg.ClientID)
 	return buf.Bytes()
 }
 
@@ -489,9 +492,9 @@ func decodeHeartbeatPing(data []byte) (HeartbeatPingMessage, error) {
 
 func encodeHeartbeatPong(msg HeartbeatPongMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.Version)
-	binary.Write(buf, binary.BigEndian, msg.Timestamp)
-	binary.Write(buf, binary.BigEndian, msg.ServerID)
+	_ = binary.Write(buf, binary.BigEndian, msg.Version)
+	_ = binary.Write(buf, binary.BigEndian, msg.Timestamp)
+	_ = binary.Write(buf, binary.BigEndian, msg.ServerID)
 	return buf.Bytes()
 }
 
@@ -516,8 +519,8 @@ func decodeHeartbeatPong(data []byte) (HeartbeatPongMessage, error) {
 
 func encodeReverifyResponse(msg ReverifyResponse) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.Version)
-	binary.Write(buf, binary.BigEndian, msg.ServerID)
+	_ = binary.Write(buf, binary.BigEndian, msg.Version)
+	_ = binary.Write(buf, binary.BigEndian, msg.ServerID)
 	return buf.Bytes()
 }
 
@@ -538,9 +541,9 @@ func decodeReverifyResponse(data []byte) (ReverifyResponse, error) {
 
 func encodeRecentChangeRequest(msg RecentChangeRequestMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.ClientID)
-	binary.Write(buf, binary.BigEndian, msg.startTime)
-	binary.Write(buf, binary.BigEndian, msg.endTime)
+	_ = binary.Write(buf, binary.BigEndian, msg.ClientID)
+	_ = binary.Write(buf, binary.BigEndian, msg.startTime)
+	_ = binary.Write(buf, binary.BigEndian, msg.endTime)
 	return buf.Bytes()
 }
 
@@ -565,13 +568,13 @@ func decodeRecentChangeRequest(data []byte) (RecentChangeRequestMessage, error) 
 
 func encodeRecentChangeResponse(msg RecentChangeResponseMessage) []byte {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, msg.ServerID)
+	_ = binary.Write(buf, binary.BigEndian, msg.ServerID)
 
 	changeCount := len(msg.Changes)
-	binary.Write(buf, binary.BigEndian, uint32(changeCount))
+	_ = binary.Write(buf, binary.BigEndian, uint32(changeCount))
 	for _, change := range msg.Changes {
 		changeBytes := []byte(change)
-		binary.Write(buf, binary.BigEndian, uint16(len(changeBytes)))
+		_ = binary.Write(buf, binary.BigEndian, uint16(len(changeBytes)))
 		buf.Write(changeBytes)
 	}
 

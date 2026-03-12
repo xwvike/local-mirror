@@ -15,7 +15,8 @@ func InitConn() (*network.FileClient, error) {
 	if err != nil {
 		return fileClient, fmt.Errorf("failed to create file client: %w", err)
 	}
-	for i := range make([]struct{}, maxRetries) {
+	// 标准计数循环写法；原来的 make([]struct{}, n) 会创建无意义的临时 slice
+	for i := 0; i < maxRetries; i++ {
 		log.Warnf("Attempting to connect to server at %s, attempt %d/%d", fileClient.RealityAddr, i+1, maxRetries)
 		log.Debugf("Connecting to server at %s", fileClient.RealityAddr)
 		err := fileClient.Handshake()

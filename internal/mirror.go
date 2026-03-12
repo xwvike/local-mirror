@@ -99,8 +99,11 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 }
 
 func processDirectoryDiff(v DiffResult) error {
-	if err := os.MkdirAll(v.Path, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", v.Path, err)
+	// v.Path 是相对路径，必须拼接 StartPath 才能在正确的位置创建目录
+	// 与 DownloadFile 中 filepath.Join(config.StartPath, filePath) 保持一致
+	fullPath := filepath.Join(config.StartPath, v.Path)
+	if err := os.MkdirAll(fullPath, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", fullPath, err)
 	}
 
 	hasPath, err := tree.HasPath(v.Path)
@@ -270,10 +273,8 @@ func runMirrorTasks(fileClient *network.FileClient) error {
 func fullScan(fileClient *network.FileClient) error {
 	startTime := time.Now().UnixMilli()
 
-	// Clear the stack and start with root node
-	for NextLevel.Size() > 0 {
-		NextLevel.Pop()
-	}
+	// Stack 自带 Clear()，无需手动循环弹出
+	NextLevel.Clear()
 
 	rootNode := DiffResult{
 		Path:   ".",
