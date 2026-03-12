@@ -19,8 +19,8 @@ func init() {
 	config.StartTime = time.Now().Unix()
 	wd, err := os.Getwd()
 	if err != nil {
+		// log.Fatalf 内部已调用 os.Exit(1)，后面不需要再调用
 		log.Fatalf("获取当前执行文件路径失败: %v", err)
-		os.Exit(1)
 	}
 	fmt.Print(wd)
 	config.StartPath = wd

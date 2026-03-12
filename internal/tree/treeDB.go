@@ -62,7 +62,8 @@ func InitDB() {
 		log.Error("Failed to open database:", err)
 		os.Exit(1)
 	}
-	err = DB.Update(func(tx *bolt.Tx) error {
+	// 第一步：创建所有 bucket（每次启动清空重建）
+	if err = DB.Update(func(tx *bolt.Tx) error {
 		buckets := []string{"nodes", "children", "path_index", "meta", "changed_dirs"}
 		for _, bucketName := range buckets {
 			// 删除旧的 bucket（如果存在）
@@ -77,8 +78,13 @@ func InitDB() {
 			}
 		}
 		return nil
-	})
-	err = DB.Update(func(tx *bolt.Tx) error {
+	}); err != nil {
+		log.Error("bbolt: failed to initialize buckets:", err)
+		os.Exit(1)
+	}
+
+	// 第二步：写入初始元数据
+	if err = DB.Update(func(tx *bolt.Tx) error {
 		metaBucket := tx.Bucket([]byte("meta"))
 		// 初始化目录和文件计数
 		dirCountData := make([]byte, 8)
@@ -90,10 +96,8 @@ func InitDB() {
 		metaBucket.Put([]byte("start_path"), []byte(config.StartPath))
 		metaBucket.Put([]byte("start_time"), []byte(time.Now().Format(time.RFC3339)))
 		return nil
-	})
-
-	if err != nil {
-		log.Error("bbolt:", err)
+	}); err != nil {
+		log.Error("bbolt: failed to initialize meta:", err)
 		os.Exit(1)
 	}
 	log.Info("Database initialized successfully")
@@ -114,8 +118,9 @@ func GetMeta(key string) (uint64, error) {
 
 func AddNodes(nodes []*Node) error {
 	log.Debug("Adding nodes to the database:", len(nodes))
-	var dir_count uint64 = 0
-	var file_count uint64 = 0
+	// Go 命名规范：驼峰式，不用下划线
+	var dirCount uint64
+	var fileCount uint64
 	_err := DB.Update(func(tx *bolt.Tx) error {
 		nodesBucket := tx.Bucket([]byte("nodes"))
 		childrenBucket := tx.Bucket([]byte("children"))
@@ -134,11 +139,11 @@ func AddNodes(nodes []*Node) error {
 			}
 			nodesBucket.Put([]byte(node.ID), nodeData)
 			pathIndexBucket.Put([]byte(node.Path), []byte(node.ID))
-			switch node.IsDir {
-			case true:
-				dir_count++
-			case false:
-				file_count++
+			// bool 类型直接用 if/else，switch bool 在 Go 中不惯用
+			if node.IsDir {
+				dirCount++
+			} else {
+				fileCount++
 			}
 			if node.ParentID != "" {
 				childrenData := childrenBucket.Get([]byte(node.ParentID))
@@ -159,10 +164,10 @@ func AddNodes(nodes []*Node) error {
 			}
 			log.Debugf("Node %s added successfully", node.ID)
 		}
-		if dir_count > 0 {
+		if dirCount > 0 {
 			oldDirCount := metaBucket.Get([]byte("dir_count"))
 			if oldDirCount != nil {
-				newDirCount := binary.BigEndian.Uint64(oldDirCount) + dir_count
+				newDirCount := binary.BigEndian.Uint64(oldDirCount) + dirCount
 				dirCountData := make([]byte, 8)
 				binary.BigEndian.PutUint64(dirCountData, newDirCount)
 				if err := metaBucket.Put([]byte("dir_count"), dirCountData); err != nil {
@@ -171,17 +176,17 @@ func AddNodes(nodes []*Node) error {
 				}
 			} else {
 				dirCountData := make([]byte, 8)
-				binary.BigEndian.PutUint64(dirCountData, dir_count)
+				binary.BigEndian.PutUint64(dirCountData, dirCount)
 				if err := metaBucket.Put([]byte("dir_count"), dirCountData); err != nil {
 					log.Error("Failed to set initial directory count:", err)
 					return err
 				}
 			}
 		}
-		if file_count > 0 {
+		if fileCount > 0 {
 			oldFileCount := metaBucket.Get([]byte("file_count"))
 			if oldFileCount != nil {
-				newFileCount := binary.BigEndian.Uint64(oldFileCount) + file_count
+				newFileCount := binary.BigEndian.Uint64(oldFileCount) + fileCount
 				fileCountData := make([]byte, 8)
 				binary.BigEndian.PutUint64(fileCountData, newFileCount)
 				if err := metaBucket.Put([]byte("file_count"), fileCountData); err != nil {
@@ -190,7 +195,7 @@ func AddNodes(nodes []*Node) error {
 				}
 			} else {
 				fileCountData := make([]byte, 8)
-				binary.BigEndian.PutUint64(fileCountData, file_count)
+				binary.BigEndian.PutUint64(fileCountData, fileCount)
 				if err := metaBucket.Put([]byte("file_count"), fileCountData); err != nil {
 					log.Error("Failed to set initial file count:", err)
 					return err
@@ -199,7 +204,7 @@ func AddNodes(nodes []*Node) error {
 		}
 		return nil
 	})
-	log.Debugf("Added %d directories and %d files to the database", dir_count, file_count)
+	log.Debugf("Added %d directories and %d files to the database", dirCount, fileCount)
 	return _err
 }
 
@@ -420,12 +425,8 @@ func HasPath(path string) (bool, error) {
 		if pathIndexBucket == nil {
 			return fmt.Errorf("path index bucket not found")
 		}
-		pathID := pathIndexBucket.Get([]byte(path))
-		if pathID != nil {
-			exists = true
-		} else {
-			exists = false
-		}
+		// 直接将比较结果赋值，无需 if/else
+		exists = pathIndexBucket.Get([]byte(path)) != nil
 		return nil
 	})
 	return exists, err

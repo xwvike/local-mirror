@@ -15,11 +15,15 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var (
-	Waiting    uint8 = 0x00 // 等待
-	Online     uint8 = 0x01 // 在线
-	Offline    uint8 = 0x02 // 离线
-	Deprecated uint8 = 0x03 // 废弃
+// ConnectionState 描述客户端连接的生命周期状态。
+// 使用自定义类型而非 uint8，让编译器在类型赋值时提供保护。
+type ConnectionState uint8
+
+const (
+	Waiting    ConnectionState = iota // 0x00 已建立TCP连接，等待握手
+	Online                            // 0x01 握手成功，可以正常通信
+	Offline                           // 0x02 连接已断开
+	Deprecated                        // 0x03 连接不可恢复，需要丢弃
 )
 
 type ConnectionManager struct {
@@ -44,14 +48,13 @@ func NewConnectionManager(addr string) (*ConnectionManager, error) {
 }
 
 func (cm *ConnectionManager) GetConnection() (net.Conn, error) {
+	// defer 统一放在函数入口，无论哪条返回路径都能正确释放读锁
 	cm.mutex.RLock()
-	if cm.conn != nil {
-		if cm.isConnValid() {
-			defer cm.mutex.RUnlock()
-			return cm.conn, nil
-		}
+	defer cm.mutex.RUnlock()
+
+	if cm.conn != nil && cm.isConnValid() {
+		return cm.conn, nil
 	}
-	cm.mutex.RUnlock()
 	return nil, fmt.Errorf("connection is invalid")
 }
 
@@ -104,7 +107,7 @@ type FileClient struct {
 	connectionManage *ConnectionManager
 	realityVersion   uint16
 	realityID        uint32
-	State            uint8
+	State            ConnectionState
 }
 
 func NewFileClient(realityAddr string, serverAlias string) (*FileClient, error) {
@@ -151,7 +154,10 @@ func (c *FileClient) Reconnect() error {
 }
 
 func (c *FileClient) Reverify() error {
-	conn, _ := c.connectionManage.GetConnection()
+	conn, err := c.connectionManage.GetConnection()
+	if err != nil {
+		return fmt.Errorf("reverify failed to get connection: %w", err)
+	}
 	if err := sendMessage(conn, MsgTypeHandshake, nil); err != nil {
 		return fmt.Errorf("failed to send reverify message: %w", err)
 	}
@@ -253,7 +259,7 @@ func (c *FileClient) Ping(conn net.Conn) error {
 func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
-		return nil, fmt.Errorf("%w, failed to get connection: %w", appError.ErrConnection, err)
+		return nil, fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
 	}
 	request := TreeRequestMessage{
 		PathLength: uint16(len(rootPath)),
@@ -262,17 +268,17 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 	requestBytes := encodeTreeRequest(request)
 	realityAddr := conn.RemoteAddr().String()
 	if err := sendMessage(conn, MsgTypeTreeRequest, requestBytes); err != nil {
-		return nil, fmt.Errorf("%w, failed to send tree request: %w", appError.ErrConnection, err)
+		return nil, fmt.Errorf("%w: failed to send tree request: %v", appError.ErrConnection, err)
 	}
 	log.Debugf("Sent tree request to %s for path: %s", realityAddr, rootPath)
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return nil, fmt.Errorf("%w, failed to receive message: %w", appError.ErrConnection, err)
+		return nil, fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
 	}
 	if msgType == MsgTypeError {
 		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
-			return nil, fmt.Errorf("%w, failed to decode error message: %w", appError.ErrConnection, err)
+			return nil, fmt.Errorf("%w: failed to decode error message: %v", appError.ErrConnection, err)
 		}
 
 		return nil, fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
@@ -282,7 +288,7 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 	}
 	treeResponse, err := decodeTreeResponse(bodyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("%w, failed to decode tree response: %w", appError.ErrConnection, err)
+		return nil, fmt.Errorf("%w: failed to decode tree response: %v", appError.ErrConnection, err)
 	}
 
 	if len(treeResponse.Data) == 0 {
@@ -299,7 +305,7 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
-		return "", fmt.Errorf("%w, failed to get connection: %w", appError.ErrConnection, err)
+		return "", fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
 	}
 	requestFile := FileRequestMessage{
 		PathLength: uint16(len(filePath)),
@@ -308,18 +314,18 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	}
 	requestBytes := encodeFileRequest(requestFile)
 	if err := sendMessage(conn, MsgTypeFileRequest, requestBytes); err != nil {
-		return "", fmt.Errorf("%w, failed to send file request: %w", appError.ErrConnection, err)
+		return "", fmt.Errorf("%w: failed to send file request: %v", appError.ErrConnection, err)
 	}
 
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return "", fmt.Errorf("%w, failed to receive message: %w", appError.ErrConnection, err)
+		return "", fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
 	}
 
 	if msgType == MsgTypeError {
 		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
-			return "", fmt.Errorf("%w, failed to decode error message: %w", appError.ErrConnection, err)
+			return "", fmt.Errorf("%w: failed to decode error message: %v", appError.ErrConnection, err)
 		}
 		return "", fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
 	}
@@ -329,7 +335,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	}
 	fileResponse, err := decodeFileResponse(bodyBytes)
 	if err != nil {
-		return "", fmt.Errorf("%w, failed to decode file response: %w", appError.ErrConnection, err)
+		return "", fmt.Errorf("%w: failed to decode file response: %v", appError.ErrConnection, err)
 	}
 
 	fullPath := filepath.Join(config.StartPath, filePath)
@@ -349,13 +355,13 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	for {
 		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
-			return "", fmt.Errorf("%w, failed to receive message: %w", appError.ErrConnection, err)
+			return "", fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
 		}
 		switch msgType {
 		case MsgTypeFileData:
 			dataMsg, err := decodeFileData(bodyBytes)
 			if err != nil {
-				return "", fmt.Errorf("%w, error decoding file data message: %w", appError.ErrConnection, err)
+				return "", fmt.Errorf("%w: error decoding file data message: %v", appError.ErrConnection, err)
 			}
 			// todo: check session ID
 			if dataMsg.SessionID != sessionID {
@@ -385,7 +391,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 		case MsgTypeFileComplete:
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
-				return "", fmt.Errorf("%w, error decoding file complete message: %w", appError.ErrConnection, err)
+				return "", fmt.Errorf("%w: error decoding file complete message: %v", appError.ErrConnection, err)
 			}
 			if completeMsg.SessionID != sessionID {
 				return "", fmt.Errorf("invalid session ID in file complete message, got %s", completeMsg.SessionID)
@@ -402,7 +408,9 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				return "", err
 			}
 
-			file.Sync()
+			if err := file.Sync(); err != nil {
+				log.Warnf("file.Sync() failed for %s: %v", fullPath, err)
+			}
 			fileHash, err := utils.CalcBlake3(fullPath)
 			if err != nil {
 				return "", fmt.Errorf("error calculating file hash: %w", err)
@@ -432,7 +440,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 func (c *FileClient) GetTreeChange() ([]string, error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
-		return nil, fmt.Errorf("%w, failed to get connection: %w", appError.ErrConnection, err)
+		return nil, fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
 	}
 	endTime := time.Now().Unix()
 	startTime := endTime - *config.DiffInterval
@@ -443,16 +451,16 @@ func (c *FileClient) GetTreeChange() ([]string, error) {
 	}
 	requestBytes := encodeRecentChangeRequest(request)
 	if err := sendMessage(conn, MsgTypeRecentChangeRequest, requestBytes); err != nil {
-		return nil, fmt.Errorf("%w, failed to send recent change request: %w", appError.ErrConnection, err)
+		return nil, fmt.Errorf("%w: failed to send recent change request: %v", appError.ErrConnection, err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return nil, fmt.Errorf("%w, failed to receive message: %w", appError.ErrConnection, err)
+		return nil, fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
 	}
 	if msgType == MsgTypeError {
 		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
-			return nil, fmt.Errorf("%w, failed to decode error message: %w", appError.ErrConnection, err)
+			return nil, fmt.Errorf("%w: failed to decode error message: %v", appError.ErrConnection, err)
 		}
 		return nil, fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
 	}
@@ -461,7 +469,7 @@ func (c *FileClient) GetTreeChange() ([]string, error) {
 	}
 	recentChangeResponse, err := decodeRecentChangeResponse(bodyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("%w, failed to decode recent change response: %w", appError.ErrConnection, err)
+		return nil, fmt.Errorf("%w: failed to decode recent change response: %v", appError.ErrConnection, err)
 	}
 	if len(recentChangeResponse.Changes) == 0 {
 		log.Warnf("Received empty recent change response from %s", c.RealityAddr)
