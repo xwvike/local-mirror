@@ -34,7 +34,8 @@ type ConnectionManager struct {
 }
 
 func NewConnectionManager(addr string) (*ConnectionManager, error) {
-	conn, err := net.Dial("tcp", addr)
+	// 带超时拨号：端口扫描时不能在无响应的地址上无限期等待
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
 	}
@@ -75,7 +76,7 @@ func (cm *ConnectionManager) Reconnect() error {
 	for i := 0; i < cm.maxRetries; i++ {
 		log.Infof("Attempting to reconnect (attempt %d/%d)", i+1, cm.maxRetries)
 
-		cm.conn, err = net.Dial("tcp", cm.connectAddr)
+		cm.conn, err = net.DialTimeout("tcp", cm.connectAddr, 3*time.Second)
 		if err == nil {
 			log.Info("Reconnection successful")
 			return nil
@@ -185,6 +186,10 @@ func (c *FileClient) Handshake() error {
 	if err != nil {
 		return fmt.Errorf("failed to get connection: %w", err)
 	}
+	// 握手用于端口探测，对端可能是不应答的陌生服务，必须限时
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	defer conn.SetDeadline(time.Time{})
+
 	handshakeMsg := HandshakeMessage{
 		Version: config.ProtocolVersion,
 		UUID:    config.InstanceID,

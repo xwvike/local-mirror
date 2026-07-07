@@ -20,8 +20,27 @@ import (
 )
 
 type fileServer struct {
-	listenAddr string
-	clientMap  sync.Map
+	listener  net.Listener
+	clientMap sync.Map
+}
+
+// ListenAvailable 从 basePort 开始逐个尝试监听，返回第一个可用端口。
+// 提前绑定好 listener 再交给 fileServer，调用方（启动横幅）才能拿到真实端口
+func ListenAvailable(basePort, count int) (net.Listener, int, error) {
+	var lastErr error
+	for port := basePort; port < basePort+count; port++ {
+		// 强制 tcp4：macOS 上 "tcp" 会退化为 IPv6 双栈套接字，
+		// 与已被占用的 IPv4 端口"共存"，导致客户端（IPv4 拨号）连不到本服务
+		listener, err := net.Listen("tcp4", fmt.Sprintf("0.0.0.0:%d", port))
+		if err == nil {
+			if port != basePort {
+				log.Warnf("端口 %d 不可用，使用 %d", basePort, port)
+			}
+			return listener, port, nil
+		}
+		lastErr = err
+	}
+	return nil, 0, fmt.Errorf("在 %d-%d 范围内没有可用端口: %w", basePort, basePort+count-1, lastErr)
 }
 
 type session struct {
@@ -59,24 +78,23 @@ func (s *fileServer) GetAllClients() []*client {
 	return clients
 }
 
-func NewFileServer(listenAddr string) *fileServer {
-	log.Info("Creating file server, listen address:", listenAddr)
+func NewFileServer(listener net.Listener) *fileServer {
+	log.Info("Creating file server, listen address:", listener.Addr())
 	return &fileServer{
-		listenAddr: listenAddr,
-		clientMap:  sync.Map{},
+		listener:  listener,
+		clientMap: sync.Map{},
 	}
 }
 
 func (s *fileServer) Start() error {
-	listener, err := net.Listen("tcp", s.listenAddr)
-	if err != nil {
-		return fmt.Errorf("error starting server: %w", err)
-	}
-	log.Infof("File server started on %s", s.listenAddr)
-	defer listener.Close()
+	log.Infof("File server started on %s", s.listener.Addr())
+	defer s.listener.Close()
 	for {
-		conn, err := listener.Accept()
+		conn, err := s.listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
 			log.Error("Error accepting connection:", err)
 			continue
 		}

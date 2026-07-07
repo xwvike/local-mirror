@@ -12,8 +12,12 @@ const (
 	RealityMode = 0x0001
 	MirrorMode  = 0x0002
 
-	// DefaultPort 服务端监听/客户端连接的 TCP 端口
+	// DefaultPort 端口探测的起始 TCP 端口。
+	// 服务端从这里开始寻找第一个可用端口监听；
+	// 客户端在 [DefaultPort, DefaultPort+PortScanRange) 范围内逐个握手探测服务端
 	DefaultPort = 52345
+	// PortScanRange 端口探测范围大小
+	PortScanRange = 10
 )
 
 var (
@@ -37,6 +41,7 @@ var (
 	RealityIP       *string
 	Help            *bool
 	Version         *bool
+	ActualPort      int    = 0          // 服务端实际监听的端口（启动时探测确定）
 	StartPath       string = ""         // Start path
 	InstanceID      uint32 = 0x00000000 // Instance ID
 	ProtocolVersion uint16 = 0x0001     // Protocol version
@@ -54,8 +59,10 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  local-mirror [flags]\n\n")
 
 	fmt.Fprintf(w, "Modes (-m/--mode 的取值):\n")
-	fmt.Fprintf(w, "  reality     服务器模式：监听文件变化，在 TCP %d 端口提供同步服务\n", DefaultPort)
-	fmt.Fprintf(w, "  mirror      客户端模式：连接服务器，将其目录镜像到本地\n")
+	fmt.Fprintf(w, "  reality     服务器模式：监听文件变化并提供同步服务。\n")
+	fmt.Fprintf(w, "              从 TCP %d 起自动选择第一个可用端口，实际端口见启动信息\n", DefaultPort)
+	fmt.Fprintf(w, "  mirror      客户端模式：连接服务器，将其目录镜像到本地。\n")
+	fmt.Fprintf(w, "              在 %d-%d 端口范围内自动探测服务端\n", DefaultPort, DefaultPort+PortScanRange-1)
 	fmt.Fprintf(w, "              注意：镜像是单向的，客户端本地多余的文件会被删除\n\n")
 
 	fmt.Fprintf(w, "Flags:\n")

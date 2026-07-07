@@ -6,6 +6,7 @@ import (
 	"local-mirror/config"
 	app "local-mirror/internal"
 	"local-mirror/internal/logger"
+	"local-mirror/internal/network"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"os"
@@ -63,6 +64,19 @@ func main() {
 	}
 
 	logger.InitLogger()
+
+	// 服务端在打印横幅前先绑定端口（从 DefaultPort 起自动探测），
+	// 横幅里展示的才是真实监听端口；accept 循环稍后由 Reality 启动
+	if *config.Mode == "reality" {
+		listener, port, err := network.ListenAvailable(config.DefaultPort, config.PortScanRange)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+			os.Exit(1)
+		}
+		app.ServerListener = listener
+		config.ActualPort = port
+	}
+
 	printBanner()
 	log.Infof("启动: version=%s mode=%s instance=%08x root=%s", version, *config.Mode, config.InstanceID, config.StartPath)
 
@@ -87,12 +101,12 @@ func printBanner() {
 	fmt.Printf("  进程PID:  %d\n", os.Getpid())
 	fmt.Printf("  日志:     %s (级别: %s)\n", logger.LogPath(), *config.LogLevel)
 	if *config.Mode == "reality" {
-		fmt.Printf("  监听地址: 0.0.0.0:%d\n", config.DefaultPort)
+		fmt.Printf("  监听地址: 0.0.0.0:%d\n", config.ActualPort)
 	} else {
 		ip := *config.RealityIP
 		if ip == "" {
 			ip = "127.0.0.1"
 		}
-		fmt.Printf("  服务器:   %s:%d\n", ip, config.DefaultPort)
+		fmt.Printf("  服务器:   %s (端口自动探测 %d-%d)\n", ip, config.DefaultPort, config.DefaultPort+config.PortScanRange-1)
 	}
 }
