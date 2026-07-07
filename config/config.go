@@ -76,7 +76,7 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  -v, --version                显示版本信息\n\n")
 
 	fmt.Fprintf(w, "Files:\n")
-	fmt.Fprintf(w, "  ./.local-mirror/cache.db         目录树缓存（每次启动重建）\n")
+	fmt.Fprintf(w, "  ./.local-mirror/cache.db         目录树缓存（跨重启复用，加速启动）\n")
 	fmt.Fprintf(w, "  ./.local-mirror/logs/error.log   运行日志（错误同时输出到终端）\n\n")
 
 	fmt.Fprintf(w, "Examples:\n")

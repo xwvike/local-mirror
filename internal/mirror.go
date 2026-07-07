@@ -55,6 +55,12 @@ func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
 	} else {
 		log.Warnf("Parent node not found for %s: %v", v.Path, err)
 	}
+	// ModTime 必须取磁盘上的真实值：启动校准按 size+mtime 判断哈希可否复用，
+	// 记下载时刻会导致重启后所有文件都被误判为已变化而重算哈希
+	modTime := time.Now()
+	if info, err := os.Stat(filepath.Join(config.StartPath, v.Path)); err == nil {
+		modTime = info.ModTime()
+	}
 	return &tree.Node{
 		ID:       uuid,
 		Path:     v.Path,
@@ -62,7 +68,7 @@ func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
 		ParentID: parentID,
 		IsDir:    v.IsDir,
 		Size:     v.Size,
-		ModTime:  time.Now(),
+		ModTime:  modTime,
 		Hash:     hash,
 		Depth:    strings.Count(v.Path, string(filepath.Separator)),
 	}

@@ -55,6 +55,10 @@ func AddRecentChangedDir(dirPath string) {
 	addChangeTimerActive = true
 }
 
+// BuildFileTree 遍历磁盘构建目录树并写入数据库。
+// 若数据库中已有上次运行的缓存（见 InitDB），则按校准模式运行：
+// 复用未变化文件（size+mtime 一致）的哈希，只重算变化的文件，
+// 并清理磁盘上已不存在的失效节点
 func BuildFileTree(path string) error {
 	startTime := time.Now().UnixMilli()
 	log.Info("start build file tree with concurrent WalkDir from path:", path)
@@ -70,26 +74,41 @@ func BuildFileTree(path string) error {
 		return err
 	}
 
-	// 创建根节点
-	uuid, _ := utils.RandomString(16)
+	// 上次运行留下的节点缓存（首次运行为空表）
+	existing, err := LoadAllNodesByPath()
+	if err != nil {
+		return fmt.Errorf("failed to load cached nodes: %w", err)
+	}
+
+	// 创建根节点。已有缓存时必须复用旧 ID：
+	// children 索引以节点 ID 为键，换新 ID 会切断所有既有的父子关系
+	rootID := ""
+	if old, ok := existing["."]; ok {
+		rootID = old.ID
+	} else {
+		rootID, _ = utils.RandomString(16)
+	}
 	rootNode := &Node{
-		ID:       uuid,
-		Path:     ".",
-		Name:     rootInfo.Name(),
-		ParentID: "",
-		IsDir:    true,
-		Size:     uint64(rootInfo.Size()),
-		ModTime:  rootInfo.ModTime(),
-		Hash:     "",
-		Depth:    0, // 根节点深度为0
+		ID:      rootID,
+		Path:    ".",
+		Name:    rootInfo.Name(),
+		IsDir:   true,
+		Size:    uint64(rootInfo.Size()),
+		ModTime: rootInfo.ModTime(),
 	}
 
 	// 用于存储路径到节点ID的映射
 	pathToID := make(map[string]string)
 	pathToID["."] = rootNode.ID
 
+	// 磁盘上实际存在的路径集合，遍历结束后据此清理失效节点
+	seen := make(map[string]struct{})
+	seen["."] = struct{}{}
+	reusedHashes := 0
+
 	// 使用并发安全的集合
 	var allNodes []*Node
+	var computedHashes int
 	var mu sync.Mutex
 
 	// 使用工作池处理节点收集
@@ -98,17 +117,20 @@ func BuildFileTree(path string) error {
 	var wg sync.WaitGroup
 
 	// 启动工作池：并发计算文件哈希后再收集。
-	// 哈希是 diff 比对的依据，没有它客户端无法判断文件内容是否变化
+	// 哈希是 diff 比对的依据；校准模式下未变化的文件已带哈希，跳过重算
 	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for node := range nodeChan {
-				if !node.IsDir {
+				if !node.IsDir && node.Hash == "" {
 					if hash, err := utils.CalcBlake3(filepath.Join(path, node.Path)); err != nil {
 						log.Warnf("Failed to hash file %s: %v", node.Path, err)
 					} else {
 						node.Hash = fmt.Sprintf("%x", hash)
+						mu.Lock()
+						computedHashes++
+						mu.Unlock()
 					}
 				}
 				mu.Lock()
@@ -148,29 +170,39 @@ func BuildFileTree(path string) error {
 			return nil
 		}
 
-		// 创建节点
-		uuid, _ := utils.RandomString(16)
+		seen[relPath] = struct{}{}
+
+		// 已缓存的节点复用 ID；size+mtime 未变的文件同时复用哈希
+		id := ""
+		hash := ""
+		if old, ok := existing[relPath]; ok {
+			id = old.ID
+			if !info.IsDir() && old.Hash != "" &&
+				old.Size == uint64(info.Size()) && old.ModTime.Equal(info.ModTime()) {
+				hash = old.Hash
+				reusedHashes++
+			}
+		} else {
+			id, _ = utils.RandomString(16)
+		}
 
 		// 计算父节点路径
 		parentPath := utils.RelPath(config.StartPath, filepath.Dir(fullPath))
 
-		// 获取父节点ID
-		parentID := pathToID[parentPath]
-
 		node := &Node{
-			ID:       uuid,
+			ID:       id,
 			Path:     relPath,
 			Name:     info.Name(),
-			ParentID: parentID,
+			ParentID: pathToID[parentPath],
 			IsDir:    info.IsDir(),
 			Size:     uint64(info.Size()),
 			ModTime:  info.ModTime(),
-			Hash:     "",
+			Hash:     hash,
 			Depth:    strings.Count(relPath, string(filepath.Separator)),
 		}
 
 		// 记录路径到ID的映射
-		pathToID[relPath] = uuid
+		pathToID[relPath] = id
 
 		// 发送到工作池
 		nodeChan <- node
@@ -200,7 +232,21 @@ func BuildFileTree(path string) error {
 		}
 	}
 
-	log.Infof("file tree build completed with concurrent WalkDir, time taken: %d ms", time.Now().UnixMilli()-startTime)
+	// 清理缓存中磁盘上已不存在的节点（进程离线期间被删除的文件/目录）
+	var stale []string
+	for p := range existing {
+		if _, ok := seen[p]; !ok {
+			stale = append(stale, p)
+		}
+	}
+	if len(stale) > 0 {
+		if err := DeleteNodes(stale); err != nil {
+			return fmt.Errorf("failed to prune stale nodes: %w", err)
+		}
+	}
+
+	log.Infof("file tree build completed, time taken: %d ms (哈希复用 %d, 重算 %d, 清理失效 %d)",
+		time.Now().UnixMilli()-startTime, reusedHashes, computedHashes, len(stale))
 
 	fileCount, _ := GetMeta("file_count")
 	dirCount, _ := GetMeta("dir_count")

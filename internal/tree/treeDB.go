@@ -50,6 +50,12 @@ type Children struct {
 	ChildIDs []string `json:"child_ids"` // 子节点ID列表
 }
 
+// SchemaVersion 数据库结构版本。节点序列化格式或桶结构变化时递增，
+// 旧版本缓存直接重建，避免读到不兼容的数据
+const SchemaVersion = "1"
+
+var allBuckets = []string{"nodes", "children", "path_index", "meta", "changed_dirs"}
+
 func InitDB() {
 	var err error
 	// 必须设置 Timeout：bbolt 依赖文件锁，同一目录再启动一个实例时
@@ -59,45 +65,88 @@ func InitDB() {
 		log.Errorf("打开数据库失败（该目录可能已有另一个 local-mirror 实例在运行）: %v", err)
 		os.Exit(1)
 	}
-	// 第一步：创建所有 bucket（每次启动清空重建）
+
 	if err = DB.Update(func(tx *bolt.Tx) error {
-		buckets := []string{"nodes", "children", "path_index", "meta", "changed_dirs"}
-		for _, bucketName := range buckets {
-			// 删除旧的 bucket（如果存在）
-			if tx.Bucket([]byte(bucketName)) != nil {
-				if err := tx.DeleteBucket([]byte(bucketName)); err != nil {
-					return fmt.Errorf("failed to delete bucket %s: %w", bucketName, err)
-				}
-			}
-			// 创建新的空 bucket
-			if _, err := tx.CreateBucket([]byte(bucketName)); err != nil {
-				return fmt.Errorf("failed to create bucket %s: %w", bucketName, err)
+		// 缓存可复用的条件：同步根目录一致 + 结构版本一致 + 所有桶齐全。
+		// 满足则跨重启复用，BuildFileTree 只需校准增量，省掉全量重哈希
+		reuse := true
+		if meta := tx.Bucket([]byte("meta")); meta == nil ||
+			string(meta.Get([]byte("start_path"))) != config.StartPath ||
+			string(meta.Get([]byte("schema_version"))) != SchemaVersion {
+			reuse = false
+		}
+		for _, name := range allBuckets {
+			if tx.Bucket([]byte(name)) == nil {
+				reuse = false
 			}
 		}
-		return nil
-	}); err != nil {
-		log.Error("bbolt: failed to initialize buckets:", err)
-		os.Exit(1)
-	}
 
-	// 第二步：写入初始元数据
-	if err = DB.Update(func(tx *bolt.Tx) error {
+		if reuse {
+			log.Info("复用上次运行的目录树缓存")
+			// 变更记录属于上一个实例的时间线：服务端重启后 InstanceID 变化，
+			// 客户端会重建会话并全量扫描，旧记录只会造成误导，直接清空
+			if err := tx.DeleteBucket([]byte("changed_dirs")); err != nil {
+				return fmt.Errorf("failed to reset changed_dirs: %w", err)
+			}
+			if _, err := tx.CreateBucket([]byte("changed_dirs")); err != nil {
+				return fmt.Errorf("failed to recreate changed_dirs: %w", err)
+			}
+		} else {
+			log.Info("缓存不可复用（首次运行/目录变化/结构升级），重建数据库")
+			for _, name := range allBuckets {
+				if tx.Bucket([]byte(name)) != nil {
+					if err := tx.DeleteBucket([]byte(name)); err != nil {
+						return fmt.Errorf("failed to delete bucket %s: %w", name, err)
+					}
+				}
+				if _, err := tx.CreateBucket([]byte(name)); err != nil {
+					return fmt.Errorf("failed to create bucket %s: %w", name, err)
+				}
+			}
+			metaBucket := tx.Bucket([]byte("meta"))
+			zero := make([]byte, 8)
+			if err := metaBucket.Put([]byte("dir_count"), zero); err != nil {
+				return err
+			}
+			if err := metaBucket.Put([]byte("file_count"), zero); err != nil {
+				return err
+			}
+		}
+
 		metaBucket := tx.Bucket([]byte("meta"))
-		// 初始化目录和文件计数
-		dirCountData := make([]byte, 8)
-		fileCountData := make([]byte, 8)
-		binary.BigEndian.PutUint64(dirCountData, 0)
-		binary.BigEndian.PutUint64(fileCountData, 0)
-		metaBucket.Put([]byte("dir_count"), dirCountData)
-		metaBucket.Put([]byte("file_count"), fileCountData)
-		metaBucket.Put([]byte("start_path"), []byte(config.StartPath))
-		metaBucket.Put([]byte("start_time"), []byte(time.Now().Format(time.RFC3339)))
-		return nil
+		if err := metaBucket.Put([]byte("start_path"), []byte(config.StartPath)); err != nil {
+			return err
+		}
+		if err := metaBucket.Put([]byte("schema_version"), []byte(SchemaVersion)); err != nil {
+			return err
+		}
+		return metaBucket.Put([]byte("start_time"), []byte(time.Now().Format(time.RFC3339)))
 	}); err != nil {
-		log.Error("bbolt: failed to initialize meta:", err)
+		log.Error("bbolt: failed to initialize database:", err)
 		os.Exit(1)
 	}
 	log.Info("Database initialized successfully")
+}
+
+// LoadAllNodesByPath 把 nodes 桶整体加载为 path → Node 映射，
+// 供 BuildFileTree 启动校准时复用节点 ID 与哈希
+func LoadAllNodesByPath() (map[string]*Node, error) {
+	nodes := make(map[string]*Node)
+	err := DB.View(func(tx *bolt.Tx) error {
+		nodesBucket := tx.Bucket([]byte("nodes"))
+		if nodesBucket == nil {
+			return fmt.Errorf("nodes bucket not found")
+		}
+		return nodesBucket.ForEach(func(k, v []byte) error {
+			var node Node
+			if err := json.Unmarshal(v, &node); err != nil {
+				return err
+			}
+			nodes[node.Path] = &node
+			return nil
+		})
+	})
+	return nodes, err
 }
 
 func GetMeta(key string) (uint64, error) {
