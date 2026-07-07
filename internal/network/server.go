@@ -19,6 +19,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// ClientIdleTimeout 服务端判定客户端失联的空闲阈值。
+// 客户端空闲时每 30 秒发一次心跳（见 mirror.go heartbeatInterval），
+// 90 秒相当于容忍连续两次心跳丢失；
+// 同时覆盖"建立了 TCP 连接但从不发消息"的僵尸连接
+const ClientIdleTimeout = 90 * time.Second
+
 type fileServer struct {
 	listener  net.Listener
 	clientMap sync.Map
@@ -125,11 +131,20 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 	}()
 
 	for {
+		// 每轮收消息前重置读超时：超过空闲阈值没有任何消息（包括心跳）
+		// 即认为客户端失联，关闭连接释放资源
+		if err := conn.SetReadDeadline(time.Now().Add(ClientIdleTimeout)); err != nil {
+			log.Errorf("Failed to set read deadline for %s: %v", clientAddr, err)
+			return
+		}
 		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			switch {
+			case errors.Is(err, os.ErrDeadlineExceeded):
+				log.Warnf("Client %s idle for over %v, closing connection", clientAddr, ClientIdleTimeout)
+			case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
 				log.Warnf("Client %s disconnected", clientAddr)
-			} else {
+			default:
 				log.Error(fmt.Errorf("failed to receive message: %w", err))
 			}
 			return

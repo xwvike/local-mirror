@@ -27,6 +27,10 @@ var (
 	isTaskActive bool       // 标识当前是否有任务在执行
 )
 
+// heartbeatInterval 空闲心跳间隔。必须明显小于服务端的空闲超时
+// （network.ClientIdleTimeout），否则连接会在两次心跳之间被服务端断开
+const heartbeatInterval = 30 * time.Second
+
 // lastChangeCursor 记录变更查询已覆盖到的时间点（unix 秒）。
 // 前后两次查询以此衔接，即使某次追踪被跳过也不会漏掉中间的变更。
 // 任务由 taskMutex 保证串行，无需原子操作。
@@ -271,8 +275,9 @@ func runMirrorTasks(fileClient *network.FileClient) error {
 
 	fullScanChan := make(chan struct{})
 	changeChan := make(chan struct{})
-	// done 在本函数返回时关闭，两个 ticker goroutine 随之退出，
-	// 否则每次重连都会泄漏一对永远阻塞的 goroutine
+	heartbeatChan := make(chan struct{})
+	// done 在本函数返回时关闭，ticker goroutine 随之退出，
+	// 否则每次重连都会泄漏一批永远阻塞的 goroutine
 	done := make(chan struct{})
 	defer close(done)
 
@@ -302,6 +307,9 @@ func runMirrorTasks(fileClient *network.FileClient) error {
 
 	go tickForward(fullScanInterval, fullScanChan, "全量扫描")
 	go tickForward(changeTrackInterval, changeChan, "变更追踪")
+	// 心跳与其他任务同走 executeTaskWithClient 串行：
+	// 协议是同步请求-响应模型，同一连接上不允许并发收发
+	go tickForward(heartbeatInterval, heartbeatChan, "心跳")
 
 	for {
 		select {
@@ -312,6 +320,13 @@ func runMirrorTasks(fileClient *network.FileClient) error {
 
 		case <-changeChan:
 			if err := executeTaskWithClient("变更追踪", fileClient, TrackingChanges); err != nil {
+				return err
+			}
+
+		case <-heartbeatChan:
+			if err := executeTaskWithClient("心跳", fileClient, func(c *network.FileClient) error {
+				return c.Ping()
+			}); err != nil {
 				return err
 			}
 		}

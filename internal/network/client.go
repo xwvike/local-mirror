@@ -52,15 +52,12 @@ func (cm *ConnectionManager) GetConnection() (net.Conn, error) {
 	cm.mutex.RLock()
 	defer cm.mutex.RUnlock()
 
-	if cm.conn != nil && cm.isConnValid() {
+	// 连接的实际有效性由周期心跳（FileClient.Ping）保证，
+	// 心跳失败时上层会关闭并重建连接
+	if cm.conn != nil {
 		return cm.conn, nil
 	}
 	return nil, fmt.Errorf("connection is invalid")
-}
-
-// todo: 需要添加使用心跳检测连接是否有效
-func (cm *ConnectionManager) isConnValid() bool {
-	return true
 }
 
 func (cm *ConnectionManager) Reconnect() error {
@@ -221,7 +218,18 @@ func (c *FileClient) Handshake() error {
 	return nil
 }
 
-func (c *FileClient) Ping(conn net.Conn) error {
+// Ping 发送一次心跳并等待应答，用于空闲期探活。
+// 网络失败包装为 ErrConnection，上层据此触发重连；
+// 协议是同步请求-响应模型，调用方必须保证与其他任务串行使用连接
+func (c *FileClient) Ping() error {
+	conn, err := c.connectionManage.GetConnection()
+	if err != nil {
+		return fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
+	}
+	// 对端可能已经死亡，探活必须限时
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	defer conn.SetDeadline(time.Time{})
+
 	pingMessage := HeartbeatPingMessage{
 		Version:   config.ProtocolVersion,
 		Timestamp: time.Now().Unix(),
@@ -229,35 +237,34 @@ func (c *FileClient) Ping(conn net.Conn) error {
 	}
 	pingBytes := encodeHeartbeatPing(pingMessage)
 	if err := sendMessage(conn, MsgTypeHeartbeatPing, pingBytes); err != nil {
-		return fmt.Errorf("failed to send ping message: %w", err)
+		return fmt.Errorf("%w: failed to send ping message: %v", appError.ErrConnection, err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return fmt.Errorf("failed to receive message: %w", err)
+		return fmt.Errorf("%w: failed to receive pong message: %v", appError.ErrConnection, err)
 	}
 	if msgType == MsgTypeError {
 		errorMsg, err := decodeErrorMessage(bodyBytes)
 		if err != nil {
-			log.Error("Error decoding error message:", err)
-			return err
+			return fmt.Errorf("failed to decode error message: %w", err)
 		}
-		newError := fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
-		log.Error(newError)
-		return newError
+		return fmt.Errorf("server error: %s", errorMsg.ErrorMessage)
 	}
 	if msgType != MsgTypeHeartbeatPong {
-		newError := fmt.Errorf("invalid pong message type, got %d", msgType)
-		log.Error(newError)
-		return newError
+		return fmt.Errorf("invalid pong message type, got %d", msgType)
 	}
 	pongMessage, err := decodeHeartbeatPong(bodyBytes)
 	if err != nil {
 		return fmt.Errorf("failed to decode pong message: %w", err)
 	}
-	log.Infof("Received pong message: version: %d, timestamp: %d, clientID: %d",
-		pongMessage.Version,
-		pongMessage.Timestamp,
-		pongMessage.ServerID)
+	// 服务端悄悄重启后 InstanceID 会变化，本地缓存的目录树不再可信，
+	// 按连接错误处理触发整个会话重建（重新握手 + 全量扫描）
+	if pongMessage.ServerID != c.realityID {
+		return fmt.Errorf("%w: server instance changed, expected %08x, got %08x",
+			appError.ErrConnection, c.realityID, pongMessage.ServerID)
+	}
+	log.Debugf("Received pong: version=%d timestamp=%d serverID=%08x",
+		pongMessage.Version, pongMessage.Timestamp, pongMessage.ServerID)
 	return nil
 }
 
