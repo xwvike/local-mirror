@@ -13,8 +13,6 @@ import (
 )
 
 func App() {
-	log.Infof("进程 PID: %d", os.Getpid())
-
 	if err := tree.BuildFileTree(config.StartPath); err != nil {
 		log.Fatalf("构建文件树失败: %v", err)
 	}

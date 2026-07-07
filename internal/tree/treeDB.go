@@ -52,9 +52,11 @@ type Children struct {
 
 func InitDB() {
 	var err error
-	DB, err = bolt.Open("./.local-mirror/cache.db", 0600, nil)
+	// 必须设置 Timeout：bbolt 依赖文件锁，同一目录再启动一个实例时
+	// 不带超时的 Open 会无限期阻塞，进程看起来像卡死
+	DB, err = bolt.Open("./.local-mirror/cache.db", 0600, &bolt.Options{Timeout: 3 * time.Second})
 	if err != nil {
-		log.Error("Failed to open database:", err)
+		log.Errorf("打开数据库失败（该目录可能已有另一个 local-mirror 实例在运行）: %v", err)
 		os.Exit(1)
 	}
 	// 第一步：创建所有 bucket（每次启动清空重建）

@@ -2,6 +2,7 @@ package logger
 
 import (
 	"fmt"
+	"io"
 	"local-mirror/config"
 	"os"
 	"path/filepath"
@@ -21,21 +22,26 @@ func getLogDir() string {
 	return "./.local-mirror/logs"
 }
 
+// LogPath 返回日志文件路径，供启动信息展示
+func LogPath() string {
+	return filepath.Join(getLogDir(), "error.log")
+}
+
 func InitLogger() {
-
+	// 日志同时写入文件和 stderr：
+	// 错误必须让终端上的用户看得见，只写文件会让进程"无声退出"
+	output := io.Writer(os.Stderr)
 	if err := os.MkdirAll(getLogDir(), 0755); err != nil {
-		log.Fatalf("创建日志目录失败: %v", err)
-		return
-	}
-	logPath := filepath.Join(getLogDir(), "error.log")
-	fmt.Println("日志文件路径:", logPath)
-
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err == nil {
-		log.SetOutput(file)
+		log.Warnf("创建日志目录失败，日志仅输出到终端: %v", err)
 	} else {
-		log.Info("日志文件打开失败，使用默认stderr")
+		file, err := os.OpenFile(LogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			log.Warnf("日志文件打开失败，日志仅输出到终端: %v", err)
+		} else {
+			output = io.MultiWriter(file, os.Stderr)
+		}
 	}
+	log.SetOutput(output)
 	log.SetFormatter(&SimpleFormatter{})
 	switch *config.LogLevel {
 	case "debug":

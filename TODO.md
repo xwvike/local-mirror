@@ -46,7 +46,7 @@
 
 - **跨平台路径分隔符**：节点路径按本机 `filepath.Separator` 存储并直接在协议中传输，
   Windows 服务端 + Unix 客户端（或反之）会不兼容。协议层应统一用 `/` 传输。
-- **监听端口硬编码** 52345（server、client、help 文本三处）。
+- **监听端口不可配置**：已收敛为 `config.DefaultPort` 常量（52345），但尚未提供 `--port` 参数。
 - **单客户端假设**：服务端支持多连接，但变更游标语义按单客户端设计，多客户端未测试。
 - **Windows watcher 未验证**：maxWatches 用默认值，fsnotify 行为未实测。
 - **大目录内存**：`BuildFileTree` 把全部节点收集到内存后分批写库，超大目录树会有压力。

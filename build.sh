@@ -5,6 +5,8 @@
 APP_NAME="local-mirror"
 MAIN_PATH="./cmd/local-mirror"
 OUTPUT_DIR="dist"
+# 版本号取 git tag，无 tag 时退化为 commit 短哈希
+VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 # 创建输出目录
 rm -rf "$OUTPUT_DIR"
@@ -45,7 +47,7 @@ do
     echo "构建 $GOOS/$GOARCH..."
     
     # 构建
-    if CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -ldflags "-s -w" -o "$output_path" "$MAIN_PATH"; then
+    if CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -ldflags "-s -w -X main.version=$VERSION" -o "$output_path" "$MAIN_PATH"; then
         file_size=$(du -h "$output_path" | cut -f1)
         echo "  ✓ $output_name ($file_size)"
     else

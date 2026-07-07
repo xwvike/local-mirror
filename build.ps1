@@ -8,6 +8,10 @@ param(
 $AppName = "local-mirror"
 $MainPath = "./cmd/local-mirror"
 
+# 版本号取 git tag，无 tag 时退化为 commit 短哈希
+$Version = git describe --tags --always --dirty 2>$null
+if (-not $Version) { $Version = "dev" }
+
 Write-Host "=== Go Cross-Platform Build Script ===" -ForegroundColor Green
 Write-Host "Project: $AppName" -ForegroundColor Yellow
 Write-Host "Output: $Output" -ForegroundColor Yellow
@@ -44,7 +48,7 @@ foreach ($target in $targets) {
     $env:CGO_ENABLED = "0"
     
     try {
-        $result = go build -ldflags "-s -w" -o $outputFile $MainPath 2>&1
+        $result = go build -ldflags "-s -w -X main.version=$Version" -o $outputFile $MainPath 2>&1
         if ($LASTEXITCODE -eq 0) {
             $size = [math]::Round((Get-Item $outputFile).Length / 1MB, 2)
             Write-Host "  Success ($size MB)" -ForegroundColor Green
