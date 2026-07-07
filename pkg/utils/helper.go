@@ -3,6 +3,7 @@ package utils
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -63,6 +64,13 @@ func CalcBlake3(path string) ([32]byte, error) {
 
 	copy(result[:], hash.Sum(nil))
 	return result, nil
+}
+
+// HashString 计算字符串的 blake3 摘要（取前 16 字节的十六进制），
+// 用于把任意路径映射为长度固定、文件系统安全的名字
+func HashString(s string) string {
+	h := blake3.Sum256([]byte(s))
+	return fmt.Sprintf("%x", h[:16])
 }
 
 func RandomString(length int) (string, error) {

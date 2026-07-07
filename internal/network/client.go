@@ -1,6 +1,7 @@
 package network
 
 import (
+	"encoding/json"
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/appError"
@@ -314,15 +315,82 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
 	return treeResponse.Data, nil
 }
 
+// partialMeta 记录分片对应的服务端文件指纹。
+// 续传前用它判断服务端文件是否在中断期间发生了变化
+type partialMeta struct {
+	Hash string `json:"hash"` // 服务端整文件 blake3（十六进制）
+	Size uint64 `json:"size"` // 服务端文件大小
+}
+
+// partialPaths 返回某个同步路径对应的分片文件与元数据文件位置。
+// 放在 .local-mirror/partial/ 下：该目录在忽略列表中，
+// 不会被建树扫描收录，也不会被镜像 diff 当作多余文件删除；
+// 文件名用路径摘要，保证长路径/特殊字符安全且可跨重试定位
+func partialPaths(filePath string) (string, string) {
+	key := utils.HashString(filePath)
+	dir := filepath.Join(config.StartPath, ".local-mirror", "partial")
+	return filepath.Join(dir, key+".part"), filepath.Join(dir, key+".meta")
+}
+
+// loadPartialState 读取上次中断留下的分片，返回可续传的起始偏移。
+// 分片或元数据缺失/损坏都按无分片处理（从 0 开始）
+func loadPartialState(partialPath, metaPath string) (uint64, *partialMeta) {
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return 0, nil
+	}
+	var meta partialMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return 0, nil
+	}
+	info, err := os.Stat(partialPath)
+	if err != nil || info.Size() <= 0 || uint64(info.Size()) > meta.Size {
+		return 0, nil
+	}
+	return uint64(info.Size()), &meta
+}
+
+func discardPartial(partialPath, metaPath string) {
+	os.Remove(partialPath)
+	os.Remove(metaPath)
+}
+
+// drainFileSession 把一次已经开始的文件传输会话读到结束并丢弃数据。
+// 分片过期时服务端已按旧 offset 开始发送，这段数据无法拼装成完整文件，
+// 但排空它可以保持连接可复用，避免为此断连重建
+func drainFileSession(conn net.Conn) error {
+	for {
+		msgType, _, err := receiveMessage(conn)
+		if err != nil {
+			return err
+		}
+		switch msgType {
+		case MsgTypeFileData:
+			continue
+		case MsgTypeFileComplete, MsgTypeError:
+			return nil
+		default:
+			return fmt.Errorf("unexpected message type %d while draining file session", msgType)
+		}
+	}
+}
+
 func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
 		return "", fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
 	}
+
+	partialPath, metaPath := partialPaths(filePath)
+	if err := os.MkdirAll(filepath.Dir(partialPath), 0755); err != nil {
+		return "", fmt.Errorf("failed to create partial dir: %w", err)
+	}
+	offset, prevMeta := loadPartialState(partialPath, metaPath)
+
 	requestFile := FileRequestMessage{
 		PathLength: uint16(len(filePath)),
 		FilePath:   filePath,
-		Offset:     0,
+		Offset:     offset,
 	}
 	requestBytes := encodeFileRequest(requestFile)
 	if err := sendMessage(conn, MsgTypeFileRequest, requestBytes); err != nil {
@@ -339,6 +407,8 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("%w: failed to decode error message: %v", appError.ErrConnection, err)
 		}
+		// 服务端已无法提供该文件（如已被删除），分片不再有保留价值
+		discardPartial(partialPath, metaPath)
 		return "", fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
 	}
 
@@ -349,25 +419,47 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: failed to decode file response: %v", appError.ErrConnection, err)
 	}
+	serverHash := fmt.Sprintf("%x", fileResponse.FileHash)
+
+	// 续传有效性：分片记录的服务端文件指纹必须与本次响应一致，
+	// 否则服务端文件在中断期间变过，本次数据流是新文件的中段，无法拼接
+	resume := offset > 0 && prevMeta != nil &&
+		prevMeta.Hash == serverHash && prevMeta.Size == fileResponse.FileSize
+	if offset > 0 && !resume {
+		discardPartial(partialPath, metaPath)
+		if err := drainFileSession(conn); err != nil {
+			return "", fmt.Errorf("%w: failed to drain stale session: %v", appError.ErrConnection, err)
+		}
+		return "", fmt.Errorf("partial data for %s is stale, will restart from offset 0 on next attempt", filePath)
+	}
 
 	fullPath := filepath.Join(config.StartPath, filePath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory for file: %w", err)
 	}
-	// 先写入同目录下的临时文件，校验通过后原子改名覆盖，
-	// 避免下载中断/哈希不匹配时留下半截目标文件
-	tmpFile, err := os.CreateTemp(filepath.Dir(fullPath), ".local-mirror-dl-*")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %w", err)
+
+	var file *os.File
+	if resume {
+		file, err = os.OpenFile(partialPath, os.O_WRONLY|os.O_APPEND, 0644)
+		log.Infof("断点续传 %s: 已有 %d/%d 字节", filePath, offset, fileResponse.FileSize)
+	} else {
+		file, err = os.Create(partialPath)
+		if err == nil {
+			// 先落 meta 再收数据：中断发生在任何时刻，分片都能被下次识别
+			metaData, _ := json.Marshal(partialMeta{Hash: serverHash, Size: fileResponse.FileSize})
+			if werr := os.WriteFile(metaPath, metaData, 0644); werr != nil {
+				log.Warnf("Failed to write partial meta for %s: %v", filePath, werr)
+			}
+		}
 	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-	}()
+	if err != nil {
+		return "", fmt.Errorf("failed to open partial file: %w", err)
+	}
+	// 只负责关闭；分片文件在传输失败时保留，供下次续传
+	defer file.Close()
 
 	sessionID := fileResponse.SessionID
-	receivedSize := uint64(0)
+	receivedSize := offset
 	startTime := time.Now()
 
 	for {
@@ -385,20 +477,13 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				return "", fmt.Errorf("invalid session ID in file data message, got %x", dataMsg.SessionID)
 			}
 
-			if _, err := tmpFile.Write(dataMsg.Data); err != nil {
+			if _, err := file.Write(dataMsg.Data); err != nil {
 				return "", fmt.Errorf("error writing file data: %w", err)
 			}
+			// 不逐块回发 Acknowledge：服务端流式发送期间不读取 socket，
+			// 大文件的确认消息会填满对端接收缓冲，造成双向阻塞死锁；
+			// 续传依据本地分片大小，不需要确认机制
 			receivedSize += uint64(len(dataMsg.Data))
-			ackMsg := AcknowledgeMessage{
-				SessionID: sessionID,
-				Offset:    receivedSize,
-			}
-
-			ackBytes := encodeAcknowlege(ackMsg)
-			if err := sendMessage(conn, MsgTypeAcknowledge, ackBytes); err != nil {
-				return "", fmt.Errorf("%w, failed to send acknowledge message: %w", appError.ErrConnection, err)
-			}
-			log.Debugf("Sent acknowledge message, session ID: %x, offset: %d", sessionID, receivedSize)
 		case MsgTypeFileComplete:
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
@@ -408,24 +493,28 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				return "", fmt.Errorf("invalid session ID in file complete message, got %x", completeMsg.SessionID)
 			}
 
-			if err := tmpFile.Sync(); err != nil {
-				log.Warnf("file.Sync() failed for %s: %v", tmpPath, err)
+			if err := file.Sync(); err != nil {
+				log.Warnf("file.Sync() failed for %s: %v", partialPath, err)
 			}
-			if err := tmpFile.Close(); err != nil {
+			if err := file.Close(); err != nil {
 				return "", fmt.Errorf("error closing file: %w", err)
 			}
 
-			fileHash, err := utils.CalcBlake3(tmpPath)
+			// 无论是否续传，都对拼装后的整个文件做完整性校验
+			fileHash, err := utils.CalcBlake3(partialPath)
 			if err != nil {
 				return "", fmt.Errorf("error calculating file hash: %w", err)
 			}
 			if fileHash != completeMsg.FileHash {
+				// 分片已被证明损坏，保留只会反复失败
+				discardPartial(partialPath, metaPath)
 				return "", fmt.Errorf("file hash mismatch, expected %x, got %x", completeMsg.FileHash, fileHash)
 			}
-			if err := os.Rename(tmpPath, fullPath); err != nil {
-				return "", fmt.Errorf("error renaming temp file to %s: %w", fullPath, err)
+			if err := os.Rename(partialPath, fullPath); err != nil {
+				return "", fmt.Errorf("error renaming partial file to %s: %w", fullPath, err)
 			}
-			transferSpeed := float64(fileResponse.FileSize) / time.Since(startTime).Seconds()
+			os.Remove(metaPath)
+			transferSpeed := float64(fileResponse.FileSize-offset) / time.Since(startTime).Seconds()
 			log.Infof("File transfer complete, file path: %s, file size: %d bytes, transfer speed: %.2f MB/s",
 				fullPath,
 				fileResponse.FileSize,
