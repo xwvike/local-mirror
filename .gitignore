@@ -1,31 +1,22 @@
+# 构建产物
 /bin
-*.log
 dist/
+
+# 运行时产物
+.local-mirror/
+*.log
 *.db
+
+# 本地测试目录
 test/
-.DS_Store
-**/.DS_Store
 
-node_modules
-
-# Output
-/frontend/.output
-/frontend/.vercel
-/frontend/.netlify
-/frontend/.wrangler
-/frontend/.svelte-kit
-/frontend/build
+# 编辑器
+.zed/
+.vscode/
+.idea/
 
 # OS
+.DS_Store
+**/.DS_Store
 Thumbs.db
 **/Thumbs.db
-
-# Env
-.env
-.env.*
-!.env.example
-!.env.test
-
-# Vite
-/frontend/vite.config.js.timestamp-*
-/frontend/vite.config.ts.timestamp-*
