@@ -11,6 +11,7 @@ import (
 	"local-mirror/pkg/utils"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -91,22 +92,75 @@ func main() {
 	app.App()
 }
 
+// ANSI 颜色码，仅在输出到终端时启用
+type palette struct {
+	bold, dim, cyan, green, reset string
+}
+
+func newPalette() palette {
+	// 遵守 NO_COLOR 约定 (https://no-color.org)；管道/重定向时输出纯文本
+	fi, err := os.Stdout.Stat()
+	isTTY := err == nil && fi.Mode()&os.ModeCharDevice != 0
+	if !isTTY || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return palette{}
+	}
+	return palette{
+		bold:  "\033[1m",
+		dim:   "\033[2m",
+		cyan:  "\033[36m",
+		green: "\033[32m",
+		reset: "\033[0m",
+	}
+}
+
+// displayWidth 计算终端显示宽度：CJK 字符占两列，ASCII 占一列
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		if r >= 0x2E80 {
+			w += 2
+		} else {
+			w++
+		}
+	}
+	return w
+}
+
 // printBanner 向 stdout 输出启动状态。
 // 长驻进程默认日志级别下终端不应完全静默，用户需要知道进程在做什么
 func printBanner() {
-	fmt.Printf("Local Mirror %s (协议版本 %d)\n", version, config.ProtocolVersion)
-	fmt.Printf("  模式:     %s\n", *config.Mode)
-	fmt.Printf("  同步目录: %s\n", config.StartPath)
-	fmt.Printf("  实例ID:   %08x\n", config.InstanceID)
-	fmt.Printf("  进程PID:  %d\n", os.Getpid())
-	fmt.Printf("  日志:     %s (级别: %s)\n", logger.LogPath(), *config.LogLevel)
+	p := newPalette()
+	const width = 48
+	const labelWidth = 10
+
+	line := p.dim + strings.Repeat("─", width) + p.reset
+	row := func(label, value string) {
+		pad := strings.Repeat(" ", max(1, labelWidth-displayWidth(label)))
+		fmt.Printf("  %s%s%s%s%s\n", p.dim, label, p.reset, pad, value)
+	}
+
+	modeDesc := "服务器"
+	if *config.Mode == "mirror" {
+		modeDesc = "客户端"
+	}
+
+	fmt.Println(line)
+	fmt.Printf("  %s%sLocal Mirror%s %s  ·  %s%s%s (%s)\n",
+		p.bold, p.cyan, p.reset, version, p.bold, *config.Mode, p.reset, modeDesc)
+	fmt.Println(line)
+	row("同步目录", config.StartPath)
 	if *config.Mode == "reality" {
-		fmt.Printf("  监听地址: 0.0.0.0:%d\n", config.ActualPort)
+		row("监听地址", fmt.Sprintf("%s0.0.0.0:%d%s", p.green, config.ActualPort, p.reset))
 	} else {
 		ip := *config.RealityIP
 		if ip == "" {
 			ip = "127.0.0.1"
 		}
-		fmt.Printf("  服务器:   %s (端口自动探测 %d-%d)\n", ip, config.DefaultPort, config.DefaultPort+config.PortScanRange-1)
+		row("目标服务器", fmt.Sprintf("%s%s%s %s(端口探测 %d-%d)%s",
+			p.green, ip, p.reset, p.dim, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, p.reset))
 	}
+	row("实例 ID", fmt.Sprintf("%08x", config.InstanceID))
+	row("进程 PID", fmt.Sprintf("%d", os.Getpid()))
+	row("日志", fmt.Sprintf("%s %s(级别 %s)%s", logger.LogPath(), p.dim, *config.LogLevel, p.reset))
+	fmt.Println(line)
 }
