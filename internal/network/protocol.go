@@ -34,6 +34,9 @@ const (
 
 	// 头部大小
 	HeaderSize = 12 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节）
+
+	// 单条消息体长度上限，防止损坏/恶意的头部导致超大内存分配
+	MaxBodyLength = 64 * 1024 * 1024
 )
 
 // 消息头定义
@@ -207,7 +210,7 @@ func decodeFileRequest(data []byte) (FileRequestMessage, error) {
 		return msg, err
 	}
 	filePathBytes := make([]byte, msg.PathLength)
-	if _, err := buf.Read(filePathBytes); err != nil {
+	if _, err := io.ReadFull(buf, filePathBytes); err != nil {
 		log.Error("Error reading file name:", err)
 		return msg, err
 	}
@@ -234,7 +237,7 @@ func decodeFileResponse(data []byte) (FileResponseMessage, error) {
 	var msg FileResponseMessage
 	buf := bytes.NewReader(data)
 
-	if _, err := buf.Read(msg.SessionID[:]); err != nil {
+	if _, err := io.ReadFull(buf, msg.SessionID[:]); err != nil {
 		log.Error("Error reading session ID:", err)
 		return msg, err
 	}
@@ -244,7 +247,7 @@ func decodeFileResponse(data []byte) (FileResponseMessage, error) {
 		return msg, err
 	}
 
-	if _, err := buf.Read(msg.FileHash[:]); err != nil {
+	if _, err := io.ReadFull(buf, msg.FileHash[:]); err != nil {
 		log.Error("Error reading file hash:", err)
 		return msg, err
 	}
@@ -265,7 +268,7 @@ func decodeFileData(data []byte) (FileDataMessage, error) {
 	var msg FileDataMessage
 	buf := bytes.NewReader(data)
 
-	if _, err := buf.Read(msg.SessionID[:]); err != nil {
+	if _, err := io.ReadFull(buf, msg.SessionID[:]); err != nil {
 		log.Error("Error reading file data session ID:", err)
 		return msg, err
 	}
@@ -281,7 +284,7 @@ func decodeFileData(data []byte) (FileDataMessage, error) {
 	}
 
 	msg.Data = make([]byte, msg.DataLength)
-	if _, err := buf.Read(msg.Data); err != nil {
+	if _, err := io.ReadFull(buf, msg.Data); err != nil {
 		log.Error("Error reading file data:", err)
 		return msg, err
 	}
@@ -299,7 +302,7 @@ func decodeAcknowledge(data []byte) (AcknowledgeMessage, error) {
 	var msg AcknowledgeMessage
 	buf := bytes.NewReader(data)
 
-	if _, err := buf.Read(msg.SessionID[:]); err != nil {
+	if _, err := io.ReadFull(buf, msg.SessionID[:]); err != nil {
 		return msg, fmt.Errorf("error reading acknowledge session ID: %w", err)
 	}
 
@@ -320,10 +323,10 @@ func decodeFileComplete(data []byte) (FileCompleteMessage, error) {
 	var msg FileCompleteMessage
 	buf := bytes.NewReader(data)
 
-	if _, err := buf.Read(msg.SessionID[:]); err != nil {
+	if _, err := io.ReadFull(buf, msg.SessionID[:]); err != nil {
 		return msg, fmt.Errorf("error reading file complete session ID: %w", err)
 	}
-	if _, err := buf.Read(msg.FileHash[:]); err != nil {
+	if _, err := io.ReadFull(buf, msg.FileHash[:]); err != nil {
 		return msg, fmt.Errorf("error reading file complete hash: %w", err)
 	}
 	return msg, nil
@@ -345,7 +348,7 @@ func decodeErrorMessage(data []byte) (ErrorMessage, error) {
 		return msg, err
 	}
 	errorMessageBytes := make([]byte, msg.MessageLen)
-	if _, err := buf.Read(errorMessageBytes); err != nil {
+	if _, err := io.ReadFull(buf, errorMessageBytes); err != nil {
 		log.Error("Error reading error message:", err)
 		return msg, err
 	}
@@ -385,7 +388,11 @@ func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 	}
 
 	if header.Magic != MagicNumber {
-		return 0, nil, fmt.Errorf("invalid magic number in message header form %s, expected %d, got %d", conn.RemoteAddr().String(), MagicNumber, header.Magic)
+		return 0, nil, fmt.Errorf("invalid magic number in message header from %s, expected %d, got %d", conn.RemoteAddr().String(), MagicNumber, header.Magic)
+	}
+
+	if header.BodyLength > MaxBodyLength {
+		return 0, nil, fmt.Errorf("message body too large from %s: %d bytes", conn.RemoteAddr().String(), header.BodyLength)
 	}
 
 	bodyBytes := make([]byte, header.BodyLength)
@@ -414,7 +421,7 @@ func decodeTreeRequest(data []byte) (TreeRequestMessage, error) {
 		return msg, err
 	}
 	pathBytes := make([]byte, msg.PathLength)
-	if _, err := buf.Read(pathBytes); err != nil {
+	if _, err := io.ReadFull(buf, pathBytes); err != nil {
 		log.Error("Error reading tree request path:", err)
 		return msg, err
 	}
@@ -443,7 +450,7 @@ func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 	}
 
 	pathBytes := make([]byte, pathLength)
-	if _, err := buf.Read(pathBytes); err != nil {
+	if _, err := io.ReadFull(buf, pathBytes); err != nil {
 		log.Error("Error reading tree response path:", err)
 		return msg, err
 	}
@@ -455,7 +462,7 @@ func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 	}
 
 	msg.Data = make([]byte, msg.DataLength)
-	if _, err := buf.Read(msg.Data); err != nil {
+	if _, err := io.ReadFull(buf, msg.Data); err != nil {
 		log.Error("Error reading tree response data:", err)
 		return msg, err
 	}
@@ -604,7 +611,7 @@ func decodeRecentChangeResponse(data []byte) (RecentChangeResponseMessage, error
 			return msg, err
 		}
 		changeBytes := make([]byte, changeLength)
-		if _, err := buf.Read(changeBytes); err != nil {
+		if _, err := io.ReadFull(buf, changeBytes); err != nil {
 			log.Error("Error reading recent change response change data:", err)
 			return msg, err
 		}

@@ -50,11 +50,6 @@ type Children struct {
 	ChildIDs []string `json:"child_ids"` // 子节点ID列表
 }
 
-type ChangedDir struct {
-	timeStamp uint64
-	path      []string
-}
-
 func InitDB() {
 	var err error
 	DB, err = bolt.Open("./.local-mirror/cache.db", 0600, nil)
@@ -132,13 +127,39 @@ func AddNodes(nodes []*Node) error {
 		}
 		for _, node := range nodes {
 			log.Debugf("Adding node: %s, Path: %s, ParentID: %s", node.ID, node.Path, node.ParentID)
+
+			// 同一路径重复写入视为更新：复用已有节点ID并保留父子关系，
+			// 避免 nodes 桶残留孤儿节点、children 列表出现重复引用
+			if existingID := pathIndexBucket.Get([]byte(node.Path)); existingID != nil {
+				node.ID = string(existingID)
+				if oldData := nodesBucket.Get(existingID); oldData != nil {
+					var old Node
+					if err := json.Unmarshal(oldData, &old); err == nil && old.ParentID != "" {
+						node.ParentID = old.ParentID
+					}
+				}
+				nodeData, err := json.Marshal(*node)
+				if err != nil {
+					log.Error("Failed to marshal node:", err)
+					return err
+				}
+				if err := nodesBucket.Put(existingID, nodeData); err != nil {
+					return err
+				}
+				continue
+			}
+
 			nodeData, err := json.Marshal(*node)
 			if err != nil {
 				log.Error("Failed to marshal node:", err)
 				return err
 			}
-			nodesBucket.Put([]byte(node.ID), nodeData)
-			pathIndexBucket.Put([]byte(node.Path), []byte(node.ID))
+			if err := nodesBucket.Put([]byte(node.ID), nodeData); err != nil {
+				return err
+			}
+			if err := pathIndexBucket.Put([]byte(node.Path), []byte(node.ID)); err != nil {
+				return err
+			}
 			// bool 类型直接用 if/else，switch bool 在 Go 中不惯用
 			if node.IsDir {
 				dirCount++
@@ -160,7 +181,9 @@ func AddNodes(nodes []*Node) error {
 				if err != nil {
 					return err
 				}
-				childrenBucket.Put([]byte(node.ParentID), childrenData)
+				if err := childrenBucket.Put([]byte(node.ParentID), childrenData); err != nil {
+					return err
+				}
 			}
 			log.Debugf("Node %s added successfully", node.ID)
 		}
@@ -514,7 +537,10 @@ func GetAllDirNodes() ([]*Node, error) {
 	return dirNodes, err
 }
 
-func addChangedDir(path []*ChangedDir) error {
+// addChangedDir 把一批变更目录写入 changed_dirs 桶。
+// 必须以落库时刻做 key：若用事件发生时间，节流延迟会让记录"出现在过去"，
+// 客户端按时间窗游标查询时正好跳过它们
+func addChangedDir(paths []string) error {
 	err := DB.Update(func(tx *bolt.Tx) error {
 		changedDirsBucket := tx.Bucket([]byte("changed_dirs"))
 		if changedDirsBucket == nil {
@@ -534,18 +560,22 @@ func addChangedDir(path []*ChangedDir) error {
 			}
 		}
 
-		// 添加新的变更目录
-		for _, dir := range path {
-			timeStampBytes := make([]byte, 8)
-			binary.BigEndian.PutUint64(timeStampBytes, dir.timeStamp)
-			dirData, err := json.Marshal(dir.path)
-			if err != nil {
-				log.Error("Failed to marshal changed dir:", err)
-				dirData = []byte("[]")
+		timeStampBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(timeStampBytes, uint64(time.Now().Unix()))
+
+		// 同一秒内可能已有记录，合并而不是覆盖
+		if existing := changedDirsBucket.Get(timeStampBytes); existing != nil {
+			var existingPaths []string
+			if err := json.Unmarshal(existing, &existingPaths); err == nil {
+				paths = append(existingPaths, paths...)
 			}
-			changedDirsBucket.Put(timeStampBytes, dirData)
 		}
-		return nil
+
+		dirData, err := json.Marshal(paths)
+		if err != nil {
+			return fmt.Errorf("failed to marshal changed dirs: %w", err)
+		}
+		return changedDirsBucket.Put(timeStampBytes, dirData)
 	})
 	return err
 }

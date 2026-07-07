@@ -70,7 +70,7 @@ func NewFileServer(listenAddr string) *fileServer {
 func (s *fileServer) Start() error {
 	listener, err := net.Listen("tcp", s.listenAddr)
 	if err != nil {
-		log.Errorf("Error starting server: %v", err)
+		return fmt.Errorf("error starting server: %w", err)
 	}
 	log.Infof("File server started on %s", s.listenAddr)
 	defer listener.Close()
@@ -133,7 +133,8 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			client.Connected = true
 			s.clientMap.Store(clientBase.UUID, client)
 		case MsgTypeReverify:
-			if err := s.handleReverify(client.ID); err != nil {
+			// 重连后的新连接尚未握手，clientMap 中没有记录，直接在当前连接上应答
+			if err := s.handleReverify(conn); err != nil {
 				log.Error(err)
 				return
 			}
@@ -227,8 +228,7 @@ func (s *fileServer) handlePingRequest(ID uint32, bodyBytes []byte) error {
 	conn := _client.(*client).Conn
 	pingRequest, err := decodeHeartbeatPing(bodyBytes)
 	if err != nil {
-		log.Error("%w, Error decoding ping request message:", appError.ErrConnection, err)
-		return err
+		return fmt.Errorf("%w, error decoding ping request message: %v", appError.ErrConnection, err)
 	}
 	log.Infof("Received ping request from %s, client ID: %d", conn.RemoteAddr().String(), pingRequest.ClientID)
 	pongMessage := HeartbeatPongMessage{
@@ -238,7 +238,7 @@ func (s *fileServer) handlePingRequest(ID uint32, bodyBytes []byte) error {
 	}
 	pongBytes := encodeHeartbeatPong(pongMessage)
 	if err := sendMessage(conn, MsgTypeHeartbeatPong, pongBytes); err != nil {
-		log.Error("%w, Error sending pong message:", appError.ErrConnection, err)
+		return fmt.Errorf("%w, error sending pong message: %v", appError.ErrConnection, err)
 	}
 	log.Infof("Sent pong response to %s, server ID: %d", conn.RemoteAddr().String(), config.InstanceID)
 	return nil
@@ -294,6 +294,10 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 	}
 	log.Debugf("Received file request: %s, offset: %d", fileRequest.FilePath, fileRequest.Offset)
 	fullPath := filepath.Join(config.StartPath, fileRequest.FilePath)
+	// 防止路径穿越：请求路径解析后必须仍位于同步根目录内
+	if rel, err := filepath.Rel(config.StartPath, fullPath); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("illegal file path: %s", fileRequest.FilePath)
+	}
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -359,7 +363,7 @@ func (s *fileServer) sendFileData(ID uint32, session *session, offset uint64) er
 		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
 	}
 	conn := _client.(*client).Conn
-	defer session.file.Close()
+	// session.file 由 handleFileRequest 中的 defer 统一关闭，这里不重复 Close
 	defer _client.(*client).SessionMap.Delete(session.ID)
 
 	fileBuf := make([]byte, *config.FileBufferSize)
@@ -418,12 +422,7 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*Handshak
 	return &handshakeMsg, nil
 }
 
-func (s *fileServer) handleReverify(ID uint32) error {
-	_client, ok := s.clientMap.Load(ID)
-	if !ok {
-		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
-	}
-	conn := _client.(*client).Conn
+func (s *fileServer) handleReverify(conn net.Conn) error {
 	reverifyResponse := ReverifyResponse{
 		Version:  config.ProtocolVersion,
 		ServerID: config.InstanceID,
@@ -451,6 +450,10 @@ func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) {
 		conn.RemoteAddr().String(), recentChangeRequest.ClientID, recentChangeRequest.startTime, recentChangeRequest.endTime)
 
 	recentChanges, err := tree.GetChangedDirs(recentChangeRequest.startTime, recentChangeRequest.endTime)
+	if err != nil {
+		log.Error("Error getting changed dirs:", err)
+		return
+	}
 
 	responseMsg := RecentChangeResponseMessage{
 		Changes:  utils.UniqueStrings(recentChanges),

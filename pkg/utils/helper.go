@@ -5,7 +5,10 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 
 	"github.com/zeebo/blake3"
 )
@@ -73,6 +76,32 @@ func RandomString(length int) (string, error) {
 		b[i] = charset[b[i]%byte(len(charset))]
 	}
 	return string(b), nil
+}
+
+// RelPath 把绝对路径转换为相对同步根目录的规范形式：
+// 根目录为 "."，其余为不带 "./" 前缀的相对路径（如 "subdir/a.txt"）。
+// 全项目的节点路径必须统一走这里，与 filepath.Dir/Join 的清洗结果保持一致，
+// 否则 "./subdir" 与 "subdir" 会被当成两个不同的键。
+func RelPath(root, fullPath string) string {
+	rel, err := filepath.Rel(root, fullPath)
+	if err != nil {
+		return fullPath
+	}
+	return rel
+}
+
+// IsIgnored 判断路径是否命中忽略列表。
+// 按路径段精确匹配，避免 strings.Contains 造成的误伤（如 "bin" 匹配到 "cabinet"）。
+func IsIgnored(relPath string, patterns []string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(relPath), "/") {
+		if seg == "" || seg == "." {
+			continue
+		}
+		if slices.Contains(patterns, seg) {
+			return true
+		}
+	}
+	return false
 }
 
 func UniqueStrings(input []string) []string {

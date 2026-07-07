@@ -13,7 +13,8 @@ const (
 )
 
 var (
-	IgnoreFileList = []string{"Library", ".gitingore", ".git", "node_modules", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log", ".local-mirror.db"}
+	// 忽略列表按路径段精确匹配（见 utils.IsIgnored）
+	IgnoreFileList = []string{"Library", ".gitignore", ".git", "node_modules", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log", ".local-mirror.db"}
 )
 
 var (
@@ -24,19 +25,18 @@ var (
 )
 
 var (
-	Mode             *string
-	LogLevel         *string
-	CoolDown         *int64
-	DiffInterval     *int64
-	FileBufferSize   *uint64
-	MemFileThreshold *uint64
-	RealityIP        *string
-	Help             *bool
-	Version          *bool
-	StartPath        string = ""         // Start path
-	InstanceID       uint32 = 0x00000000 // Instance ID
-	ProtocolVersion  uint16 = 0x0001     // Protocol version
-	StartTime        int64  = 0          // Start time
+	Mode            *string
+	LogLevel        *string
+	CoolDown        *int64
+	DiffInterval    *int64
+	FileBufferSize  *uint64
+	RealityIP       *string
+	Help            *bool
+	Version         *bool
+	StartPath       string = ""         // Start path
+	InstanceID      uint32 = 0x00000000 // Instance ID
+	ProtocolVersion uint16 = 0x0001     // Protocol version
+	StartTime       int64  = 0          // Start time
 )
 
 func init() {
@@ -59,8 +59,7 @@ func init() {
 		fmt.Fprintf(os.Stderr, "  -c, --cooldown int           冷却时间(秒): 服务器目录扫描间隔，客户端下载后等待时间 (default 300)\n")
 		fmt.Fprintf(os.Stderr, "  -d, --diffinterval int       差异扫描间隔(秒): 客户端扫描本地目录与服务器目录差异的时间间隔 (default 10)\n")
 		fmt.Fprintf(os.Stderr, "  -f, --filebuffersize uint    文件缓冲区大小，单位字节 (default 65536)\n")
-		fmt.Fprintf(os.Stderr, "  -t, --memfilethreshold uint  内存文件阈值，超过此大小使用磁盘存储 (default 655360)\n")
-		fmt.Fprintf(os.Stderr, "  -r, --realityip string       服务器IP地址，空值表示自动检测 (仅客户端模式)\n")
+		fmt.Fprintf(os.Stderr, "  -r, --realityip string       服务器IP地址，空值回退为本机 127.0.0.1 (仅客户端模式)\n")
 		fmt.Fprintf(os.Stderr, "  -h, --help                   显示帮助信息\n")
 		fmt.Fprintf(os.Stderr, "  -v, --version                显示版本信息\n\n")
 
@@ -78,7 +77,7 @@ func init() {
 		fmt.Fprintf(os.Stderr, "  local-mirror -m reality -l debug\n\n")
 
 		fmt.Fprintf(os.Stderr, "  # 自定义配置参数\n")
-		fmt.Fprintf(os.Stderr, "  local-mirror -m reality -c 600 -f 131072 -t 1048576\n\n")
+		fmt.Fprintf(os.Stderr, "  local-mirror -m reality -c 600 -f 131072\n\n")
 
 		fmt.Fprintf(os.Stderr, "Use \"local-mirror --help\" for more information about this command.\n")
 	}
@@ -98,10 +97,7 @@ func init() {
 	FileBufferSize = flag.Uint64("filebuffersize", 64*1024, "文件缓冲区大小，默认 64KB")
 	flag.Uint64Var(FileBufferSize, "f", 64*1024, "同 --filebuffersize")
 
-	MemFileThreshold = flag.Uint64("memfilethreshold", 64*1024*10, "内存文件阈值，超过此大小的文件将使用磁盘存储")
-	flag.Uint64Var(MemFileThreshold, "t", 64*1024*10, "同 --memfilethreshold")
-
-	RealityIP = flag.String("realityip", "", "服务器IP地址，默认为空表示自动检测 (仅客户端)")
+	RealityIP = flag.String("realityip", "", "服务器IP地址，默认为空表示连接本机 (仅客户端)")
 	flag.StringVar(RealityIP, "r", "", "同 --realityip")
 
 	Help = flag.Bool("help", false, "显示帮助信息")

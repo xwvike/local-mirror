@@ -1,7 +1,6 @@
 package network
 
 import (
-	"bytes"
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/appError"
@@ -158,7 +157,7 @@ func (c *FileClient) Reverify() error {
 	if err != nil {
 		return fmt.Errorf("reverify failed to get connection: %w", err)
 	}
-	if err := sendMessage(conn, MsgTypeHandshake, nil); err != nil {
+	if err := sendMessage(conn, MsgTypeReverify, nil); err != nil {
 		return fmt.Errorf("failed to send reverify message: %w", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
@@ -172,7 +171,8 @@ func (c *FileClient) Reverify() error {
 	if err != nil {
 		return fmt.Errorf("failed to decode reverify response: %w", err)
 	}
-	if reverifyResponse.Version != config.ProtocolVersion || reverifyResponse.ServerID != config.InstanceID {
+	// 重连后必须还是原来那台服务器（ID 与首次握手记录的一致），否则本地缓存的目录树不可信
+	if reverifyResponse.Version != c.realityVersion || reverifyResponse.ServerID != c.realityID {
 		return fmt.Errorf("reverify failed, expected version %d and server ID %d, got version %d and server ID %d",
 			c.realityVersion, c.realityID,
 			reverifyResponse.Version, reverifyResponse.ServerID)
@@ -224,7 +224,7 @@ func (c *FileClient) Ping(conn net.Conn) error {
 	}
 	pingBytes := encodeHeartbeatPing(pingMessage)
 	if err := sendMessage(conn, MsgTypeHeartbeatPing, pingBytes); err != nil {
-		log.Error("Error sending ping message:", err)
+		return fmt.Errorf("failed to send ping message: %w", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
@@ -247,7 +247,7 @@ func (c *FileClient) Ping(conn net.Conn) error {
 	}
 	pongMessage, err := decodeHeartbeatPong(bodyBytes)
 	if err != nil {
-		log.Error("Error decoding pong message:", err)
+		return fmt.Errorf("failed to decode pong message: %w", err)
 	}
 	log.Infof("Received pong message: version: %d, timestamp: %d, clientID: %d",
 		pongMessage.Version,
@@ -342,15 +342,21 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory for file: %w", err)
 	}
-	file, err := os.Create(fullPath)
+	// 先写入同目录下的临时文件，校验通过后原子改名覆盖，
+	// 避免下载中断/哈希不匹配时留下半截目标文件
+	tmpFile, err := os.CreateTemp(filepath.Dir(fullPath), ".local-mirror-dl-*")
 	if err != nil {
-		return "", fmt.Errorf("failed to create file %w", err)
+		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer file.Close()
+	tmpPath := tmpFile.Name()
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+	}()
+
 	sessionID := fileResponse.SessionID
 	receivedSize := uint64(0)
 	startTime := time.Now()
-	cacheFile := new(bytes.Buffer)
 
 	for {
 		msgType, bodyBytes, err := receiveMessage(conn)
@@ -363,19 +369,12 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("%w: error decoding file data message: %v", appError.ErrConnection, err)
 			}
-			// todo: check session ID
 			if dataMsg.SessionID != sessionID {
-				return "", fmt.Errorf("invalid session ID in file data message, got %s", dataMsg.SessionID)
+				return "", fmt.Errorf("invalid session ID in file data message, got %x", dataMsg.SessionID)
 			}
 
-			if fileResponse.FileSize <= *config.MemFileThreshold {
-				if _, err := cacheFile.Write(dataMsg.Data); err != nil {
-					return "", fmt.Errorf("error writing cached file data: %w", err)
-				}
-			} else {
-				if _, err := file.Write(dataMsg.Data); err != nil {
-					return "", fmt.Errorf("error writing file data: %w", err)
-				}
+			if _, err := tmpFile.Write(dataMsg.Data); err != nil {
+				return "", fmt.Errorf("error writing file data: %w", err)
 			}
 			receivedSize += uint64(len(dataMsg.Data))
 			ackMsg := AcknowledgeMessage{
@@ -387,37 +386,32 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 			if err := sendMessage(conn, MsgTypeAcknowledge, ackBytes); err != nil {
 				return "", fmt.Errorf("%w, failed to send acknowledge message: %w", appError.ErrConnection, err)
 			}
-			log.Debugf("Sent acknowledge message, session ID: %s, offset: %d", sessionID, receivedSize)
+			log.Debugf("Sent acknowledge message, session ID: %x, offset: %d", sessionID, receivedSize)
 		case MsgTypeFileComplete:
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
 				return "", fmt.Errorf("%w: error decoding file complete message: %v", appError.ErrConnection, err)
 			}
 			if completeMsg.SessionID != sessionID {
-				return "", fmt.Errorf("invalid session ID in file complete message, got %s", completeMsg.SessionID)
-			}
-			if fileResponse.FileSize <= *config.MemFileThreshold {
-				if _, err := file.Write(cacheFile.Bytes()); err != nil {
-					return "", fmt.Errorf("error writing cached file data: %w", err)
-				}
-				cacheFile.Reset()
+				return "", fmt.Errorf("invalid session ID in file complete message, got %x", completeMsg.SessionID)
 			}
 
-			if err := file.Close(); err != nil {
-				log.Error("Error closing file:", err)
-				return "", err
+			if err := tmpFile.Sync(); err != nil {
+				log.Warnf("file.Sync() failed for %s: %v", tmpPath, err)
+			}
+			if err := tmpFile.Close(); err != nil {
+				return "", fmt.Errorf("error closing file: %w", err)
 			}
 
-			if err := file.Sync(); err != nil {
-				log.Warnf("file.Sync() failed for %s: %v", fullPath, err)
-			}
-			fileHash, err := utils.CalcBlake3(fullPath)
+			fileHash, err := utils.CalcBlake3(tmpPath)
 			if err != nil {
 				return "", fmt.Errorf("error calculating file hash: %w", err)
 			}
 			if fileHash != completeMsg.FileHash {
-				os.Remove(fullPath)
-				return "", fmt.Errorf("file hash mismatch, expected %s, got %s", completeMsg.FileHash, fileHash)
+				return "", fmt.Errorf("file hash mismatch, expected %x, got %x", completeMsg.FileHash, fileHash)
+			}
+			if err := os.Rename(tmpPath, fullPath); err != nil {
+				return "", fmt.Errorf("error renaming temp file to %s: %w", fullPath, err)
 			}
 			transferSpeed := float64(fileResponse.FileSize) / time.Since(startTime).Seconds()
 			log.Infof("File transfer complete, file path: %s, file size: %d bytes, transfer speed: %.2f MB/s",
@@ -437,13 +431,13 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	}
 }
 
-func (c *FileClient) GetTreeChange() ([]string, error) {
+// GetTreeChange 查询服务端在 [startTime, endTime] 时间段内发生变更的目录。
+// 时间窗游标由调用方维护，保证前后两次查询无缝衔接，不丢变更。
+func (c *FileClient) GetTreeChange(startTime, endTime int64) ([]string, error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
 	}
-	endTime := time.Now().Unix()
-	startTime := endTime - *config.DiffInterval
 	request := RecentChangeRequestMessage{
 		ClientID:  config.InstanceID,
 		startTime: startTime,

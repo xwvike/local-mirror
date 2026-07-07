@@ -11,6 +11,10 @@ import (
 
 func InitConn() (*network.FileClient, error) {
 	maxRetries := 3
+	if *config.RealityIP == "" {
+		// 自动发现尚未实现，回退到本机地址
+		log.Warn("未指定服务器地址 (-r)，回退连接 127.0.0.1")
+	}
 	fileClient, err := network.NewFileClient(*config.RealityIP+":52345", "default")
 	if err != nil {
 		return fileClient, fmt.Errorf("failed to create file client: %w", err)

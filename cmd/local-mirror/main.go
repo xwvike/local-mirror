@@ -9,6 +9,7 @@ import (
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"os"
+	"runtime"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -22,7 +23,6 @@ func init() {
 		// log.Fatalf 内部已调用 os.Exit(1)，后面不需要再调用
 		log.Fatalf("获取当前执行文件路径失败: %v", err)
 	}
-	fmt.Print(wd)
 	config.StartPath = wd
 }
 func main() {
@@ -37,10 +37,7 @@ func main() {
 	if *config.Version {
 		fmt.Printf("Local Mirror version 1.0.0\n")
 		fmt.Printf("Protocol version: %d\n", config.ProtocolVersion)
-		fmt.Printf("Build date: %s\n", "2025-07-30")
-		fmt.Printf("Go version: %s\n", "go1.21+")
-		fmt.Printf("\nCopyright (c) 2025 Local Mirror Team\n")
-		fmt.Printf("Licensed under MIT License\n")
+		fmt.Printf("Go version: %s\n", runtime.Version())
 		os.Exit(0)
 	}
 

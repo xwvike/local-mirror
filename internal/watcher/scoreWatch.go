@@ -9,9 +9,11 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -20,14 +22,16 @@ import (
 
 type ScoreWatch struct {
 	Watcher         *fsnotify.Watcher
-	maxfilesperproc uint16 //https://pkg.go.dev/github.com/fsnotify/fsnotify@v1.8.0#readme-linux
-	tier1Limit      uint16
+	maxfilesperproc int //https://pkg.go.dev/github.com/fsnotify/fsnotify@v1.8.0#readme-linux
+	tier1Limit      int
 	tier2Interval   time.Duration
-	heatMap         map[string]*HeatScore
-	tier1           []*HeatScore
-	tier2           []*HeatScore
-	ctx             context.Context
-	cancel          context.CancelFunc
+	// mu 保护 heatMap/tier1/tier2：事件处理、定期扫描、tier2 轮询三个 goroutine 都会访问
+	mu      sync.Mutex
+	heatMap map[string]*HeatScore
+	tier1   []*HeatScore
+	tier2   []*HeatScore
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 type HeatScore struct {
@@ -40,7 +44,10 @@ type HeatScore struct {
 var GlobalScoreWatch *ScoreWatch
 
 func InitWatcher(watcher *fsnotify.Watcher) error {
-	var _maxWatches uint16 = 10240
+	// 系统上限值（如 macOS kern.maxfilesperproc 常见为 245760）远超 uint16，
+	// 用 int 解析后再设置一个保守上限，避免溢出导致解析失败退回极小值
+	const maxWatchesCap = 65536
+	_maxWatches := 10240
 	osType := utils.BaseOSInfo().OS
 	switch osType {
 	case "darwin":
@@ -51,12 +58,12 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 		if maxfilesperprocErr != nil || maxfilesErr != nil {
 			_maxWatches = 1024
 		} else {
-			maxFilesPerProcInt, err1 := strconv.ParseUint(strings.TrimSpace(string(maxfilesperproc)), 10, 16)
-			maxFilesInt, err2 := strconv.ParseUint(strings.TrimSpace(string(maxfiles)), 10, 16)
+			maxFilesPerProcInt, err1 := strconv.Atoi(strings.TrimSpace(string(maxfilesperproc)))
+			maxFilesInt, err2 := strconv.Atoi(strings.TrimSpace(string(maxfiles)))
 			if err1 != nil || err2 != nil {
 				_maxWatches = 1024
 			} else {
-				_maxWatches = min(uint16(maxFilesPerProcInt), uint16(maxFilesInt))
+				_maxWatches = min(maxFilesPerProcInt, maxFilesInt, maxWatchesCap)
 			}
 		}
 	case "linux":
@@ -66,12 +73,12 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 			log.Error("Failed to get max user watches:", err)
 			_maxWatches = 1024
 		} else {
-			maxWatchesInt, err := strconv.ParseUint(strings.TrimSpace(string(maxWatchesOutput)), 10, 16)
+			maxWatchesInt, err := strconv.Atoi(strings.TrimSpace(string(maxWatchesOutput)))
 			if err != nil {
 				log.Error("Failed to parse max user watches:", err)
 				_maxWatches = 1024
 			} else {
-				_maxWatches = uint16(maxWatchesInt)
+				_maxWatches = min(maxWatchesInt, maxWatchesCap)
 			}
 		}
 	case "windows":
@@ -112,6 +119,8 @@ func (sw *ScoreWatch) collectAll() error {
 		return fmt.Errorf("failed to get all directory nodes: %w", err)
 	}
 
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
 	for _, dir := range allDir {
 		path := dir.Path
 		score := sw.calculateInitScore(path, dir)
@@ -132,7 +141,8 @@ func (sw *ScoreWatch) calculateInitScore(path string, node *tree.Node) float64 {
 	pathWeight := sw.getPathHeuristics(path)
 	timeWeight := sw.getTimeBasedScore(node.ModTime)
 	depthWeight := math.Max(0.7, 1.0-float64(node.Depth)*0.1)
-	fileCount, err := os.ReadDir(path)
+	// path 是 "./x" 形式的相对路径，必须拼接根目录，否则依赖进程 CWD
+	fileCount, err := os.ReadDir(filepath.Join(config.StartPath, path))
 	var fileCountInt int
 	if err != nil {
 		fileCountInt = 0
@@ -205,7 +215,10 @@ func (sw *ScoreWatch) intelligentScan() {
 }
 
 func (sw *ScoreWatch) performScan() {
-	dirs := make([]*HeatScore, 0)
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	dirs := make([]*HeatScore, 0, len(sw.heatMap))
 	for _, heat := range sw.heatMap {
 		dirs = append(dirs, heat)
 	}
@@ -213,36 +226,40 @@ func (sw *ScoreWatch) performScan() {
 	sort.Slice(dirs, func(i, j int) bool {
 		return dirs[i].Score > dirs[j].Score
 	})
-	usedWatches := uint16(0)
+
+	// 每轮扫描重建两个层级，防止 tier1/tier2 跨轮次累积重复条目
 	oldTier1 := sw.tier1
-	for _, heat := range dirs {
-		fileCount, err := os.ReadDir(heat.Path)
+	newTier1 := make([]*HeatScore, 0, len(dirs))
+	var newTier2 []*HeatScore
+	usedWatches := 0
+	for i, heat := range dirs {
+		if usedWatches >= sw.tier1Limit {
+			// 剩余的低分目录全部进入 tier2 轮询
+			newTier2 = append(newTier2, dirs[i:]...)
+			break
+		}
+		fullPath := filepath.Join(config.StartPath, heat.Path)
+		entries, err := os.ReadDir(fullPath)
 		if err != nil {
 			log.Warnf("Failed to read directory %s: %v", heat.Path, err)
 			continue
 		}
-		fileCountInt := uint16(len(fileCount))
 		switch utils.BaseOSInfo().OS {
 		case "darwin":
-			usedWatches += fileCountInt + 1
-		case "linux":
-			usedWatches++
-		case "windows":
-			usedWatches++
+			// kqueue 为目录及其每个条目各占一个描述符
+			usedWatches += len(entries) + 1
 		default:
-			log.Warnf("Unsupported OS %s, cannot determine used watches", utils.BaseOSInfo().OS)
+			usedWatches++
 		}
-		if usedWatches < sw.tier1Limit {
-			sw.Watcher.Add(strings.Replace(heat.Path, ".", config.StartPath, 1))
-			sw.tier1 = append(sw.tier1, heat)
-		} else {
-			index := len(sw.tier1) - 1
-			dirs = dirs[index:]
-			sw.tier2 = append(sw.tier2, dirs...)
-			break
+		if err := sw.Watcher.Add(fullPath); err != nil {
+			log.Warnf("Failed to watch directory %s: %v", fullPath, err)
+			continue
 		}
+		newTier1 = append(newTier1, heat)
 	}
-	sw.removeOldWatchers(oldTier1, sw.tier1)
+	sw.tier1 = newTier1
+	sw.tier2 = newTier2
+	sw.removeOldWatchers(oldTier1, newTier1)
 }
 
 func (sw *ScoreWatch) removeOldWatchers(oldTier1, newTier1 []*HeatScore) {
@@ -253,7 +270,7 @@ func (sw *ScoreWatch) removeOldWatchers(oldTier1, newTier1 []*HeatScore) {
 
 	for _, heat := range oldTier1 {
 		if _, exists := newTier1Map[heat.Path]; !exists {
-			watchPath := strings.Replace(heat.Path, ".", config.StartPath, 1)
+			watchPath := filepath.Join(config.StartPath, heat.Path)
 			if err := sw.Watcher.Remove(watchPath); err != nil {
 				log.Warnf("Failed to remove path %s from watcher: %v", watchPath, err)
 			}
@@ -262,31 +279,29 @@ func (sw *ScoreWatch) removeOldWatchers(oldTier1, newTier1 []*HeatScore) {
 }
 
 func (sw *ScoreWatch) monitorTier2() {
-	if len(sw.tier2) == 0 {
-		return
-	}
-
 	ticker := time.NewTicker(sw.tier2Interval)
 	defer ticker.Stop()
 
 	tier2Index := 0
 
+	// tier2 会随 performScan 重建，为空时跳过本轮而不是退出，
+	// 否则后续再有目录降级到 tier2 就没人轮询了
 	for {
 		select {
 		case <-ticker.C:
+			sw.mu.Lock()
 			if len(sw.tier2) == 0 {
-				return
+				sw.mu.Unlock()
+				continue
 			}
-
 			if tier2Index >= len(sw.tier2) {
 				tier2Index = 0
 			}
-
 			heat := sw.tier2[tier2Index]
+			sw.mu.Unlock()
 			tier2Index++
 
-			err := hasDirectoryChanged(heat.Path)
-			if err != nil {
+			if err := hasDirectoryChanged(heat.Path); err != nil {
 				log.Warnf("Failed to check directory change for %s: %v", heat.Path, err)
 			}
 
@@ -298,7 +313,7 @@ func (sw *ScoreWatch) monitorTier2() {
 
 func hasDirectoryChanged(path string) error {
 	oldContents, err := tree.GetDirContents(path)
-	fullPath := strings.Replace(path, ".", config.StartPath, 1)
+	fullPath := filepath.Join(config.StartPath, path)
 
 	if err != nil {
 		return fmt.Errorf("failed to get directory contents: %w", err)
@@ -313,21 +328,34 @@ func hasDirectoryChanged(path string) error {
 	}
 	newNodes := make(map[string]os.DirEntry, len(entries))
 	for _, entry := range entries {
-		nodePath := path + string(os.PathSeparator) + entry.Name()
+		nodePath := filepath.Join(path, entry.Name())
 		newNodes[nodePath] = entry
-		if _, exists := oldNodes[nodePath]; !exists {
+		oldNode, exists := oldNodes[nodePath]
+		if !exists {
 			event := &fsnotify.Event{
-				Name: fullPath + string(os.PathSeparator) + entry.Name(),
+				Name: filepath.Join(fullPath, entry.Name()),
 				Op:   fsnotify.Create,
 			}
 			eventFilter(*event)
+			continue
+		}
+		// 已存在的文件比较大小和修改时间，捕捉内容修改
+		if !entry.IsDir() {
+			if info, err := entry.Info(); err == nil &&
+				(uint64(info.Size()) != oldNode.Size || !info.ModTime().Equal(oldNode.ModTime)) {
+				event := &fsnotify.Event{
+					Name: filepath.Join(fullPath, entry.Name()),
+					Op:   fsnotify.Write,
+				}
+				eventFilter(*event)
+			}
 		}
 	}
 	for _, entry2 := range oldContents {
 		nodePath := entry2.Path
 		if _, exists := newNodes[nodePath]; !exists {
 			event := &fsnotify.Event{
-				Name: fullPath + string(os.PathSeparator) + entry2.Name,
+				Name: filepath.Join(fullPath, entry2.Name),
 				Op:   fsnotify.Remove,
 			}
 			eventFilter(*event)
@@ -337,8 +365,7 @@ func hasDirectoryChanged(path string) error {
 }
 
 func (sw *ScoreWatch) handleEvents() {
-	fmt.Println("ScoreWatch: Starting to handle events...")
-	fmt.Println(sw.Watcher.WatchList())
+	log.Debug("ScoreWatch: Starting to handle events...")
 	for {
 		select {
 		case event, ok := <-sw.Watcher.Events:
@@ -363,13 +390,21 @@ func (sw *ScoreWatch) addHeat(path string, node *tree.Node) {
 		Score:      score,
 		EventCount: 0,
 	}
+
+	sw.mu.Lock()
 	sw.heatMap[path] = heatScore
 	sw.tier1 = append(sw.tier1, heatScore)
-	sw.Watcher.Add(strings.Replace(path, ".", config.StartPath, 1))
+	sw.mu.Unlock()
+
+	if err := sw.Watcher.Add(filepath.Join(config.StartPath, path)); err != nil {
+		log.Warnf("Failed to watch new directory %s: %v", path, err)
+	}
 }
 
 // 删除
 func (sw *ScoreWatch) removeHeat(path string) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
 	if _, exists := sw.heatMap[path]; exists {
 		delete(sw.heatMap, path)
 		for i, tierHeat := range sw.tier1 {

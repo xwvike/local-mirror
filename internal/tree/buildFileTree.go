@@ -1,12 +1,14 @@
 package tree
 
 import (
+	"fmt"
 	"io/fs"
 	"local-mirror/config"
 	"local-mirror/pkg/utils"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -15,39 +17,40 @@ import (
 )
 
 var (
-	RecentChangedDirs    []*ChangedDir
+	recentChangedDirs    []string
 	mu                   sync.Mutex
 	addChangeTimer       *time.Timer
 	addChangeTimerActive bool
 )
 
+// AddRecentChangedDir 记录发生变更的目录，2 秒节流后批量落库。
+// 注意是节流不是防抖：持续的事件流不会不断推迟落库，
+// 否则客户端按时间窗查询时会错过这些迟到的记录。
 func AddRecentChangedDir(dirPath string) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	timeStamp := uint64(time.Now().Unix())
+	if !slices.Contains(recentChangedDirs, dirPath) {
+		recentChangedDirs = append(recentChangedDirs, dirPath)
+	}
 
-	for i, v := range RecentChangedDirs {
-		if timeStamp == v.timeStamp {
-			RecentChangedDirs[i].path = append(RecentChangedDirs[i].path, dirPath)
+	if addChangeTimerActive {
+		return
+	}
+	addChangeTimer = time.AfterFunc(2*time.Second, func() {
+		// 回调运行在独立 goroutine，取快照后再落库，避免与并发的 Add 竞争
+		mu.Lock()
+		batch := recentChangedDirs
+		recentChangedDirs = nil
+		addChangeTimerActive = false
+		mu.Unlock()
+
+		if len(batch) == 0 {
 			return
 		}
-	}
-	dirs := &ChangedDir{
-		timeStamp: timeStamp,
-		path:      []string{dirPath},
-	}
-	RecentChangedDirs = append(RecentChangedDirs, dirs)
-	if addChangeTimerActive {
-		addChangeTimer.Stop()
-	}
-	addChangeTimer = time.AfterFunc(5*time.Second, func() {
-		err := addChangedDir(RecentChangedDirs)
-		if err != nil {
+		if err := addChangedDir(batch); err != nil {
 			log.Error("Failed to add changed directories:", err)
 		}
-		RecentChangedDirs = []*ChangedDir{}
-		addChangeTimerActive = false
 	})
 	addChangeTimerActive = true
 }
@@ -94,12 +97,20 @@ func BuildFileTree(path string) error {
 	nodeChan := make(chan *Node, 1000)
 	var wg sync.WaitGroup
 
-	// 启动工作池
+	// 启动工作池：并发计算文件哈希后再收集。
+	// 哈希是 diff 比对的依据，没有它客户端无法判断文件内容是否变化
 	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for node := range nodeChan {
+				if !node.IsDir {
+					if hash, err := utils.CalcBlake3(filepath.Join(path, node.Path)); err != nil {
+						log.Warnf("Failed to hash file %s: %v", node.Path, err)
+					} else {
+						node.Hash = fmt.Sprintf("%x", hash)
+					}
+				}
 				mu.Lock()
 				allNodes = append(allNodes, node)
 				mu.Unlock()
@@ -122,14 +133,12 @@ func BuildFileTree(path string) error {
 		}
 
 		// 检查忽略列表
-		relPath := strings.Replace(fullPath, config.StartPath, ".", 1)
-		for _, ignorePattern := range config.IgnoreFileList {
-			if strings.Contains(relPath, ignorePattern) {
-				if d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
+		relPath := utils.RelPath(config.StartPath, fullPath)
+		if utils.IsIgnored(relPath, config.IgnoreFileList) {
+			if d.IsDir() {
+				return filepath.SkipDir
 			}
+			return nil
 		}
 
 		// 获取文件信息
@@ -143,7 +152,7 @@ func BuildFileTree(path string) error {
 		uuid, _ := utils.RandomString(16)
 
 		// 计算父节点路径
-		parentPath := strings.Replace(filepath.Dir(fullPath), config.StartPath, ".", 1)
+		parentPath := utils.RelPath(config.StartPath, filepath.Dir(fullPath))
 
 		// 获取父节点ID
 		parentID := pathToID[parentPath]

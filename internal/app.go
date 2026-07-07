@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/tree"
 	"local-mirror/internal/watcher"
@@ -14,28 +13,34 @@ import (
 )
 
 func App() {
-	pid := os.Getpid()
-	fmt.Printf("进程 PID 啊: %d\n", pid)
-	_watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Fatal(err)
+	log.Infof("进程 PID: %d", os.Getpid())
+
+	if err := tree.BuildFileTree(config.StartPath); err != nil {
+		log.Fatalf("构建文件树失败: %v", err)
 	}
-	defer func() {
-		if *config.Mode == "reality" {
+
+	switch *config.Mode {
+	case "reality":
+		_watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer func() {
 			log.Info("正在关闭监视器...")
 			if err := _watcher.Close(); err != nil {
 				log.Errorf("关闭监视器时出错: %v", err)
 			}
+		}()
+		if err := watcher.InitWatcher(_watcher); err != nil {
+			log.Fatalf("初始化监视器失败: %v", err)
 		}
-	}()
-	tree.BuildFileTree(config.StartPath)
-	switch *config.Mode {
-	case "reality":
-		watcher.InitWatcher(_watcher)
 		go Reality()
 	case "mirror":
 		go Mirror()
+	default:
+		log.Fatalf("未知运行模式: %s (可选: reality, mirror)", *config.Mode)
 	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan

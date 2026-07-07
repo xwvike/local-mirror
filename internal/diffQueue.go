@@ -4,23 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"local-mirror/internal/tree"
-	"local-mirror/pkg/stack"
 )
 
 type DiffResult struct {
-	Path     string `json:"path"`
-	IsDir    bool   `json:"is_dir"` // 是否为目录
-	Action   string `json:"action"` // "create", "delete", "modify"
-	Name     string `json:"name"`
-	Size     uint64 `json:"size"`      // 文件大小
-	ParentID string `json:"parent_id"` // 父目录ID
+	Path   string `json:"path"`
+	IsDir  bool   `json:"is_dir"` // 是否为目录
+	Action string `json:"action"` // "create", "delete", "modify"
+	Name   string `json:"name"`
+	Size   uint64 `json:"size"` // 文件大小
 }
 
-var (
-	diffQueue = stack.NewStack[DiffResult]()
-)
-
-// findDifferences 比较两个树结构，以a为基准
+// FindDifferences 比较两个树结构，以 a（服务端）为基准
 func FindDifferences(a, b []tree.Node) []DiffResult {
 	var diffs []DiffResult
 
@@ -33,41 +27,34 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 
 	for _, nodeA := range a {
 		aMap[nodeA.Path] = nodeA
-		pathA := nodeA.Path
-		nodeB, exists := bMap[pathA]
+		nodeB, exists := bMap[nodeA.Path]
 		if !exists {
-			// nodeB 不存在时是零值，ParentID 应取 nodeA 的
 			diffs = append(diffs, DiffResult{
-				Path:     pathA,
-				IsDir:    nodeA.IsDir,
-				Action:   "create",
-				Name:     nodeA.Name,
-				Size:     nodeA.Size,
-				ParentID: nodeA.ParentID,
+				Path:   nodeA.Path,
+				IsDir:  nodeA.IsDir,
+				Action: "create",
+				Name:   nodeA.Name,
+				Size:   nodeA.Size,
 			})
+			continue
 		}
-		// 如果b中有对应节点，比较属性
-		if exists {
-			if nodeA.Size != nodeB.Size || nodeA.Hash != nodeB.Hash {
-				// 如果属性不同，标记为modify
-				diffs = append(diffs, DiffResult{
-					Path:     pathA,
-					IsDir:    nodeA.IsDir,
-					Action:   "modify",
-					Name:     nodeA.Name,
-					Size:     nodeA.Size,
-					ParentID: nodeB.ParentID,
-				})
-			}
+		// 大小不同肯定变了；哈希仅在两侧都算出来时才可比
+		if nodeA.Size != nodeB.Size ||
+			(nodeA.Hash != "" && nodeB.Hash != "" && nodeA.Hash != nodeB.Hash) {
+			diffs = append(diffs, DiffResult{
+				Path:   nodeA.Path,
+				IsDir:  nodeA.IsDir,
+				Action: "modify",
+				Name:   nodeA.Name,
+				Size:   nodeA.Size,
+			})
 		}
 	}
 	for _, nodeB := range b {
-		pathB := nodeB.Path
-		_, exists := aMap[pathB]
-		if !exists {
+		if _, exists := aMap[nodeB.Path]; !exists {
 			// 如果a中没有对应节点，标记为delete
 			diffs = append(diffs, DiffResult{
-				Path:   pathB,
+				Path:   nodeB.Path,
 				IsDir:  nodeB.IsDir,
 				Action: "delete",
 				Name:   nodeB.Name,
@@ -79,16 +66,23 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 	return diffs
 }
 
-func Diff(realityTree []byte, path string) error {
+// Diff 用服务端目录列表与本地数据库中的同名目录比对，返回差异列表
+func Diff(realityNodes []tree.Node, path string) ([]DiffResult, error) {
 	localTree, err := tree.GetDirContents(path)
 	if err != nil {
-		return fmt.Errorf("failed to get local tree contents: %w", err)
+		return nil, fmt.Errorf("failed to get local tree contents: %w", err)
 	}
-	var realityTreeData []tree.Node
-	json.Unmarshal(realityTree, &realityTreeData)
-	diffs := FindDifferences(realityTreeData, localTree)
-	for _, diff := range diffs {
-		diffQueue.Push(diff)
+	return FindDifferences(realityNodes, localTree), nil
+}
+
+// UnmarshalRealityTree 解析服务端返回的目录树 JSON
+func UnmarshalRealityTree(data []byte) ([]tree.Node, error) {
+	if len(data) == 0 {
+		return nil, nil
 	}
-	return nil
+	var nodes []tree.Node
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal reality tree: %w", err)
+	}
+	return nodes, nil
 }

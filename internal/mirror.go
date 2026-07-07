@@ -19,13 +19,18 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Keep NextLevel as global to maintain compatibility with external callers
+// NextLevel 存放待下钻的目录，由 drainNextLevel 消费
 var NextLevel = stack.NewStack[DiffResult]()
 
 var (
 	taskMutex    sync.Mutex // 确保任务串行执行
 	isTaskActive bool       // 标识当前是否有任务在执行
 )
+
+// lastChangeCursor 记录变更查询已覆盖到的时间点（unix 秒）。
+// 前后两次查询以此衔接，即使某次追踪被跳过也不会漏掉中间的变更。
+// 任务由 taskMutex 保证串行，无需原子操作。
+var lastChangeCursor int64
 
 // handleConnectionError wraps connection error handling to reduce duplication
 func handleConnectionError(err error, fileClient *network.FileClient) error {
@@ -35,18 +40,27 @@ func handleConnectionError(err error, fileClient *network.FileClient) error {
 	return err
 }
 
-// createNodeFromDiff creates a tree node from diff info to avoid code duplication
+// createNodeFromDiff creates a tree node from diff info.
+// ParentID 必须从本地数据库解析：服务端下发的树已抹掉节点ID，
+// 直接使用会导致 children 索引断裂，本地目录永远查不到子节点
 func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
 	uuid, _ := utils.RandomString(16)
+	parentID := ""
+	if parent, err := tree.GetNodeByPath(filepath.Dir(v.Path)); err == nil {
+		parentID = parent.ID
+	} else {
+		log.Warnf("Parent node not found for %s: %v", v.Path, err)
+	}
 	return &tree.Node{
 		ID:       uuid,
 		Path:     v.Path,
 		Name:     v.Name,
-		ParentID: v.ParentID,
+		ParentID: parentID,
 		IsDir:    v.IsDir,
 		Size:     v.Size,
 		ModTime:  time.Now(),
 		Hash:     hash,
+		Depth:    strings.Count(v.Path, string(filepath.Separator)),
 	}
 }
 
@@ -100,25 +114,14 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 
 func processDirectoryDiff(v DiffResult) error {
 	// v.Path 是相对路径，必须拼接 StartPath 才能在正确的位置创建目录
-	// 与 DownloadFile 中 filepath.Join(config.StartPath, filePath) 保持一致
 	fullPath := filepath.Join(config.StartPath, v.Path)
 	if err := os.MkdirAll(fullPath, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", fullPath, err)
 	}
 
-	hasPath, err := tree.HasPath(v.Path)
-	if err != nil {
-		log.Fatalf("Error checking path %s: %v", v.Path, err)
-		return err
-	}
-
-	if !hasPath {
-		node := createNodeFromDiff(v, "")
-		tree.AddNodes([]*tree.Node{node})
-	}
-
-	NextLevel.Push(v)
-	return nil
+	// AddNodes 对已存在路径按更新处理，无需先查询
+	node := createNodeFromDiff(v, "")
+	return tree.AddNodes([]*tree.Node{node})
 }
 
 func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
@@ -133,34 +136,88 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 	}
 
 	fileNode := createNodeFromDiff(v, hash)
-	tree.AddNodes([]*tree.Node{fileNode})
+	if err := tree.AddNodes([]*tree.Node{fileNode}); err != nil {
+		return err
+	}
 	log.Infof("File downloaded successfully: %s", v.Path)
 	return nil
 }
 
-func getDirectory(fileClient *network.FileClient, path string) error {
+// getDirectory 同步单个目录：拉取服务端目录列表、执行差异处理，
+// 并把需要继续下钻的子目录压入 NextLevel。
+// recurseAll 为 true 时所有子目录都下钻（全量扫描的安全网语义）；
+// 为 false 时只下钻本次新建/变更的子目录。
+func getDirectory(fileClient *network.FileClient, path string, recurseAll bool) error {
 	treejson, err := fileClient.GetRealityTree(path)
 	if err != nil {
 		return handleConnectionError(err, fileClient)
 	}
 
-	log.Debug("start analyzing diff 🫨")
-	if err = Diff(treejson, path); err != nil {
+	realityNodes, err := UnmarshalRealityTree(treejson)
+	if err != nil {
+		return fmt.Errorf("error parsing tree for path %s: %w", path, err)
+	}
+
+	diffs, err := Diff(realityNodes, path)
+	if err != nil {
 		return fmt.Errorf("error analyzing diff for path %s: %w", path, err)
 	}
 
-	log.Infof("Diff count: %d", diffQueue.Size())
-	for diffQueue.Size() > 0 {
-		v, has := diffQueue.Pop()
-		if !has {
-			log.Warn("Diff queue is empty")
+	log.Infof("Diff count for %s: %d", path, len(diffs))
+	diffDirs := make(map[string]bool)
+	for _, v := range diffs {
+		if err := processDiffItem(v, fileClient); err != nil {
+			// 连接断了，本目录剩余项留给重试；其他错误跳过单项继续
+			if errors.Is(err, appError.ErrConnection) {
+				return err
+			}
+			log.Errorf("Error processing diff item %v: %v", v, err)
+			continue
+		}
+		if v.IsDir && v.Action != "delete" {
+			diffDirs[v.Path] = true
+			NextLevel.Push(v)
+		}
+	}
+
+	if recurseAll {
+		for _, node := range realityNodes {
+			if node.IsDir && !diffDirs[node.Path] {
+				NextLevel.Push(DiffResult{
+					Path:   node.Path,
+					IsDir:  true,
+					Action: "modify",
+					Name:   node.Name,
+					Size:   node.Size,
+				})
+			}
+		}
+	}
+	return nil
+}
+
+// drainNextLevel 逐层消费 NextLevel 中的目录，连接错误时重连并重试当前目录
+func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
+	for NextLevel.Size() > 0 {
+		v, _ := NextLevel.Pop()
+		log.Debugf("Processing next level item: %v 【%d】remaining", v, NextLevel.Size())
+
+		if !v.IsDir {
+			log.Error("Unexpected file type in NextLevel stack, expected directory but got file:", v.Path)
 			continue
 		}
 
-		log.Debugf("Processing diff item: %v 【%d】remaining", v, diffQueue.Size())
-		if err := processDiffItem(v, fileClient); err != nil {
-			log.Errorf("Error processing diff item %v: %v", v, err)
+		err := getDirectory(fileClient, v.Path, recurseAll)
+		if err == nil {
 			continue
+		}
+
+		log.Errorf("Error processing directory %s: %v", v.Path, err)
+		if errors.Is(err, appError.ErrConnection) {
+			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
+				return err
+			}
+			NextLevel.Push(v)
 		}
 	}
 	return nil
@@ -205,65 +262,56 @@ func Mirror() {
 }
 
 func runMirrorTasks(fileClient *network.FileClient) error {
-	if err := executeTaskWithClient("初始化全量扫描", fileClient, func(client *network.FileClient) error {
-		return fullScan(client)
-	}); err != nil {
+	if err := executeTaskWithClient("初始化全量扫描", fileClient, fullScan); err != nil {
 		return err
 	}
 
-	cooldownSeconds := time.Duration(*config.CoolDown) * time.Second
-	fullScanInterval := cooldownSeconds
+	fullScanInterval := time.Duration(*config.CoolDown) * time.Second
 	changeTrackInterval := time.Duration(*config.DiffInterval) * time.Second
 
 	fullScanChan := make(chan struct{})
 	changeChan := make(chan struct{})
+	// done 在本函数返回时关闭，两个 ticker goroutine 随之退出，
+	// 否则每次重连都会泄漏一对永远阻塞的 goroutine
+	done := make(chan struct{})
+	defer close(done)
 
-	go func() {
-		fullScanTicker := time.NewTicker(fullScanInterval)
-		defer fullScanTicker.Stop()
-
-		for range fullScanTicker.C {
-			taskMutex.Lock()
-			if !isTaskActive {
+	tickForward := func(interval time.Duration, ch chan struct{}, name string) {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				taskMutex.Lock()
+				busy := isTaskActive
 				taskMutex.Unlock()
-				fullScanChan <- struct{}{}
-			} else {
-				taskMutex.Unlock()
-				log.Info("全量扫描跳过 - 有任务正在执行")
+				if busy {
+					log.Infof("%s跳过 - 有任务正在执行", name)
+					continue
+				}
+				select {
+				case ch <- struct{}{}:
+				case <-done:
+					return
+				}
+			case <-done:
+				return
 			}
 		}
-	}()
+	}
 
-	go func() {
-		changeTicker := time.NewTicker(changeTrackInterval)
-		defer changeTicker.Stop()
-
-		for range changeTicker.C {
-			taskMutex.Lock()
-			if !isTaskActive {
-				taskMutex.Unlock()
-				changeChan <- struct{}{}
-			} else {
-				taskMutex.Unlock()
-				log.Info("变更追踪跳过 - 有任务正在执行")
-			}
-
-		}
-	}()
+	go tickForward(fullScanInterval, fullScanChan, "全量扫描")
+	go tickForward(changeTrackInterval, changeChan, "变更追踪")
 
 	for {
 		select {
 		case <-fullScanChan:
-			if err := executeTaskWithClient("全量扫描", fileClient, func(client *network.FileClient) error {
-				return fullScan(client)
-			}); err != nil {
+			if err := executeTaskWithClient("全量扫描", fileClient, fullScan); err != nil {
 				return err
 			}
 
 		case <-changeChan:
-			if err := executeTaskWithClient("变更追踪", fileClient, func(client *network.FileClient) error {
-				return TrackingChanges(client)
-			}); err != nil {
+			if err := executeTaskWithClient("变更追踪", fileClient, TrackingChanges); err != nil {
 				return err
 			}
 		}
@@ -271,62 +319,45 @@ func runMirrorTasks(fileClient *network.FileClient) error {
 }
 
 func fullScan(fileClient *network.FileClient) error {
-	startTime := time.Now().UnixMilli()
+	startTime := time.Now()
 
-	// Stack 自带 Clear()，无需手动循环弹出
 	NextLevel.Clear()
-
-	rootNode := DiffResult{
+	NextLevel.Push(DiffResult{
 		Path:   ".",
 		IsDir:  true,
 		Action: "create",
 		Name:   "root",
-		Size:   0,
-	}
-	NextLevel.Push(rootNode)
+	})
 
-	for NextLevel.Size() > 0 {
-		v, _ := NextLevel.Pop()
-		log.Infof("Processing next level item: %v 【%d】remaining", v, NextLevel.Size())
-
-		if !v.IsDir {
-			log.Error("Unexpected file type in NextLevel stack, expected directory but got file:", v.Path)
-			continue
-		}
-
-		err := getDirectory(fileClient, v.Path)
-		if err == nil {
-			continue
-		}
-
-		log.Errorf("Error processing directory %s: %v", v.Path, err)
-		if errors.Is(err, appError.ErrConnection) {
-			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
-				return err
-			}
-			NextLevel.Push(v)
-		}
+	if err := drainNextLevel(fileClient, true); err != nil {
+		return err
 	}
 
-	elapsedSeconds := (time.Now().UnixMilli() - startTime) / 1000
-	log.Info("Full scan completed, total time taken:", elapsedSeconds, "seconds")
+	// 全量扫描已覆盖到扫描开始时刻，变更游标从这里接力；
+	// 用开始时间而非结束时间，扫描期间发生的变更下次仍会被查到
+	lastChangeCursor = startTime.Unix()
+
+	log.Infof("Full scan completed, total time taken: %v", time.Since(startTime))
 	return nil
 }
 
 func TrackingChanges(fileClient *network.FileClient) error {
-	change, err := fileClient.GetTreeChange()
+	endTime := time.Now().Unix()
+	change, err := fileClient.GetTreeChange(lastChangeCursor, endTime)
 	if err != nil {
 		return handleConnectionError(err, fileClient)
 	}
 
 	if len(change) == 0 {
 		log.Info("No changes detected in the tree")
+		lastChangeCursor = endTime
 		return nil
 	}
 	allPaths := extractMinimalPathsFromChanges(change)
+	NextLevel.Clear()
 	for _, v := range allPaths {
 		log.Infof("Processing change: %v", v)
-		err := getDirectory(fileClient, v)
+		err := getDirectory(fileClient, v, false)
 		if err == nil {
 			continue
 		}
@@ -337,6 +368,11 @@ func TrackingChanges(fileClient *network.FileClient) error {
 			}
 		}
 	}
+	// 变更中新出现的子目录需要继续下钻，否则要等下次全量扫描才能同步到
+	if err := drainNextLevel(fileClient, false); err != nil {
+		return err
+	}
+	lastChangeCursor = endTime
 	return nil
 }
 
