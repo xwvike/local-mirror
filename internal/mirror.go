@@ -238,6 +238,8 @@ func ensureConnected() (*network.FileClient, error) {
 	fileClient, err := InitConn()
 	if err != nil {
 		fileClient.ConnectionClose()
+		// 保留探测的具体失败原因（如加密口令不一致），方便用户定位
+		return fileClient, err
 	}
 
 	if fileClient.State == network.Online {

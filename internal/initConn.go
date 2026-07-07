@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/network"
@@ -21,28 +22,38 @@ func InitConn() (*network.FileClient, error) {
 	}
 
 	var lastErr error
+	var handshakeErr error
 	for port := config.DefaultPort; port < config.DefaultPort+config.PortScanRange; port++ {
 		addr := fmt.Sprintf("%s:%d", ip, port)
 		log.Debugf("探测服务端端口: %s", addr)
 
 		fileClient, err := network.NewFileClient(addr, "default")
 		if err != nil {
-			// 端口未开放，尝试下一个
-			lastErr = err
+			if errors.Is(err, network.ErrSecureHandshake) {
+				log.Warnf("端口 %d 加密握手失败: %v", port, err)
+				handshakeErr = err
+			} else {
+				// 端口未开放，尝试下一个
+				lastErr = err
+			}
 			continue
 		}
 		if err := fileClient.Handshake(); err != nil {
-			log.Warnf("端口 %d 握手失败（可能被其他程序占用）: %v", port, err)
+			log.Warnf("端口 %d 握手失败（口令不一致或被其他程序占用）: %v", port, err)
 			fileClient.ConnectionClose()
-			lastErr = err
+			// 端口开放但握手失败，比"端口拒连"更有定位价值，优先保留
+			handshakeErr = err
 			continue
 		}
 		log.Infof("已连接服务端 %s", addr)
 		return fileClient, nil
 	}
 
+	if handshakeErr != nil {
+		lastErr = handshakeErr
+	}
 	// 返回非 nil 的占位 client，调用方（ensureConnected）依赖非 nil 返回值
 	dummy := &network.FileClient{RealityAddr: ip, Alias: "default", State: network.Offline}
-	return dummy, fmt.Errorf("在 %s 的端口 %d-%d 范围内未找到 local-mirror 服务端: %w",
+	return dummy, fmt.Errorf("在 %s 的端口 %d-%d 范围内未找到可用的 local-mirror 服务端: %w",
 		ip, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, lastErr)
 }

@@ -34,11 +34,28 @@ type ConnectionManager struct {
 	retryDelay  time.Duration
 }
 
-func NewConnectionManager(addr string) (*ConnectionManager, error) {
+// dialConn 建立到服务端的连接；配置了口令时在 TCP 之上完成 Noise 加密握手
+func dialConn(addr string) (net.Conn, error) {
 	// 带超时拨号：端口扫描时不能在无响应的地址上无限期等待
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
+	}
+	if *config.Secret != "" {
+		secured, err := SecureConn(conn, *config.Secret, true)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("%w %s: %v", ErrSecureHandshake, addr, err)
+		}
+		return secured, nil
+	}
+	return conn, nil
+}
+
+func NewConnectionManager(addr string) (*ConnectionManager, error) {
+	conn, err := dialConn(addr)
+	if err != nil {
+		return nil, err
 	}
 	return &ConnectionManager{
 		connectAddr: addr,
@@ -74,7 +91,7 @@ func (cm *ConnectionManager) Reconnect() error {
 	for i := 0; i < cm.maxRetries; i++ {
 		log.Infof("Attempting to reconnect (attempt %d/%d)", i+1, cm.maxRetries)
 
-		cm.conn, err = net.DialTimeout("tcp", cm.connectAddr, 3*time.Second)
+		cm.conn, err = dialConn(cm.connectAddr)
 		if err == nil {
 			log.Info("Reconnection successful")
 			return nil

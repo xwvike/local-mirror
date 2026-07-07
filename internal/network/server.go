@@ -111,6 +111,18 @@ func (s *fileServer) Start() error {
 func (s *fileServer) handleConnection(conn net.Conn) {
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Client connected from %s to local port %s", clientAddr, conn.LocalAddr().String())
+
+	// 配置了口令则先完成 Noise 加密握手，之后的所有协议消息透明加解密；
+	// 口令不一致或对端未加密时在这里直接拒绝
+	if *config.Secret != "" {
+		secured, err := SecureConn(conn, *config.Secret, false)
+		if err != nil {
+			log.Warnf("Rejecting %s: %v", clientAddr, err)
+			conn.Close()
+			return
+		}
+		conn = secured
+	}
 	client := &client{
 		ID:             0,
 		Alias:          "",

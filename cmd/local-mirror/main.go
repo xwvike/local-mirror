@@ -159,6 +159,11 @@ func printBanner() {
 		row("目标服务器", fmt.Sprintf("%s%s%s %s(端口探测 %d-%d)%s",
 			p.green, ip, p.reset, p.dim, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, p.reset))
 	}
+	if *config.Secret != "" {
+		row("传输加密", fmt.Sprintf("%s开启%s (Noise NNpsk0)", p.green, p.reset))
+	} else {
+		row("传输加密", fmt.Sprintf("关闭 %s(明文传输，可用 -k 开启)%s", p.dim, p.reset))
+	}
 	row("实例 ID", fmt.Sprintf("%08x", config.InstanceID))
 	row("进程 PID", fmt.Sprintf("%d", os.Getpid()))
 	row("日志", fmt.Sprintf("%s %s(级别 %s)%s", logger.LogPath(), p.dim, *config.LogLevel, p.reset))
