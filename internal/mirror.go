@@ -141,12 +141,28 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 		return err
 	}
 
+	// 保真：把镜像文件的 mtime 设为服务端源文件的 mtime。
+	// createNodeFromDiff 随后 stat 磁盘，DB 记录的即这个 mtime，与磁盘一致，
+	// 重启校准时不会因时间戳不符而误判为已变化
+	applyModTime(v)
+
 	fileNode := createNodeFromDiff(v, hash)
 	if err := tree.AddNodes([]*tree.Node{fileNode}); err != nil {
 		return err
 	}
 	log.Infof("File downloaded successfully: %s", v.Path)
 	return nil
+}
+
+// applyModTime 将本地文件的修改时间对齐到服务端源文件
+func applyModTime(v DiffResult) {
+	if v.ModTime.IsZero() {
+		return
+	}
+	full := filepath.Join(config.StartPath, v.Path)
+	if err := os.Chtimes(full, v.ModTime, v.ModTime); err != nil {
+		log.Warnf("Failed to set mtime for %s: %v", v.Path, err)
+	}
 }
 
 // getDirectory 同步单个目录：拉取服务端目录列表、执行差异处理，
@@ -168,6 +184,9 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool) 
 	if err != nil {
 		return fmt.Errorf("error analyzing diff for path %s: %w", path, err)
 	}
+
+	// 保真：就地重命名的文件走本地 rename，免整文件重新下载
+	diffs = detectRenames(diffs)
 
 	log.Infof("Diff count for %s: %d", path, len(diffs))
 	diffDirs := make(map[string]bool)
@@ -200,6 +219,71 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool) 
 		}
 	}
 	return nil
+}
+
+// detectRenames 在单个目录的 diff 内识别"就地重命名"：一个 delete 与一个
+// create 若指向哈希相同的文件（内容未变、仅换名），直接本地 rename，
+// 避免整文件重新下载。返回消化掉重命名对之后剩余的 diff。
+// 仅处理同目录内的文件（跨目录移动分属不同目录的 diff，无法在此配对）。
+func detectRenames(diffs []DiffResult) []DiffResult {
+	// 按哈希索引待删除的文件（每个哈希取第一个）
+	delIdxByHash := make(map[string]int)
+	for i, d := range diffs {
+		if d.Action == "delete" && !d.IsDir && d.Hash != "" {
+			if _, exists := delIdxByHash[d.Hash]; !exists {
+				delIdxByHash[d.Hash] = i
+			}
+		}
+	}
+	if len(delIdxByHash) == 0 {
+		return diffs
+	}
+
+	handled := make(map[int]bool)
+	for i, d := range diffs {
+		if d.Action != "create" || d.IsDir || d.Hash == "" {
+			continue
+		}
+		di, ok := delIdxByHash[d.Hash]
+		if !ok || handled[di] || diffs[di].Path == d.Path {
+			continue
+		}
+		if err := applyRename(diffs[di], d); err != nil {
+			log.Warnf("移动 %s -> %s 失败，回退为下载: %v", diffs[di].Path, d.Path, err)
+			continue
+		}
+		handled[i] = true
+		handled[di] = true
+		log.Infof("检测到移动: %s -> %s（本地重命名，免下载）", diffs[di].Path, d.Path)
+	}
+	if len(handled) == 0 {
+		return diffs
+	}
+
+	remaining := make([]DiffResult, 0, len(diffs)-len(handled))
+	for i, d := range diffs {
+		if !handled[i] {
+			remaining = append(remaining, d)
+		}
+	}
+	return remaining
+}
+
+// applyRename 执行一次就地重命名：本地移动文件、对齐 mtime、更新数据库
+func applyRename(oldDiff, newDiff DiffResult) error {
+	oldFull := filepath.Join(config.StartPath, oldDiff.Path)
+	newFull := filepath.Join(config.StartPath, newDiff.Path)
+	if err := os.MkdirAll(filepath.Dir(newFull), 0755); err != nil {
+		return err
+	}
+	if err := os.Rename(oldFull, newFull); err != nil {
+		return err
+	}
+	applyModTime(newDiff)
+	if err := tree.DeleteNode(oldDiff.Path); err != nil {
+		return err
+	}
+	return tree.AddNodes([]*tree.Node{createNodeFromDiff(newDiff, newDiff.Hash)})
 }
 
 // drainNextLevel 逐层消费 NextLevel 中的目录，连接错误时重连并重试当前目录

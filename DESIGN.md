@@ -63,7 +63,12 @@
 tier2 从 3s 放宽到 30s 起，自适应退避（连续无变更指数拉长至上限，
 有变更复位）。
 
-## 第二阶段（保真，独立推进）
+## 第二阶段（保真）✅ 已完成
 
-- `Chtimes`：下载后用服务端 ModTime 补本地 mtime
-- 移动检测：同批 diff 中哈希相同的 delete+create 判为 move，本地 rename 不重传
+- `Chtimes`：下载/重命名后用服务端 ModTime 对齐本地 mtime。DiffResult 新增
+  Hash、ModTime 字段透传。createNodeFromDiff 随后 stat 磁盘，DB 记录即该 mtime，
+  与磁盘一致，重启校准稳定（实测复用哈希、0 重算、0 重下）。
+- 移动检测：同一目录 diff 内哈希相同的 delete+create 判为就地重命名，
+  本地 `os.Rename` + 更新 DB，免整文件重新下载。
+  局限：仅同目录内文件；跨目录移动、目录重命名分属不同目录的 diff，
+  仍回退为下载（正确，只是未优化）。
