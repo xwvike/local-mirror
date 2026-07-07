@@ -19,9 +19,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// LongPollHold 变更长轮询的服务端最大挂起时长。
+// 无变更时到点返回空响应作为保活，客户端立即重新发起
+const LongPollHold = 50 * time.Second
+
 // ClientIdleTimeout 服务端判定客户端失联的空闲阈值。
-// 客户端空闲时每 30 秒发一次心跳（见 mirror.go heartbeatInterval），
-// 90 秒相当于容忍连续两次心跳丢失；
+// 客户端长轮询每 ≤LongPollHold 就有一次往返，90 秒覆盖两个挂起周期；
 // 同时覆盖"建立了 TCP 连接但从不发消息"的僵尸连接
 const ClientIdleTimeout = 90 * time.Second
 
@@ -104,6 +107,8 @@ func (s *fileServer) Start() error {
 			log.Error("Error accepting connection:", err)
 			continue
 		}
+		// 长轮询挂起期间连接静默，keepalive 帮助检测死客户端
+		enableKeepAlive(conn)
 		go s.handleConnection(conn)
 	}
 }
@@ -491,23 +496,41 @@ func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) {
 		log.Error("Error decoding recent change request:", err)
 		return
 	}
-	log.Infof("Received recent change request from %s, client ID: %d, startTime: %d, endTime: %d",
-		conn.RemoteAddr().String(), recentChangeRequest.ClientID, recentChangeRequest.startTime, recentChangeRequest.endTime)
+	log.Debugf("Received recent change request from %s, client ID: %d, startTime: %d",
+		conn.RemoteAddr().String(), recentChangeRequest.ClientID, recentChangeRequest.startTime)
 
-	recentChanges, err := tree.GetChangedDirs(recentChangeRequest.startTime, recentChangeRequest.endTime)
-	if err != nil {
-		log.Error("Error getting changed dirs:", err)
-		return
-	}
+	// 长轮询：区间内已有变更立刻回（追赶/重连场景）；无变更则挂起，
+	// 等到变更落库广播或挂满上限后返回。挂起期间不读 socket，
+	// 上限兜底避免死连接常驻。上界用服务端当前时刻，随每次唤醒重新求值。
+	start := recentChangeRequest.startTime
+	holdDeadline := time.Now().Add(LongPollHold)
+	for {
+		// 先取信号再查询：若广播发生在查询之后、select 之前，
+		// 该 channel 已被 close，select 立即返回并重查，不会漏
+		sig := tree.ChangeSignal()
+		now := time.Now().Unix()
+		recentChanges, err := tree.GetChangedDirs(start, now)
+		if err != nil {
+			log.Error("Error getting changed dirs:", err)
+			recentChanges = nil
+		}
 
-	responseMsg := RecentChangeResponseMessage{
-		Changes:  utils.UniqueStrings(recentChanges),
-		ServerID: config.InstanceID,
-	}
-	responseBytes := encodeRecentChangeResponse(responseMsg)
+		if len(recentChanges) > 0 || err != nil || !time.Now().Before(holdDeadline) {
+			responseMsg := RecentChangeResponseMessage{
+				Changes:      utils.UniqueStrings(recentChanges),
+				ServerID:     config.InstanceID,
+				CoveredUntil: now,
+			}
+			if serr := sendMessage(conn, MsgTypeRecentChangeResponse, encodeRecentChangeResponse(responseMsg)); serr != nil {
+				log.Error("Error sending recent change response:", serr)
+			}
+			log.Debugf("Sent recent change response to %s, changes count: %d", conn.RemoteAddr().String(), len(recentChanges))
+			return
+		}
 
-	if err := sendMessage(conn, MsgTypeRecentChangeResponse, responseBytes); err != nil {
-		log.Error("Error sending recent change response:", err)
+		select {
+		case <-sig:
+		case <-time.After(time.Until(holdDeadline)):
+		}
 	}
-	log.Infof("Sent recent change response to %s, changes count: %d", conn.RemoteAddr().String(), len(recentChanges))
 }

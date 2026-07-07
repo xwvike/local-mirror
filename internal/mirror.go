@@ -27,10 +27,6 @@ var (
 	isTaskActive bool       // 标识当前是否有任务在执行
 )
 
-// heartbeatInterval 空闲心跳间隔。必须明显小于服务端的空闲超时
-// （network.ClientIdleTimeout），否则连接会在两次心跳之间被服务端断开
-const heartbeatInterval = 30 * time.Second
-
 // lastChangeCursor 记录变更查询已覆盖到的时间点（unix 秒）。
 // 前后两次查询以此衔接，即使某次追踪被跳过也不会漏掉中间的变更。
 // 任务由 taskMutex 保证串行，无需原子操作。
@@ -273,70 +269,45 @@ func Mirror() {
 	}
 }
 
+// sleepDetectThreshold 长轮询往返最长约 LongPollReadTimeout（60s），
+// 墙钟跳变远超此值即判定刚从系统休眠中醒来
+const sleepDetectThreshold = 3 * time.Minute
+
 func runMirrorTasks(fileClient *network.FileClient) error {
+	// 连接后先全量对账；重连（含休眠后 socket 断开）都会重新走到这里
 	if err := executeTaskWithClient("初始化全量扫描", fileClient, fullScan); err != nil {
 		return err
 	}
 
+	// 有了实时推送，全量扫描退化为低频安全网
 	fullScanInterval := time.Duration(*config.CoolDown) * time.Second
-	changeTrackInterval := time.Duration(*config.DiffInterval) * time.Second
-
-	fullScanChan := make(chan struct{})
-	changeChan := make(chan struct{})
-	heartbeatChan := make(chan struct{})
-	// done 在本函数返回时关闭，ticker goroutine 随之退出，
-	// 否则每次重连都会泄漏一批永远阻塞的 goroutine
-	done := make(chan struct{})
-	defer close(done)
-
-	tickForward := func(interval time.Duration, ch chan struct{}, name string) {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				taskMutex.Lock()
-				busy := isTaskActive
-				taskMutex.Unlock()
-				if busy {
-					log.Infof("%s跳过 - 有任务正在执行", name)
-					continue
-				}
-				select {
-				case ch <- struct{}{}:
-				case <-done:
-					return
-				}
-			case <-done:
-				return
-			}
-		}
-	}
-
-	go tickForward(fullScanInterval, fullScanChan, "全量扫描")
-	go tickForward(changeTrackInterval, changeChan, "变更追踪")
-	// 心跳与其他任务同走 executeTaskWithClient 串行：
-	// 协议是同步请求-响应模型，同一连接上不允许并发收发
-	go tickForward(heartbeatInterval, heartbeatChan, "心跳")
+	lastFullScan := time.Now()
 
 	for {
-		select {
-		case <-fullScanChan:
+		// 长轮询：阻塞等待服务端推送变更（无变更时约 LongPollHold 后返回空）。
+		// 空闲时客户端就阻塞在这一个 socket 读上，零轮询、零额外唤醒
+		beforePoll := time.Now()
+		if err := executeTaskWithClient("变更追踪", fileClient, TrackingChanges); err != nil {
+			return err
+		}
+
+		// 休眠感知：长轮询最多挂 ~60s，墙钟却跳了远超此值 → 刚从休眠醒来。
+		// 服务端 changed_dirs 只保留 1 小时，睡久了增量窗口不可信，强制全量对账
+		if elapsed := time.Since(beforePoll); elapsed > sleepDetectThreshold {
+			log.Warnf("检测到长时间休眠（%v），强制全量对账", elapsed.Round(time.Second))
+			if err := executeTaskWithClient("休眠唤醒全量扫描", fileClient, fullScan); err != nil {
+				return err
+			}
+			lastFullScan = time.Now()
+			continue
+		}
+
+		// 低频全量扫描安全网，兜住推送链路任何潜在遗漏
+		if time.Since(lastFullScan) >= fullScanInterval {
 			if err := executeTaskWithClient("全量扫描", fileClient, fullScan); err != nil {
 				return err
 			}
-
-		case <-changeChan:
-			if err := executeTaskWithClient("变更追踪", fileClient, TrackingChanges); err != nil {
-				return err
-			}
-
-		case <-heartbeatChan:
-			if err := executeTaskWithClient("心跳", fileClient, func(c *network.FileClient) error {
-				return c.Ping()
-			}); err != nil {
-				return err
-			}
+			lastFullScan = time.Now()
 		}
 	}
 }
@@ -365,15 +336,14 @@ func fullScan(fileClient *network.FileClient) error {
 }
 
 func TrackingChanges(fileClient *network.FileClient) error {
-	endTime := time.Now().Unix()
-	change, err := fileClient.GetTreeChange(lastChangeCursor, endTime)
+	change, coveredUntil, err := fileClient.GetTreeChange(lastChangeCursor)
 	if err != nil {
 		return handleConnectionError(err, fileClient)
 	}
 
 	if len(change) == 0 {
-		log.Info("No changes detected in the tree")
-		lastChangeCursor = endTime
+		// 长轮询保活返回，无变更；推进游标到服务端已覆盖时刻
+		lastChangeCursor = coveredUntil
 		return nil
 	}
 	allPaths := extractMinimalPathsFromChanges(change)
@@ -395,7 +365,8 @@ func TrackingChanges(fileClient *network.FileClient) error {
 	if err := drainNextLevel(fileClient, false); err != nil {
 		return err
 	}
-	lastChangeCursor = endTime
+	// 游标推进到服务端本次已覆盖的时刻，不重叠不遗漏
+	lastChangeCursor = coveredUntil
 	return nil
 }
 

@@ -36,6 +36,15 @@ var noiseCipherSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPol
 // 端口扫描时它比"端口拒连"更有定位价值（通常意味着口令配置不一致）
 var ErrSecureHandshake = errors.New("加密握手失败")
 
+// enableKeepAlive 在 TCP 连接上开启 keepalive，长轮询挂起期间连接
+// 长时间无应用层流量，靠它在 OS 层检测死对端
+func enableKeepAlive(conn net.Conn) {
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+	}
+}
+
 // DerivePSK 从用户口令派生 32 字节预共享密钥。
 // 加入固定前缀做域分离，避免口令在其他场景复用时产生相同密钥
 func DerivePSK(secret string) []byte {

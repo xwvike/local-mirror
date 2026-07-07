@@ -23,6 +23,29 @@ var (
 	addChangeTimerActive bool
 )
 
+// 变更广播：目录变更落库后唤醒服务端挂起的长轮询请求。
+// 用"关闭并替换 channel"实现一对多广播——等待方每次 select 前
+// 通过 ChangeSignal() 取当前 channel，落库时 close 唤醒所有等待者。
+var (
+	changeSignalMu sync.Mutex
+	changeSignalCh = make(chan struct{})
+)
+
+// ChangeSignal 返回一个在下一次变更落库时会被关闭的 channel。
+// 调用方必须在每次查询前重新获取，才能捕捉到查询与等待之间发生的变更。
+func ChangeSignal() <-chan struct{} {
+	changeSignalMu.Lock()
+	defer changeSignalMu.Unlock()
+	return changeSignalCh
+}
+
+func broadcastChange() {
+	changeSignalMu.Lock()
+	defer changeSignalMu.Unlock()
+	close(changeSignalCh)
+	changeSignalCh = make(chan struct{})
+}
+
 // AddRecentChangedDir 记录发生变更的目录，2 秒节流后批量落库。
 // 注意是节流不是防抖：持续的事件流不会不断推迟落库，
 // 否则客户端按时间窗查询时会错过这些迟到的记录。
@@ -50,7 +73,11 @@ func AddRecentChangedDir(dirPath string) {
 		}
 		if err := addChangedDir(batch); err != nil {
 			log.Error("Failed to add changed directories:", err)
+			return
 		}
+		// 落库成功后才广播：客户端查询的是持久化的 changed_dirs，
+		// 广播早于落库会让被唤醒的查询扑空
+		broadcastChange()
 	})
 	addChangeTimerActive = true
 }

@@ -41,6 +41,8 @@ func dialConn(addr string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
 	}
+	// 长轮询期间连接长时间静默，开启 TCP keepalive 让 OS 层更快发现死对端
+	enableKeepAlive(conn)
 	if *config.Secret != "" {
 		secured, err := SecureConn(conn, *config.Secret, true)
 		if err != nil {
@@ -70,8 +72,8 @@ func (cm *ConnectionManager) GetConnection() (net.Conn, error) {
 	cm.mutex.RLock()
 	defer cm.mutex.RUnlock()
 
-	// 连接的实际有效性由周期心跳（FileClient.Ping）保证，
-	// 心跳失败时上层会关闭并重建连接
+	// 连接有效性由变更长轮询的往返保证（每 ≤LongPollHold 一次），
+	// 读超时/服务端实例变化都会触发上层关闭并重建连接
 	if cm.conn != nil {
 		return cm.conn, nil
 	}
@@ -549,48 +551,58 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	}
 }
 
-// GetTreeChange 查询服务端在 [startTime, endTime] 时间段内发生变更的目录。
-// 时间窗游标由调用方维护，保证前后两次查询无缝衔接，不丢变更。
-func (c *FileClient) GetTreeChange(startTime, endTime int64) ([]string, error) {
+// LongPollReadTimeout 客户端长轮询的读超时。
+// 必须大于服务端挂起上限（network.LongPollHold），否则会在服务端
+// 正常保活返回前误判超时
+const LongPollReadTimeout = 60 * time.Second
+
+// GetTreeChange 发起一次变更长轮询：请求自 startTime 起的变更，
+// 服务端有变更立即返回、否则挂起至保活上限。返回变更目录列表与
+// coveredUntil（服务端已覆盖到的时刻，调用方据此推进游标，杜绝重叠/遗漏）。
+func (c *FileClient) GetTreeChange(startTime int64) (changes []string, coveredUntil int64, err error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
-		return nil, fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
+		return nil, 0, fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
 	}
+	// 读超时必须覆盖服务端挂起上限，挂起本身不算连接异常
+	conn.SetReadDeadline(time.Now().Add(LongPollReadTimeout))
+	defer conn.SetReadDeadline(time.Time{})
+
 	request := RecentChangeRequestMessage{
 		ClientID:  config.InstanceID,
 		startTime: startTime,
-		endTime:   endTime,
+		endTime:   time.Now().Unix(), // 服务端以自身时刻为上界，此字段仅作参考
 	}
 	requestBytes := encodeRecentChangeRequest(request)
 	if err := sendMessage(conn, MsgTypeRecentChangeRequest, requestBytes); err != nil {
-		return nil, fmt.Errorf("%w: failed to send recent change request: %v", appError.ErrConnection, err)
+		return nil, 0, fmt.Errorf("%w: failed to send recent change request: %v", appError.ErrConnection, err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return nil, fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
+		return nil, 0, fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
 	}
 	if msgType == MsgTypeError {
-		errorMsg, err := decodeErrorMessage(bodyBytes)
-		if err != nil {
-			return nil, fmt.Errorf("%w: failed to decode error message: %v", appError.ErrConnection, err)
+		errorMsg, derr := decodeErrorMessage(bodyBytes)
+		if derr != nil {
+			return nil, 0, fmt.Errorf("%w: failed to decode error message: %v", appError.ErrConnection, derr)
 		}
-		return nil, fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
+		return nil, 0, fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
 	}
 	if msgType != MsgTypeRecentChangeResponse {
-		return nil, fmt.Errorf("invalid recent change response message type, got %d", msgType)
+		return nil, 0, fmt.Errorf("invalid recent change response message type, got %d", msgType)
 	}
-	recentChangeResponse, err := decodeRecentChangeResponse(bodyBytes)
+	resp, err := decodeRecentChangeResponse(bodyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("%w: failed to decode recent change response: %v", appError.ErrConnection, err)
+		return nil, 0, fmt.Errorf("%w: failed to decode recent change response: %v", appError.ErrConnection, err)
 	}
-	if len(recentChangeResponse.Changes) == 0 {
-		log.Warnf("Received empty recent change response from %s", c.RealityAddr)
-		return []string{}, nil
+	// 服务端实例变化（悄悄重启）→ 本地缓存树不可信，按连接错误触发会话重建
+	if resp.ServerID != c.realityID {
+		return nil, 0, fmt.Errorf("%w: server instance changed, expected %08x, got %08x",
+			appError.ErrConnection, c.realityID, resp.ServerID)
 	}
-	log.Infof("Received recent change response from %s, changes count: %d",
-		c.RealityAddr,
-		len(recentChangeResponse.Changes))
-	log.Debugf("Received recent change response: %v", recentChangeResponse.Changes)
-	return recentChangeResponse.Changes, nil
-
+	if len(resp.Changes) > 0 {
+		log.Infof("Received %d changed dirs from %s", len(resp.Changes), c.RealityAddr)
+		log.Debugf("Changed dirs: %v", resp.Changes)
+	}
+	return resp.Changes, resp.CoveredUntil, nil
 }

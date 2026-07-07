@@ -116,8 +116,9 @@ type RecentChangeRequestMessage struct {
 
 // 最近变更响应消息
 type RecentChangeResponseMessage struct {
-	Changes  []string // 最近变更的目录列表
-	ServerID uint32   // 客户端标识
+	Changes      []string // 最近变更的目录列表
+	ServerID     uint32   // 服务端标识
+	CoveredUntil int64    // 本次响应已覆盖到的服务端时刻（秒），客户端据此推进游标
 }
 
 // 心跳请求消息
@@ -576,6 +577,7 @@ func decodeRecentChangeRequest(data []byte) (RecentChangeRequestMessage, error) 
 func encodeRecentChangeResponse(msg RecentChangeResponseMessage) []byte {
 	buf := new(bytes.Buffer)
 	_ = binary.Write(buf, binary.BigEndian, msg.ServerID)
+	_ = binary.Write(buf, binary.BigEndian, msg.CoveredUntil)
 
 	changeCount := len(msg.Changes)
 	_ = binary.Write(buf, binary.BigEndian, uint32(changeCount))
@@ -594,6 +596,10 @@ func decodeRecentChangeResponse(data []byte) (RecentChangeResponseMessage, error
 
 	if err := binary.Read(buf, binary.BigEndian, &msg.ServerID); err != nil {
 		log.Error("Error decoding recent change response server ID:", err)
+		return msg, err
+	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.CoveredUntil); err != nil {
+		log.Error("Error decoding recent change response covered-until:", err)
 		return msg, err
 	}
 

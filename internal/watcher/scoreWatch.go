@@ -93,7 +93,7 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 		Watcher:         watcher,
 		maxfilesperproc: _maxWatches,
 		tier1Limit:      _maxWatches / 2,
-		tier2Interval:   3 * time.Second,
+		tier2Interval:   30 * time.Second,
 		heatMap:         make(map[string]*HeatScore),
 		tier1:           make([]*HeatScore, 0),
 		tier2:           make([]*HeatScore, 0),
@@ -278,32 +278,51 @@ func (sw *ScoreWatch) removeOldWatchers(oldTier1, newTier1 []*HeatScore) {
 	}
 }
 
-func (sw *ScoreWatch) monitorTier2() {
-	ticker := time.NewTicker(sw.tier2Interval)
-	defer ticker.Stop()
+// tier2MaxInterval tier2 自适应退避的上限。冷目录长期无变化时，
+// 轮询间隔从 tier2Interval 指数拉长到此值，避免持续唤醒 CPU 耗电
+const tier2MaxInterval = 5 * time.Minute
 
+func (sw *ScoreWatch) monitorTier2() {
+	base := sw.tier2Interval
+	interval := base
 	tier2Index := 0
+
+	// 用可重置的 timer 而非固定 ticker：检测到变化就回到基础间隔积极轮询，
+	// 连续空转则指数退避，让空闲的机器能进入深度 idle
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 
 	// tier2 会随 performScan 重建，为空时跳过本轮而不是退出，
 	// 否则后续再有目录降级到 tier2 就没人轮询了
 	for {
 		select {
-		case <-ticker.C:
+		case <-timer.C:
 			sw.mu.Lock()
-			if len(sw.tier2) == 0 {
-				sw.mu.Unlock()
-				continue
+			var heat *HeatScore
+			if n := len(sw.tier2); n > 0 {
+				if tier2Index >= n {
+					tier2Index = 0
+				}
+				heat = sw.tier2[tier2Index]
+				tier2Index++
 			}
-			if tier2Index >= len(sw.tier2) {
-				tier2Index = 0
-			}
-			heat := sw.tier2[tier2Index]
 			sw.mu.Unlock()
-			tier2Index++
 
-			if err := hasDirectoryChanged(heat.Path); err != nil {
-				log.Warnf("Failed to check directory change for %s: %v", heat.Path, err)
+			changed := false
+			if heat != nil {
+				c, err := hasDirectoryChanged(heat.Path)
+				if err != nil {
+					log.Warnf("Failed to check directory change for %s: %v", heat.Path, err)
+				}
+				changed = c
 			}
+
+			if changed {
+				interval = base
+			} else {
+				interval = min(interval*2, tier2MaxInterval)
+			}
+			timer.Reset(interval)
 
 		case <-sw.ctx.Done():
 			return
@@ -311,12 +330,14 @@ func (sw *ScoreWatch) monitorTier2() {
 	}
 }
 
-func hasDirectoryChanged(path string) error {
+// hasDirectoryChanged 比对目录当前内容与缓存，为每个差异合成 fsnotify 事件。
+// 返回是否检测到任何变化，供 tier2 轮询做自适应退避
+func hasDirectoryChanged(path string) (bool, error) {
 	oldContents, err := tree.GetDirContents(path)
 	fullPath := filepath.Join(config.StartPath, path)
 
 	if err != nil {
-		return fmt.Errorf("failed to get directory contents: %w", err)
+		return false, fmt.Errorf("failed to get directory contents: %w", err)
 	}
 	oldNodes := make(map[string]tree.Node, len(oldContents))
 	for _, node := range oldContents {
@@ -324,44 +345,45 @@ func hasDirectoryChanged(path string) error {
 	}
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
-		return nil
+		return false, nil
 	}
+	changed := false
 	newNodes := make(map[string]os.DirEntry, len(entries))
 	for _, entry := range entries {
 		nodePath := filepath.Join(path, entry.Name())
 		newNodes[nodePath] = entry
 		oldNode, exists := oldNodes[nodePath]
 		if !exists {
-			event := &fsnotify.Event{
+			eventFilter(fsnotify.Event{
 				Name: filepath.Join(fullPath, entry.Name()),
 				Op:   fsnotify.Create,
-			}
-			eventFilter(*event)
+			})
+			changed = true
 			continue
 		}
 		// 已存在的文件比较大小和修改时间，捕捉内容修改
 		if !entry.IsDir() {
 			if info, err := entry.Info(); err == nil &&
 				(uint64(info.Size()) != oldNode.Size || !info.ModTime().Equal(oldNode.ModTime)) {
-				event := &fsnotify.Event{
+				eventFilter(fsnotify.Event{
 					Name: filepath.Join(fullPath, entry.Name()),
 					Op:   fsnotify.Write,
-				}
-				eventFilter(*event)
+				})
+				changed = true
 			}
 		}
 	}
 	for _, entry2 := range oldContents {
 		nodePath := entry2.Path
 		if _, exists := newNodes[nodePath]; !exists {
-			event := &fsnotify.Event{
+			eventFilter(fsnotify.Event{
 				Name: filepath.Join(fullPath, entry2.Name),
 				Op:   fsnotify.Remove,
-			}
-			eventFilter(*event)
+			})
+			changed = true
 		}
 	}
-	return nil
+	return changed, nil
 }
 
 func (sw *ScoreWatch) handleEvents() {
