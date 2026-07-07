@@ -100,7 +100,6 @@ internal/
 pkg/
   stack/             泛型栈
   utils/             哈希、路径规范化、忽略规则等工具
-docs/                开发笔记
 ```
 
 ## 运行时产物
