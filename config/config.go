@@ -42,6 +42,7 @@ var (
 	RealityIP       *string
 	Secret          *string
 	Path            *string
+	AllowDelete     *bool
 	Help            *bool
 	Version         *bool
 	ActualPort      int    = 0          // 服务端实际监听的端口（启动时探测确定）
@@ -76,7 +77,7 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "              从 TCP %d 起自动选择第一个可用端口，实际端口见启动信息\n", DefaultPort)
 	fmt.Fprintf(w, "  mirror      客户端模式：连接服务器，将其目录镜像到本地。\n")
 	fmt.Fprintf(w, "              在 %d-%d 端口范围内自动探测服务端\n", DefaultPort, DefaultPort+PortScanRange-1)
-	fmt.Fprintf(w, "              注意：镜像是单向的，客户端本地多余的文件会被删除\n")
+	fmt.Fprintf(w, "              默认仅增量同步（不删除）；加 --allow-delete 才会删除本地多余文件\n")
 	fmt.Fprintf(w, "  relay       中继模式：从上游服务器镜像到本地，同时向下游提供同步服务，\n")
 	fmt.Fprintf(w, "              可级联组成 A → B → C 传递链。必须用 -r 指定上游\n\n")
 
@@ -87,6 +88,8 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  -c, --cooldown int           全量扫描安全网间隔(秒)，仅客户端: 变更实时推送，此为兜底 (default 1800)\n")
 	fmt.Fprintf(w, "  -f, --filebuffersize uint    文件传输分块大小(字节)，仅服务端 (default 65536)\n")
 	fmt.Fprintf(w, "  -r, --realityip string       上游服务器IP地址（mirror/relay）；mirror 留空回退为 127.0.0.1\n")
+	fmt.Fprintf(w, "      --allow-delete           删除同步：允许删除本地多余文件（默认关闭，仅增量同步）\n")
+	fmt.Fprintf(w, "                               关键路径（如 ~、/etc、系统目录）上会被拒绝启动\n")
 	fmt.Fprintf(w, "  -k, --secret string          传输加密口令（Noise NNpsk0），两端必须一致；\n")
 	fmt.Fprintf(w, "                               为空则明文传输。也可用环境变量 LOCAL_MIRROR_SECRET\n")
 	fmt.Fprintf(w, "  -h, --help                   显示帮助信息\n")
@@ -128,6 +131,10 @@ func init() {
 
 	Path = flag.String("path", "", "同步根目录，默认为当前工作目录")
 	flag.StringVar(Path, "p", "", "同 --path")
+
+	// 默认关闭删除：仅增量同步（create/modify），本地多余文件不删。
+	// 这样源端异常清空不会级联删除下游。完全忠实镜像需显式解锁
+	AllowDelete = flag.Bool("allow-delete", false, "删除同步：允许删除本地多余文件（默认关闭，仅增量同步）")
 
 	LogLevel = flag.String("loglevel", "error", "日志级别: debug, info, warn, error")
 	flag.StringVar(LogLevel, "l", "error", "同 --loglevel")

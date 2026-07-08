@@ -27,8 +27,10 @@ var (
 	isTaskActive bool       // 标识当前是否有任务在执行
 )
 
-// lastChangeCursor 记录变更查询已覆盖到的时间点（unix 秒）。
-// 前后两次查询以此衔接，即使某次追踪被跳过也不会漏掉中间的变更。
+// lastChangeCursor 记录变更查询已覆盖到的服务端时刻（unix 秒）。
+// 该值始终由服务端返回的 CoveredUntil 推进，绝不使用客户端本地时钟，
+// 以免客户端时钟快于服务端时漏查中间窗口的变更（服务端 changed_dirs
+// 只保留 1 小时）。0 表示"从窗口起点全查"，用作重连/全量扫描后的重置。
 // 任务由 taskMutex 保证串行，无需原子操作。
 var lastChangeCursor int64
 
@@ -100,6 +102,13 @@ func executeTaskWithClient(taskName string, fileClient *network.FileClient, task
 func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 	switch v.Action {
 	case "delete":
+		// 默认不删除：仅增量同步，本地多余文件保留。
+		// 这样源端异常清空（路径配错、盘没挂上等）不会级联删除下游。
+		// 需 --allow-delete 显式开启才做真正的忠实镜像删除
+		if !*config.AllowDelete {
+			log.Debugf("跳过删除（未启用 --allow-delete）: %s", v.Path)
+			return nil
+		}
 		err := os.RemoveAll(filepath.Join(config.StartPath, v.Path))
 		if err == nil {
 			tree.DeleteNode(v.Path)
@@ -304,8 +313,17 @@ func applyRename(oldDiff, newDiff DiffResult) error {
 	return nil
 }
 
-// drainNextLevel 逐层消费 NextLevel 中的目录，连接错误时重连并重试当前目录
+// maxDirRetries 单个目录连续失败后放弃的次数上限。
+// 若失败原因是持续性的本地错误（权限、磁盘满等），每次重连后立即重试会
+// 无限速循环——之前一次 ulimit 复现里，1 秒内触发了 1300+ 次重连。
+// 必须既限制重试次数、又在重试前退避，而不是任由其中一种机制单独兜底
+const maxDirRetries = 3
+
+// drainNextLevel 逐层消费 NextLevel 中的目录，连接错误时重连并重试当前目录。
+// 同一目录连续失败达到上限后放弃该目录（记录错误），避免持续性本地错误
+// 导致无退避的重连风暴
 func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
+	retries := make(map[string]int)
 	for NextLevel.Size() > 0 {
 		v, _ := NextLevel.Pop()
 		log.Debugf("Processing next level item: %v 【%d】remaining", v, NextLevel.Size())
@@ -322,9 +340,16 @@ func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 
 		log.Errorf("Error processing directory %s: %v", v.Path, err)
 		if errors.Is(err, appError.ErrConnection) {
+			retries[v.Path]++
+			if retries[v.Path] > maxDirRetries {
+				log.Errorf("目录 %s 连续失败 %d 次，放弃本轮同步", v.Path, retries[v.Path]-1)
+				continue
+			}
 			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
 				return err
 			}
+			// 退避后再重试：给持续性错误留出恢复窗口，也避免忙循环
+			time.Sleep(time.Duration(retries[v.Path]) * time.Second)
 			NextLevel.Push(v)
 		}
 	}
@@ -429,9 +454,11 @@ func fullScan(fileClient *network.FileClient) error {
 		return err
 	}
 
-	// 全量扫描已覆盖到扫描开始时刻，变更游标从这里接力；
-	// 用开始时间而非结束时间，扫描期间发生的变更下次仍会被查到
-	lastChangeCursor = startTime.Unix()
+	// 不用客户端时钟设置游标（会因时钟偏差漏查）。全量扫描后把游标重置为 0，
+	// 下一次变更追踪以 [0, 服务端now] 全查一次窗口（此时多为已同步的空 diff），
+	// 并从服务端返回的 CoveredUntil 重新确立游标，之后全程服务端时钟。
+	// 这也顺带覆盖了扫描期间发生的变更，不会遗漏。
+	lastChangeCursor = 0
 
 	log.Infof("Full scan completed, total time taken: %v", time.Since(startTime))
 	return nil

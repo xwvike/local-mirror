@@ -7,6 +7,7 @@ import (
 	app "local-mirror/internal"
 	"local-mirror/internal/logger"
 	"local-mirror/internal/network"
+	"local-mirror/internal/safety"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"os"
@@ -95,6 +96,16 @@ func main() {
 		os.Exit(2)
 	}
 	config.StartPath = root
+
+	// 启用删除的同步方（mirror/relay）不得运行在关键路径上：
+	// 即使用户主动加了 --allow-delete，也用真实路径（解引用后）拒绝在
+	// ~、/、系统目录等位置删除，作为与用户意图无关的兜底防线
+	if *config.AllowDelete && config.SyncsFromUpstream() {
+		if err := safety.CheckDeletableRoot(root); err != nil {
+			fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+			os.Exit(2)
+		}
+	}
 
 	logger.InitLogger()
 
@@ -199,6 +210,14 @@ func printBanner() {
 		row("传输加密", fmt.Sprintf("%s开启%s (Noise NNpsk0)", p.green, p.reset))
 	} else {
 		row("传输加密", fmt.Sprintf("关闭 %s(明文传输，可用 -k 开启)%s", p.dim, p.reset))
+	}
+	// 仅同步方（mirror/relay）涉及删除，展示当前删除策略
+	if config.SyncsFromUpstream() {
+		if *config.AllowDelete {
+			row("删除同步", fmt.Sprintf("%s开启%s %s(忠实镜像，会删除本地多余文件)%s", p.green, p.reset, p.dim, p.reset))
+		} else {
+			row("删除同步", fmt.Sprintf("关闭 %s(仅增量，本地多余文件保留)%s", p.dim, p.reset))
+		}
 	}
 	row("实例 ID", fmt.Sprintf("%08x", config.InstanceID))
 	row("进程 PID", fmt.Sprintf("%d", os.Getpid()))

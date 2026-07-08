@@ -503,11 +503,16 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				return "", fmt.Errorf("%w: error decoding file data message: %v", appError.ErrConnection, err)
 			}
 			if dataMsg.SessionID != sessionID {
-				return "", fmt.Errorf("invalid session ID in file data message, got %x", dataMsg.SessionID)
+				// 会话 ID 不符说明读到了错位/他人的数据流，连接已不可信，
+				// 必须按连接错误处理触发关闭重连，否则脏字节会污染后续请求
+				return "", fmt.Errorf("%w: invalid session ID in file data message, got %x", appError.ErrConnection, dataMsg.SessionID)
 			}
 
 			if _, err := file.Write(dataMsg.Data); err != nil {
-				return "", fmt.Errorf("error writing file data: %w", err)
+				// 写入失败发生在数据流中间：服务端仍在发送剩余数据，
+				// 此时提前返回会在连接里留下未消费的字节，后续请求将读到
+				// 错位数据被误解析。标记为连接错误，让上层关闭并重建连接
+				return "", fmt.Errorf("%w: error writing file data: %v", appError.ErrConnection, err)
 			}
 			// 不逐块回发 Acknowledge：服务端流式发送期间不读取 socket，
 			// 大文件的确认消息会填满对端接收缓冲，造成双向阻塞死锁；
@@ -519,7 +524,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				return "", fmt.Errorf("%w: error decoding file complete message: %v", appError.ErrConnection, err)
 			}
 			if completeMsg.SessionID != sessionID {
-				return "", fmt.Errorf("invalid session ID in file complete message, got %x", completeMsg.SessionID)
+				return "", fmt.Errorf("%w: invalid session ID in file complete message, got %x", appError.ErrConnection, completeMsg.SessionID)
 			}
 
 			if err := file.Sync(); err != nil {

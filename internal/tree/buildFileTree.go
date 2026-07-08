@@ -190,6 +190,15 @@ func BuildFileTree(path string) error {
 			return nil
 		}
 
+		// 跳过符号链接：绝不追踪、绝不解引用。
+		// 否则服务端会把链接目标（可能在同步根目录之外）的内容当作普通文件
+		// 发给客户端，造成信息泄露/路径穿越；且符号链接的删除也无法被可靠检测。
+		// WalkDir 用 Lstat 语义，d.Type() 能识别链接本身而不追踪目标
+		if d.Type()&fs.ModeSymlink != 0 {
+			log.Warnf("跳过符号链接（不支持同步）: %s", relPath)
+			return nil
+		}
+
 		// 获取文件信息
 		info, err := d.Info()
 		if err != nil {

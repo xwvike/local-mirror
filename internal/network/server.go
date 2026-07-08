@@ -348,6 +348,11 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 	if rel, err := filepath.Rel(config.StartPath, fullPath); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("illegal file path: %s", fileRequest.FilePath)
 	}
+	// 纵深防御：即使目录树里不该出现符号链接，也拒绝对符号链接的请求，
+	// 杜绝解引用读取同步根目录之外的文件（Lstat 不追踪链接本身）
+	if linfo, lerr := os.Lstat(fullPath); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to serve symlink: %s", fileRequest.FilePath)
+	}
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {

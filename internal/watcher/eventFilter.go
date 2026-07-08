@@ -41,6 +41,17 @@ func eventFilter(event fsnotify.Event) {
 
 	switch {
 	case event.Has(fsnotify.Create) || event.Has(fsnotify.Write):
+		// 用 Lstat 而非 Stat：先判断是不是符号链接，若是则跳过不追踪
+		// （与 buildFileTree 一致，防止解引用泄露链接目标内容）
+		linfo, err := os.Lstat(event.Name)
+		if err != nil {
+			log.Error("Error getting file info:", err)
+			return
+		}
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			log.Warnf("跳过符号链接（不支持同步）: %s", relPath)
+			return
+		}
 		fileInfo, err := os.Stat(event.Name)
 		if err != nil {
 			log.Error("Error getting file info:", err)
