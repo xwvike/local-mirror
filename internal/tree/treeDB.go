@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"local-mirror/config"
 	"os"
+	"path/filepath"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -57,10 +58,18 @@ const SchemaVersion = "1"
 var allBuckets = []string{"nodes", "children", "path_index", "meta", "changed_dirs"}
 
 func InitDB() {
+	// 状态目录位于同步根目录下（支持 -p 从任意 CWD 启动）
+	stateDir := filepath.Join(config.StartPath, ".local-mirror")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		log.Errorf("创建状态目录失败: %v", err)
+		os.Exit(1)
+	}
+
 	var err error
 	// 必须设置 Timeout：bbolt 依赖文件锁，同一目录再启动一个实例时
-	// 不带超时的 Open 会无限期阻塞，进程看起来像卡死
-	DB, err = bolt.Open("./.local-mirror/cache.db", 0600, &bolt.Options{Timeout: 3 * time.Second})
+	// 不带超时的 Open 会无限期阻塞，进程看起来像卡死。
+	// 这个锁同时充当"每目录单实例"的互斥量，与模式组合无关
+	DB, err = bolt.Open(filepath.Join(stateDir, "cache.db"), 0600, &bolt.Options{Timeout: 3 * time.Second})
 	if err != nil {
 		log.Errorf("打开数据库失败（该目录可能已有另一个 local-mirror 实例在运行）: %v", err)
 		os.Exit(1)

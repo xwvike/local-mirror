@@ -25,6 +25,9 @@
 - **内容级比对**：基于 blake3 哈希 + 文件大小判断差异，不会重复传输未变化的文件
 - **保真镜像**：下载后将镜像文件的修改时间对齐服务端源文件；同目录内的重命名
   被识别为移动，本地 `os.Rename` 完成，不重新下载整个文件
+- **中继级联**：`relay` 模式一个进程同时作为下游的服务端与上游的客户端，
+  组成 A → B → C 传递链；变更沿链实时传播，重命名在每一跳都免重传，
+  mtime 全链一致。自连接防护避免中继在端口扫描时接到自己
 - **可靠传输**：分块传输，落盘走"分片文件 → 全文件哈希校验 → 原子改名"，不会留下半截文件
 - **断点续传**：下载中断后分片保留在 `.local-mirror/partial/`，重试时从断点继续；
   服务端文件在中断期间变化会被指纹识破，自动丢弃分片重新下载
@@ -42,11 +45,14 @@
 ## 快速开始
 
 ```bash
-# 服务端：cd 到要共享的目录
-cd /path/to/source && local-mirror -m reality
+# 服务端：共享指定目录（-p 省略时为当前工作目录）
+local-mirror -m reality -p /path/to/source
 
-# 客户端：cd 到接收镜像的目录
-cd /path/to/replica && local-mirror -m mirror -r 192.168.1.100
+# 客户端：把服务端目录镜像到本地
+local-mirror -m mirror -r 192.168.1.100 -p /path/to/replica
+
+# 中继：从上游镜像下来，同时向下游提供服务（可级联 A → B → C）
+local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
 ```
 
 启动后会输出状态横幅（实际监听端口、同步目录、日志位置等）：
@@ -67,8 +73,9 @@ cd /path/to/replica && local-mirror -m mirror -r 192.168.1.100
 
 | 参数 | 说明 | 默认值 |
 |---|---|---|
-| `-m, --mode` | 运行模式：`reality`（服务端）/ `mirror`（客户端） | `reality` |
-| `-r, --realityip` | 服务器 IP，仅客户端；空值回退连接 127.0.0.1 | 空 |
+| `-m, --mode` | 运行模式：`reality`（服务端）/ `mirror`（客户端）/ `relay`（中继） | `reality` |
+| `-p, --path` | 同步根目录（状态目录 `.local-mirror` 也位于其下），适合服务化部署 | 当前工作目录 |
+| `-r, --realityip` | 上游服务器 IP（mirror/relay）；mirror 留空回退连接 127.0.0.1，relay 必填 | 空 |
 | `-c, --cooldown` | 全量扫描安全网间隔（秒），仅客户端；变更本身实时推送，此为兜底 | `1800` |
 | `-f, --filebuffersize` | 文件传输分块大小（字节），仅服务端 | `65536` |
 | `-k, --secret` | 传输加密口令（两端一致才能通信），空则明文；也可用环境变量 `LOCAL_MIRROR_SECRET` | 空 |
@@ -88,6 +95,23 @@ go build -o local-mirror ./cmd/local-mirror
 ./build.sh        # Linux / macOS
 ./build.ps1       # Windows
 ```
+
+## 服务化部署（systemd）
+
+配合 `-p` 指定同步目录，无需 cd 即可从任何位置（包括服务管理器）启动。
+仓库提供了 systemd 服务示例：[deploy/local-mirror.service](deploy/local-mirror.service)。
+
+```bash
+sudo cp local-mirror /usr/local/bin/
+sudo cp deploy/local-mirror.service /etc/systemd/system/
+# 编辑 ExecStart 中的模式/目录/上游地址后：
+sudo systemctl daemon-reload
+sudo systemctl enable --now local-mirror
+journalctl -u local-mirror -f    # 横幅与错误输出
+```
+
+加密口令建议通过 `Environment=LOCAL_MIRROR_SECRET=...` 或 `EnvironmentFile=`
+注入，避免出现在 `ps` 输出中。
 
 ## 工作原理
 

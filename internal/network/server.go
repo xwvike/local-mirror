@@ -457,6 +457,12 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*Handshak
 	if err != nil {
 		return nil, fmt.Errorf("%w, failed to decode handshake: %w", appError.ErrConnection, err)
 	}
+	// 协议版本必须一致：v2 起变更查询为长轮询语义，混用新旧端会导致
+	// 一侧空转或解码错位，握手阶段直接拒绝
+	if handshakeMsg.Version != config.ProtocolVersion {
+		return nil, fmt.Errorf("%w, protocol version mismatch: server=%d, client=%d",
+			appError.ErrConnection, config.ProtocolVersion, handshakeMsg.Version)
+	}
 	log.Infof("Received handshake message: version: %d, clientID: %d",
 		handshakeMsg.Version,
 		handshakeMsg.UUID)

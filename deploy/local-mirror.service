@@ -1,0 +1,41 @@
+# local-mirror systemd 服务示例
+#
+# 安装：
+#   sudo cp local-mirror.service /etc/systemd/system/
+#   按需修改 ExecStart 中的模式、目录与上游地址
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now local-mirror
+#
+# 查看状态与日志：
+#   systemctl status local-mirror
+#   journalctl -u local-mirror -f          # stdout/stderr（横幅与错误）
+#   tail -f /srv/data/.local-mirror/logs/error.log
+
+[Unit]
+Description=Local Mirror directory sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 服务端示例；客户端改为: -m mirror -r <上游IP> -p /srv/replica
+# 中继改为:            -m relay  -r <上游IP> -p /srv/relay
+ExecStart=/usr/local/bin/local-mirror -m reality -p /srv/data -l warn
+# 传输加密口令建议用环境变量而非命令行参数（避免出现在 ps 输出中）
+#Environment=LOCAL_MIRROR_SECRET=changeme
+#EnvironmentFile=/etc/local-mirror/secret.env
+
+Restart=on-failure
+RestartSec=5s
+
+# 按需以低权限用户运行（须对同步目录有读写权限）
+#User=localmirror
+#Group=localmirror
+
+# 基础加固
+NoNewPrivileges=true
+ProtectSystem=full
+#ReadWritePaths=/srv/data
+
+[Install]
+WantedBy=multi-user.target

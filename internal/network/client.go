@@ -229,6 +229,16 @@ func (c *FileClient) Handshake() error {
 	if err != nil {
 		return fmt.Errorf("failed to decode handshake:  %w", err)
 	}
+	// 自连接防护：中继模式下客户端扫描 localhost 端口时可能撞上
+	// 自己的服务端（镜像自己到自己），据 InstanceID 识别并跳过
+	if handshakeResponse.UUID == config.InstanceID {
+		return fmt.Errorf("connected to self (instance %08x), skipping", config.InstanceID)
+	}
+	// 协议版本必须一致（v2 起变更查询为长轮询语义）
+	if handshakeResponse.Version != config.ProtocolVersion {
+		return fmt.Errorf("protocol version mismatch: local=%d, server=%d",
+			config.ProtocolVersion, handshakeResponse.Version)
+	}
 	c.realityVersion = handshakeResponse.Version
 	c.realityID = handshakeResponse.UUID
 	c.State = Online

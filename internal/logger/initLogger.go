@@ -18,8 +18,10 @@ func (f *SimpleFormatter) Format(entry *log.Entry) ([]byte, error) {
 	return []byte(logLine), nil
 }
 
+// getLogDir 日志目录位于同步根目录下，而非进程 CWD——
+// 支持 -p 指定目录后从任意位置（如 systemd）启动
 func getLogDir() string {
-	return "./.local-mirror/logs"
+	return filepath.Join(config.StartPath, ".local-mirror", "logs")
 }
 
 // LogPath 返回日志文件路径，供启动信息展示

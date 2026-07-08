@@ -154,6 +154,17 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 	return nil
 }
 
+// recordChangedDir 中继模式下，把 mirror 引擎应用的变更记入本地变更日志，
+// 唤醒下游客户端的长轮询。这比依赖 fsnotify 更精确——中继目录的变更
+// 全部来自 mirror 引擎自身，且不受冷目录轮询延迟影响。
+// 纯 mirror 模式没有下游，跳过以省去无谓的落库
+func recordChangedDir(relPath string) {
+	if !config.ServesDownstream() {
+		return
+	}
+	tree.AddRecentChangedDir(filepath.Dir(relPath))
+}
+
 // applyModTime 将本地文件的修改时间对齐到服务端源文件
 func applyModTime(v DiffResult) {
 	if v.ModTime.IsZero() {
@@ -199,6 +210,7 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool) 
 			log.Errorf("Error processing diff item %v: %v", v, err)
 			continue
 		}
+		recordChangedDir(v.Path)
 		if v.IsDir && v.Action != "delete" {
 			diffDirs[v.Path] = true
 			NextLevel.Push(v)
@@ -283,7 +295,13 @@ func applyRename(oldDiff, newDiff DiffResult) error {
 	if err := tree.DeleteNode(oldDiff.Path); err != nil {
 		return err
 	}
-	return tree.AddNodes([]*tree.Node{createNodeFromDiff(newDiff, newDiff.Hash)})
+	if err := tree.AddNodes([]*tree.Node{createNodeFromDiff(newDiff, newDiff.Hash)}); err != nil {
+		return err
+	}
+	// 重命名影响新旧两个父目录
+	recordChangedDir(oldDiff.Path)
+	recordChangedDir(newDiff.Path)
+	return nil
 }
 
 // drainNextLevel 逐层消费 NextLevel 中的目录，连接错误时重连并重试当前目录

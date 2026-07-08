@@ -35,8 +35,15 @@ func App() {
 		go Reality()
 	case "mirror":
 		go Mirror()
+	case "relay":
+		// 中继 = mirror 引擎 + reality 服务端，共享同一目录与数据库。
+		// 不启动 fsnotify 监视器：中继目录的变更全部来自 mirror 引擎，
+		// 它在应用每个 diff 后直接记录变更目录（见 recordChangedDir），
+		// 比 watcher 更精确，且不受 tier2 冷目录轮询延迟影响
+		go Reality()
+		go Mirror()
 	default:
-		log.Fatalf("未知运行模式: %s (可选: reality, mirror)", *config.Mode)
+		log.Fatalf("未知运行模式: %s (可选: reality, mirror, relay)", *config.Mode)
 	}
 
 	sigChan := make(chan os.Signal, 1)

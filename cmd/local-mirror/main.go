@@ -10,6 +10,7 @@ import (
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -23,13 +24,31 @@ var version = "dev"
 func init() {
 	config.InstanceID = utils.GenerateRandomNum()
 	config.StartTime = time.Now().Unix()
-	wd, err := os.Getwd()
-	if err != nil {
-		// 此时日志尚未初始化，直接写 stderr
-		fmt.Fprintf(os.Stderr, "local-mirror: 获取当前工作目录失败: %v\n", err)
-		os.Exit(1)
+}
+
+// resolveSyncRoot 确定同步根目录：-p 优先，否则当前工作目录；
+// 必须是已存在的目录，返回绝对路径
+func resolveSyncRoot() (string, error) {
+	root := *config.Path
+	if root == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("获取当前工作目录失败: %v", err)
+		}
+		root = wd
 	}
-	config.StartPath = wd
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("无法解析路径 %q: %v", root, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("同步目录不存在: %s", abs)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("同步路径不是目录: %s", abs)
+	}
+	return abs, nil
 }
 
 func main() {
@@ -54,7 +73,7 @@ func main() {
 		os.Exit(2)
 	}
 	if _, ok := config.ModeMap[*config.Mode]; !ok {
-		fmt.Fprintf(os.Stderr, "local-mirror: 无效的运行模式 %q (可选: reality, mirror)\n", *config.Mode)
+		fmt.Fprintf(os.Stderr, "local-mirror: 无效的运行模式 %q (可选: reality, mirror, relay)\n", *config.Mode)
 		os.Exit(2)
 	}
 	switch *config.LogLevel {
@@ -63,12 +82,38 @@ func main() {
 		fmt.Fprintf(os.Stderr, "local-mirror: 无效的日志级别 %q (可选: debug, info, warn, error)\n", *config.LogLevel)
 		os.Exit(2)
 	}
+	// 中继必须显式指定上游：留空回退 127.0.0.1 几乎必然是配置错误
+	// （本机 127.0.0.1 上大概率只有它自己的服务端）
+	if *config.Mode == "relay" && *config.RealityIP == "" {
+		fmt.Fprintf(os.Stderr, "local-mirror: relay 模式必须用 -r 指定上游服务器地址\n")
+		os.Exit(2)
+	}
+
+	root, err := resolveSyncRoot()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+		os.Exit(2)
+	}
+	config.StartPath = root
 
 	logger.InitLogger()
 
-	// 服务端在打印横幅前先绑定端口（从 DefaultPort 起自动探测），
-	// 横幅里展示的才是真实监听端口；accept 循环稍后由 Reality 启动
-	if *config.Mode == "reality" {
+	// 先取目录锁（bbolt 文件锁，同目录单实例互斥），再绑定端口、打印横幅。
+	// 顺序反了会出现"横幅宣布成功后才因锁退出"的误导，以及一个
+	// accept 循环永远不会启动的幽灵端口
+	tree.InitDB()
+	defer func() {
+		if tree.DB != nil {
+			if err := tree.DB.Close(); err != nil {
+				log.Errorf("关闭数据库时出错: %v", err)
+			}
+		}
+	}()
+
+	// 对下游提供服务的模式（reality/relay）在打印横幅前先绑定端口
+	// （从 DefaultPort 起自动探测），横幅里展示的才是真实监听端口；
+	// accept 循环稍后由 Reality 启动
+	if config.ServesDownstream() {
 		listener, port, err := network.ListenAvailable(config.DefaultPort, config.PortScanRange)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
@@ -81,14 +126,6 @@ func main() {
 	printBanner()
 	log.Infof("启动: version=%s mode=%s instance=%08x root=%s", version, *config.Mode, config.InstanceID, config.StartPath)
 
-	tree.InitDB()
-	defer func() {
-		if tree.DB != nil {
-			if err := tree.DB.Close(); err != nil {
-				log.Errorf("关闭数据库时出错: %v", err)
-			}
-		}
-	}()
 	app.App()
 }
 
@@ -139,25 +176,24 @@ func printBanner() {
 		fmt.Printf("  %s%s%s%s%s\n", p.dim, label, p.reset, pad, value)
 	}
 
-	modeDesc := "服务器"
-	if *config.Mode == "mirror" {
-		modeDesc = "客户端"
-	}
+	modeDescMap := map[string]string{"reality": "服务器", "mirror": "客户端", "relay": "中继"}
+	modeDesc := modeDescMap[*config.Mode]
 
 	fmt.Println(line)
 	fmt.Printf("  %s%sLocal Mirror%s %s  ·  %s%s%s (%s)\n",
 		p.bold, p.cyan, p.reset, version, p.bold, *config.Mode, p.reset, modeDesc)
 	fmt.Println(line)
 	row("同步目录", config.StartPath)
-	if *config.Mode == "reality" {
-		row("监听地址", fmt.Sprintf("%s0.0.0.0:%d%s", p.green, config.ActualPort, p.reset))
-	} else {
+	if config.SyncsFromUpstream() {
 		ip := *config.RealityIP
 		if ip == "" {
 			ip = "127.0.0.1"
 		}
-		row("目标服务器", fmt.Sprintf("%s%s%s %s(端口探测 %d-%d)%s",
+		row("上游服务器", fmt.Sprintf("%s%s%s %s(端口探测 %d-%d)%s",
 			p.green, ip, p.reset, p.dim, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, p.reset))
+	}
+	if config.ServesDownstream() {
+		row("监听地址", fmt.Sprintf("%s0.0.0.0:%d%s", p.green, config.ActualPort, p.reset))
 	}
 	if *config.Secret != "" {
 		row("传输加密", fmt.Sprintf("%s开启%s (Noise NNpsk0)", p.green, p.reset))
