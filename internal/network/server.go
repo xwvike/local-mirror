@@ -84,11 +84,10 @@ func (c *client) UpdateLastActiveTime() {
 // 但旧连接对应的 goroutine 可能因为迟迟才检测到自己已失效（例如还在阻塞地
 // 尝试发送文件数据），在那之后才执行清理逻辑——如果直接无条件 Delete(ID)，
 // 删掉的其实是新连接刚注册的条目，导致新连接被服务端误判为"找不到客户端"
-// 而遭到关闭。用 CAS 语义（先比较是否仍是自己）杜绝这个竞态。
+// 而遭到关闭。必须用原子的 CompareAndDelete：Load 后再 Delete 的两步写法
+// 在两步之间仍可能被新连接的 Store 插入，竞态只是变窄而没有消除。
 func (s *fileServer) removeClientIfCurrent(id uint32, expected *client) {
-	if stored, ok := s.clientMap.Load(id); ok && stored == expected {
-		s.clientMap.Delete(id)
-	}
+	s.clientMap.CompareAndDelete(id, expected)
 }
 
 func (s *fileServer) GetAllClients() []*client {

@@ -185,6 +185,11 @@ func (c *FileClient) Reverify() error {
 	if err != nil {
 		return fmt.Errorf("reverify failed to get connection: %w", err)
 	}
+	// 与 Handshake 相同的限时：重连时对端可能 TCP 可达但已不应答，
+	// 不限时会让 Reconnect 无限期阻塞，整个同步循环挂死
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	defer conn.SetDeadline(time.Time{})
+
 	handshakeMsg := HandshakeMessage{
 		Version: config.ProtocolVersion,
 		UUID:    config.InstanceID,

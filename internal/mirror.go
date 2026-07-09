@@ -188,6 +188,10 @@ func applyModTime(v DiffResult) {
 // maxItemRetries 单个 diff 项（通常是文件）连续触发连接错误后拉黑的次数上限。
 // 目录内某一项持续失败（权限、磁盘满等本地错误）不应该无限期拖累同目录
 // 其余正常文件的同步——拉黑后该项在本轮内不再尝试，其余项照常处理。
+//
+// 不变量：必须满足 maxItemRetries <= maxDirRetries。问题文件的前
+// maxItemRetries 次失败会累积目录级失败计数（拉黑发生后才清零），
+// 若本值更大，目录会在文件被拉黑之前先耗尽重试预算被整体放弃。
 const maxItemRetries = 3
 
 // getDirectory 同步单个目录：拉取服务端目录列表、执行差异处理，
