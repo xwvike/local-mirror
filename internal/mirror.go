@@ -185,11 +185,18 @@ func applyModTime(v DiffResult) {
 	}
 }
 
+// maxItemRetries 单个 diff 项（通常是文件）连续触发连接错误后拉黑的次数上限。
+// 目录内某一项持续失败（权限、磁盘满等本地错误）不应该无限期拖累同目录
+// 其余正常文件的同步——拉黑后该项在本轮内不再尝试，其余项照常处理。
+const maxItemRetries = 3
+
 // getDirectory 同步单个目录：拉取服务端目录列表、执行差异处理，
 // 并把需要继续下钻的子目录压入 NextLevel。
 // recurseAll 为 true 时所有子目录都下钻（全量扫描的安全网语义）；
 // 为 false 时只下钻本次新建/变更的子目录。
-func getDirectory(fileClient *network.FileClient, path string, recurseAll bool) error {
+// itemFailures/blacklist 是跨多次目录重试共享的状态（调用方持有），用于把
+// 持续失败的具体路径隔离掉，使目录内其余正常项不受拖累。
+func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, itemFailures map[string]int, blacklist map[string]bool) error {
 	treejson, err := fileClient.GetRealityTree(path)
 	if err != nil {
 		return handleConnectionError(err, fileClient)
@@ -211,9 +218,19 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool) 
 	log.Infof("Diff count for %s: %d", path, len(diffs))
 	diffDirs := make(map[string]bool)
 	for _, v := range diffs {
+		if blacklist[v.Path] {
+			// 已确认持续失败，本轮不再尝试，让其余正常项能被处理到
+			continue
+		}
 		if err := processDiffItem(v, fileClient); err != nil {
-			// 连接断了，本目录剩余项留给重试；其他错误跳过单项继续
+			// 连接断了：无论是否拉黑，这次调用都不能继续复用这个连接处理
+			// 剩余项，必须整体返回交给上层重连后重试；其他错误跳过单项继续
 			if errors.Is(err, appError.ErrConnection) {
+				itemFailures[v.Path]++
+				if itemFailures[v.Path] > maxItemRetries {
+					blacklist[v.Path] = true
+					log.Errorf("%s 连续失败 %d 次，本轮放弃同步该项（不影响目录内其他文件）", v.Path, itemFailures[v.Path]-1)
+				}
 				return err
 			}
 			log.Errorf("Error processing diff item %v: %v", v, err)
@@ -324,6 +341,11 @@ const maxDirRetries = 3
 // 导致无退避的重连风暴
 func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 	retries := make(map[string]int)
+	// itemFailures/blacklist 跨目录的多次重试持续存在：目录内某个具体文件
+	// 反复失败会被拉黑（见 getDirectory），使同目录其余正常文件不被拖累
+	itemFailures := make(map[string]int)
+	blacklist := make(map[string]bool)
+
 	for NextLevel.Size() > 0 {
 		v, _ := NextLevel.Pop()
 		log.Debugf("Processing next level item: %v 【%d】remaining", v, NextLevel.Size())
@@ -333,14 +355,22 @@ func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 			continue
 		}
 
-		err := getDirectory(fileClient, v.Path, recurseAll)
+		blacklistBefore := len(blacklist)
+		err := getDirectory(fileClient, v.Path, recurseAll, itemFailures, blacklist)
 		if err == nil {
 			continue
 		}
 
 		log.Errorf("Error processing directory %s: %v", v.Path, err)
 		if errors.Is(err, appError.ErrConnection) {
-			retries[v.Path]++
+			if len(blacklist) > blacklistBefore {
+				// 本轮拉黑了一个新的问题文件，说明在收敛（diff 下一轮会变小），
+				// 不计入目录失败次数，避免"目录内有多个问题文件"时，
+				// 目录级重试预算在文件逐个被拉黑之前就被耗尽
+				retries[v.Path] = 0
+			} else {
+				retries[v.Path]++
+			}
 			if retries[v.Path] > maxDirRetries {
 				log.Errorf("目录 %s 连续失败 %d 次，放弃本轮同步", v.Path, retries[v.Path]-1)
 				continue
@@ -477,9 +507,13 @@ func TrackingChanges(fileClient *network.FileClient) error {
 	}
 	allPaths := extractMinimalPathsFromChanges(change)
 	NextLevel.Clear()
+	// 本次变更批次内共享的失败隔离状态；不跨多次 TrackingChanges 调用持续，
+	// 一个文件持续失败时下次心跳周期会重新尝试（成本很低，且能自愈）
+	itemFailures := make(map[string]int)
+	blacklist := make(map[string]bool)
 	for _, v := range allPaths {
 		log.Infof("Processing change: %v", v)
-		err := getDirectory(fileClient, v, false)
+		err := getDirectory(fileClient, v, false, itemFailures, blacklist)
 		if err == nil {
 			continue
 		}

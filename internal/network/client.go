@@ -170,30 +170,45 @@ func (c *FileClient) Reconnect() error {
 	return nil
 }
 
+// Reverify 用于 Reconnect 后重新验证连接：发送的是真正的 Handshake 消息
+// （而不是原来的 MsgTypeReverify），因为 MsgTypeReverify 请求体是空的，
+// 服务端无从得知是"哪个" InstanceID 的客户端在重连，也就无法把这个新的
+// TCP 连接重新注册进 clientMap——此前 Reconnect 后的连接在服务端上
+// 永远没有 clientMap 记录，导致 Reconnect 之后任何依赖 clientMap.Load
+// 的请求（TreeRequest/FileRequest 等）都会被判定为"client not found"
+// 而遭到服务端主动关闭，实测表现为反复 EOF、最终整个目录被放弃同步。
+// 复用 MsgTypeHandshake 让服务端用已有的注册逻辑正确处理重连，客户端这边
+// 仍然按原语义校验响应里的服务端信息是否与已知值一致（不一致说明连接到了
+// 不同的服务器，本地缓存的目录树不可信，需要整体重建会话）。
 func (c *FileClient) Reverify() error {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
 		return fmt.Errorf("reverify failed to get connection: %w", err)
 	}
-	if err := sendMessage(conn, MsgTypeReverify, nil); err != nil {
-		return fmt.Errorf("failed to send reverify message: %w", err)
+	handshakeMsg := HandshakeMessage{
+		Version: config.ProtocolVersion,
+		UUID:    config.InstanceID,
+		Role:    config.ModeMap[*config.Mode],
+	}
+	if err := sendMessage(conn, MsgTypeHandshake, encodeHandshake(handshakeMsg)); err != nil {
+		return fmt.Errorf("failed to send reverify handshake: %w", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
 		return fmt.Errorf("failed to receive reverify response: %w", err)
 	}
-	if msgType != MsgTypeReverifyResponse {
+	if msgType != MsgTypeHandshake {
 		return fmt.Errorf("invalid reverify response message type, got %d", msgType)
 	}
-	reverifyResponse, err := decodeReverifyResponse(bodyBytes)
+	handshakeResponse, err := decodeHandshake(bodyBytes)
 	if err != nil {
 		return fmt.Errorf("failed to decode reverify response: %w", err)
 	}
 	// 重连后必须还是原来那台服务器（ID 与首次握手记录的一致），否则本地缓存的目录树不可信
-	if reverifyResponse.Version != c.realityVersion || reverifyResponse.ServerID != c.realityID {
+	if handshakeResponse.Version != c.realityVersion || handshakeResponse.UUID != c.realityID {
 		return fmt.Errorf("reverify failed, expected version %d and server ID %d, got version %d and server ID %d",
 			c.realityVersion, c.realityID,
-			reverifyResponse.Version, reverifyResponse.ServerID)
+			handshakeResponse.Version, handshakeResponse.UUID)
 	}
 	return nil
 }

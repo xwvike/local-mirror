@@ -76,6 +76,21 @@ func (c *client) UpdateLastActiveTime() {
 	c.LastActiveTime = time.Now()
 }
 
+// removeClientIfCurrent 仅当 clientMap 中该 ID 当前对应的仍是 expected 这个
+// client 对象时才删除。
+//
+// 背景：clientMap 以客户端 InstanceID 为键。同一个客户端进程快速断线重连时
+// （InstanceID 不变），新连接握手后会 Store 一个新的 client 对象覆盖旧的；
+// 但旧连接对应的 goroutine 可能因为迟迟才检测到自己已失效（例如还在阻塞地
+// 尝试发送文件数据），在那之后才执行清理逻辑——如果直接无条件 Delete(ID)，
+// 删掉的其实是新连接刚注册的条目，导致新连接被服务端误判为"找不到客户端"
+// 而遭到关闭。用 CAS 语义（先比较是否仍是自己）杜绝这个竞态。
+func (s *fileServer) removeClientIfCurrent(id uint32, expected *client) {
+	if stored, ok := s.clientMap.Load(id); ok && stored == expected {
+		s.clientMap.Delete(id)
+	}
+}
+
 func (s *fileServer) GetAllClients() []*client {
 	clients := make([]*client, 0)
 	s.clientMap.Range(func(key, value interface{}) bool {
@@ -144,7 +159,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 		if err := conn.Close(); err != nil {
 			log.Error(err)
 		}
-		s.clientMap.Delete(client.ID)
+		s.removeClientIfCurrent(client.ID, client)
 	}()
 
 	for {
@@ -193,7 +208,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 				log.Error(err)
 				if errors.Is(err, appError.ErrConnection) {
 					conn.Close()
-					s.clientMap.Delete(client.ID)
+					s.removeClientIfCurrent(client.ID, client)
 					log.Warnf("Connection closed for %s due to error: %v", clientAddr, err)
 					return
 				} else {
@@ -213,7 +228,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 				log.Error(err)
 				if errors.Is(err, appError.ErrConnection) {
 					conn.Close()
-					s.clientMap.Delete(client.ID)
+					s.removeClientIfCurrent(client.ID, client)
 					log.Warnf("Connection closed for %s due to error: %v", clientAddr, err)
 					return
 				} else {
@@ -230,7 +245,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 				log.Error(err)
 				if errors.Is(err, appError.ErrConnection) {
 					conn.Close()
-					s.clientMap.Delete(client.ID)
+					s.removeClientIfCurrent(client.ID, client)
 					log.Warnf("Connection closed for %s due to error: %v", clientAddr, err)
 					return
 				} else {
@@ -246,7 +261,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			ackMsg, err := decodeAcknowledge(bodyBytes)
 			if err != nil {
 				conn.Close()
-				s.clientMap.Delete(client.ID)
+				s.removeClientIfCurrent(client.ID, client)
 				log.Warn("acknowledge message:", err)
 				//todo: 给客户端发送回复
 				return
@@ -256,7 +271,7 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
 				conn.Close()
-				s.clientMap.Delete(client.ID)
+				s.removeClientIfCurrent(client.ID, client)
 				log.Warn("Error decoding file complete message:", err)
 				//todo: 给客户端发送回复
 				return
@@ -401,7 +416,7 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 		}
 		responseBytes := encodeFileResponse(fileResponse)
 		if err := sendMessage(conn, MsgTypeFileResponse, responseBytes); err != nil {
-			s.clientMap.Delete(ID)
+			s.removeClientIfCurrent(ID, _client.(*client))
 			return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
 		}
 		log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
