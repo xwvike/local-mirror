@@ -50,6 +50,7 @@ var (
 	Path            *string
 	Alias           *string
 	Ignore          *string
+	ConfigFile      *string
 	AllowDelete     *bool
 	Help            *bool
 	Version         *bool
@@ -160,6 +161,8 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               关键路径（如 ~、/etc、系统目录）上会被拒绝启动\n")
 	fmt.Fprintf(w, "  -k, --secret string          传输加密口令（Noise NNpsk0），两端必须一致；\n")
 	fmt.Fprintf(w, "                               为空则明文传输。也可用环境变量 LOCAL_MIRROR_SECRET\n")
+	fmt.Fprintf(w, "      --config string          多任务 YAML 配置文件，以监督模式同时运行多个任务\n")
+	fmt.Fprintf(w, "                               （一任务一子进程，异常退避重启；示例见 deploy/local-mirror.example.yml）\n")
 	fmt.Fprintf(w, "  -h, --help                   显示帮助信息\n")
 	fmt.Fprintf(w, "  -v, --version                显示版本信息\n\n")
 
@@ -237,6 +240,8 @@ func init() {
 
 	Ignore = flag.String("ignore", "", "追加忽略模式（逗号分隔），按路径段匹配，支持 * ? [] 通配符")
 	flag.StringVar(Ignore, "i", "", "同 --ignore")
+
+	ConfigFile = flag.String("config", "", "多任务 YAML 配置文件；给出后以监督模式运行，其余参数无效")
 
 	Version = flag.Bool("version", false, "显示版本信息")
 	flag.BoolVar(Version, "v", false, "同 --version")

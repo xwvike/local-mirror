@@ -92,6 +92,7 @@ local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
 | `-r, --realityip` | 上游服务器 IP（mirror/relay）；留空时自动发现局域网服务端 | 空 |
 | `-a, --alias` | 实例别名，展示在局域网发现列表中 | 主机名 |
 | `-i, --ignore` | 追加忽略模式（逗号分隔），按路径段匹配、支持 `* ? []`；服务端不扫描 / 客户端不同步 | 空 |
+| `--config` | 多任务 YAML 配置，监督模式同时运行多个任务（与其余参数互斥） | 空 |
 | `--allow-delete` | 删除同步：允许删除本地多余文件（忠实镜像）；关键路径（`~`、`/etc`、系统目录等）上会被拒绝启动 | `false` |
 | `-c, --cooldown` | 全量扫描安全网间隔（秒），仅客户端；变更本身实时推送，此为兜底 | `1800` |
 | `-f, --filebuffersize` | 文件传输分块大小（字节），仅服务端 | `65536` |
@@ -129,6 +130,41 @@ journalctl -u local-mirror -f    # 横幅与错误输出
 
 加密口令建议通过 `Environment=LOCAL_MIRROR_SECRET=...` 或 `EnvironmentFile=`
 注入，避免出现在 `ps` 输出中。
+
+## 多任务（YAML 配置）
+
+一台机器要同时共享多个目录、或既做服务端又做备份客户端时，用一个 YAML
+声明全部任务，`--config` 一条命令启动（示例：[deploy/local-mirror.example.yml](deploy/local-mirror.example.yml)）：
+
+```yaml
+defaults:
+  loglevel: info
+
+tasks:
+  - name: photos          # 任务名 = 发现别名 = 日志前缀,缺省取路径末段
+    mode: reality
+    path: /srv/photos
+    ignore: [cache, "*.log"]
+  - name: nas-backup
+    mode: mirror
+    path: /srv/backup
+    realityip: 192.168.1.100
+    allow_delete: true
+```
+
+```bash
+local-mirror --config /etc/local-mirror.yml
+```
+
+运行模型：**一任务一子进程**（监督模式），任务间零共享、互不波及；
+日志按 `[任务名]` 前缀汇聚到父进程输出。异常退出指数退避重启
+（5s 起封顶 60s），退出码 2（目录不存在、口令错等配置问题）判为
+永久错误，该任务停止、其余照常。父进程收到 SIGTERM/SIGINT 时
+统一停止全部子任务，适合直接作为 systemd 服务运行。
+
+注意：`--config` 与其余命令行参数互斥；同机服务端任务共享
+52345-52354 端口段（最多 10 个）；mirror/relay 任务建议显式写
+`realityip`；`secret` 经环境变量传给子进程，不出现在 `ps` 里。
 
 ## 工作原理
 

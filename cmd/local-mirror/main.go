@@ -137,6 +137,37 @@ func main() {
 		os.Exit(0)
 	}
 
+	// 多任务监督模式：--config 与单实例旗子互斥，避免"以为在配置任务
+	// 实际全被忽略"的误会
+	if *config.ConfigFile != "" {
+		var extra []string
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "config" {
+				return
+			}
+			dash := "--"
+			if len(f.Name) == 1 {
+				dash = "-"
+			}
+			extra = append(extra, dash+f.Name)
+		})
+		if len(extra) > 0 {
+			fmt.Fprintf(os.Stderr, "local-mirror: --config 模式下其余参数无效: %v\n", extra)
+			os.Exit(2)
+		}
+		multiCfg, err := config.LoadMultiConfig(*config.ConfigFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+			os.Exit(2)
+		}
+		if n := countRealityTasks(multiCfg); n > config.PortScanRange {
+			fmt.Fprintf(os.Stderr, "local-mirror: 警告: %d 个服务端任务超过端口探测范围（%d），超出部分将无法绑定端口\n",
+				n, config.PortScanRange)
+		}
+		runSupervisor(multiCfg) // 不返回
+		return
+	}
+
 	// 用法错误：信息到 stderr，退出码 2（与 flag 包解析失败时的约定一致）
 	if flag.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "local-mirror: 未知参数: %v\n请使用 --help 查看用法\n", flag.Args())

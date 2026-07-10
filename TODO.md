@@ -14,6 +14,17 @@
 
 ## 已完成
 
+- ~~YAML 多任务配置（--config，监督模式）~~：一个 YAML 声明多个任务
+  （reality/mirror/relay 混合），父进程逐任务 re-exec 自身为子进程，
+  字段映射为现有旗子（secret 走环境变量不进 argv）。日志按 [任务名]
+  前缀汇聚；异常退避重启（5s×1.5 封顶 60s，健康运行 60s 归零），
+  退出码 2 判永久错误不重启且不波及其他任务；SIGTERM/SIGINT 统一
+  清场（5s 宽限后 SIGKILL）。选择监督进程而非单进程多实例：后者需
+  去全局化 ~38 个符号/250+ 处引用（tree.DB、config.StartPath、全局
+  logrus），收益不成比例。父进程前置校验:mode/路径去重（bbolt 锁
+  争抢）/name 唯一/loglevel;服务端任务数超过端口段(10)时警告。
+  新增依赖 gopkg.in/yaml.v3;示例 deploy/local-mirror.example.yml。
+
 - ~~自定义忽略列表~~：`-i/--ignore`（逗号分隔）与 `<同步根>/.local-mirror/ignore`
   文件（每行一条，# 注释）与内置默认合并去重。匹配按路径段（任意深度），
   每段支持 `* ? []` 通配符（filepath.Match，零新依赖）。语义按角色生效：

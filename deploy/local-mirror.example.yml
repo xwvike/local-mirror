@@ -1,0 +1,46 @@
+# local-mirror 多任务配置示例
+# 用法: local-mirror --config /etc/local-mirror.yml
+#
+# 监督模式:每个任务运行为独立子进程(一任务一进程),异常退出按
+# 指数退避自动重启(5s 起,封顶 60s);退出码 2(配置/用法错误,如
+# 目录不存在、口令不一致)判为永久错误,该任务停止但不影响其他任务。
+# 修改本文件需重启父进程整体生效。
+#
+# 注意:
+# - 同一台机器的服务端任务(reality/relay)共享 TCP 端口段
+#   52345-52354,最多 10 个
+# - mirror/relay 任务建议显式写 realityip;留空会走非交互自动发现,
+#   局域网里恰好一台服务端时才能自动连接,零台或多台会判为永久错误
+# - secret 经环境变量传给子进程,不出现在 ps 的命令行里;
+#   也可以不写,统一在 systemd unit 里设 Environment=LOCAL_MIRROR_SECRET=…
+
+# 各任务字段留空时的回退值(可选;name/mode/path 不参与回退)
+defaults:
+  loglevel: info
+  # secret: change-me
+
+tasks:
+  # 服务端:共享照片目录,忽略 RAW 缓存与日志
+  - name: photos
+    mode: reality
+    path: /srv/photos
+    ignore: [cache, "*.log"]
+
+  # 服务端:共享文档目录
+  - name: docs
+    mode: reality
+    path: /srv/docs
+
+  # 客户端:从 NAS 备份下来,完全忠实镜像(允许删除)
+  - name: nas-backup
+    mode: mirror
+    path: /srv/backup
+    realityip: 192.168.1.100
+    allow_delete: true
+    cooldown: 3600
+
+  # 中继:从上游镜像,同时向下游提供服务
+  # - name: relay-hub
+  #   mode: relay
+  #   path: /srv/relay
+  #   realityip: 10.0.0.5

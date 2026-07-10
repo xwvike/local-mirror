@@ -9,6 +9,7 @@ require (
 	github.com/zeebo/blake3 v0.2.4
 	go.etcd.io/bbolt v1.4.1
 	golang.org/x/term v0.45.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
