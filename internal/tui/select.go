@@ -78,12 +78,21 @@ func Select(title string, opts []Option) (int, Outcome, error) {
 		}
 		lines = renderFrame(p, title, opts, cursor)
 	}
+	// clearFrame 整帧擦除：上移到帧首并清到屏尾。退出选择器时调用，
+	// 列表不残留在终端里（选中后紧接着的启动横幅已包含所选上游信息）
+	clearFrame := func() {
+		if lines > 0 {
+			fmt.Printf("\x1b[%dA\r\x1b[J", lines)
+			lines = 0
+		}
+	}
 	render()
 
 	buf := make([]byte, 3)
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
+			clearFrame()
 			return 0, Canceled, fmt.Errorf("读取按键失败: %w", err)
 		}
 		if n == 0 {
@@ -118,12 +127,13 @@ func Select(title string, opts []Option) (int, Outcome, error) {
 			if len(opts) == 0 {
 				continue
 			}
-			fmt.Printf("%s已选择:%s %s (%s)\r\n", p.Green, p.Reset, opts[cursor].Alias, opts[cursor].Addr)
+			clearFrame()
 			return cursor, Selected, nil
 		case key == 'r':
-			fmt.Printf("%s重新扫描…%s\r\n", p.Dim, p.Reset)
+			clearFrame()
 			return 0, Rescan, nil
 		case key == 'q', key == keyCtrlC, key == keyEsc: // 裸 ESC（n==1）走到这里
+			clearFrame()
 			fmt.Printf("%s已取消%s\r\n", p.Dim, p.Reset)
 			return 0, Canceled, nil
 		}

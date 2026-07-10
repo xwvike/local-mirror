@@ -70,6 +70,10 @@ func runDiscovery() {
 			fmt.Printf("正在扫描局域网服务端（%s）…\n", discoveryWindow)
 		}
 		servers, err := network.DiscoverServers(discoveryWindow, *config.Secret, config.InstanceID)
+		if isTTY {
+			// 扫描结束后擦掉进度行，选择列表（或横幅）原地出现，不留残余
+			fmt.Print("\x1b[1A\x1b[K")
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "local-mirror: 自动发现失败: %v\n请用 -r 指定上游服务器地址\n", err)
 			os.Exit(2)
