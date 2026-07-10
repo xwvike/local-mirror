@@ -31,16 +31,17 @@ func LogPath() string {
 
 func InitLogger() {
 	// 日志同时写入文件和 stderr：
-	// 错误必须让终端上的用户看得见，只写文件会让进程"无声退出"
+	// 错误必须让终端上的用户看得见，只写文件会让进程"无声退出"。
+	// 文件侧走基于大小的轮转 writer，长驻进程不会写满磁盘
 	output := io.Writer(os.Stderr)
 	if err := os.MkdirAll(getLogDir(), 0755); err != nil {
 		log.Warnf("创建日志目录失败，日志仅输出到终端: %v", err)
 	} else {
-		file, err := os.OpenFile(LogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		rw, err := newRotatingWriter(LogPath(), logMaxSize, logMaxFiles)
 		if err != nil {
 			log.Warnf("日志文件打开失败，日志仅输出到终端: %v", err)
 		} else {
-			output = io.MultiWriter(file, os.Stderr)
+			output = io.MultiWriter(rw, os.Stderr)
 		}
 	}
 	log.SetOutput(output)

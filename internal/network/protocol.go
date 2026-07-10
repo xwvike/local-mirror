@@ -284,6 +284,11 @@ func decodeFileData(data []byte) (FileDataMessage, error) {
 		return msg, err
 	}
 
+	// 边界校验：声明的数据长度不得超过剩余字节，否则一个小消息声称超大
+	// DataLength 会触发数十亿字节的 make() 而 OOM。必须在 make 之前拦截
+	if int64(msg.DataLength) > int64(buf.Len()) {
+		return msg, fmt.Errorf("file data length %d exceeds remaining %d bytes", msg.DataLength, buf.Len())
+	}
 	msg.Data = make([]byte, msg.DataLength)
 	if _, err := io.ReadFull(buf, msg.Data); err != nil {
 		log.Error("Error reading file data:", err)
@@ -462,6 +467,9 @@ func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 		return msg, err
 	}
 
+	if int64(msg.DataLength) > int64(buf.Len()) {
+		return msg, fmt.Errorf("tree response data length %d exceeds remaining %d bytes", msg.DataLength, buf.Len())
+	}
 	msg.Data = make([]byte, msg.DataLength)
 	if _, err := io.ReadFull(buf, msg.Data); err != nil {
 		log.Error("Error reading tree response data:", err)
@@ -609,6 +617,11 @@ func decodeRecentChangeResponse(data []byte) (RecentChangeResponseMessage, error
 		return msg, err
 	}
 
+	// 边界校验：每个条目至少含 2 字节长度前缀，changeCount 超过剩余字节的
+	// 一半必然是伪造的——不校验会让 make([]string, 天量) 直接 OOM
+	if int64(changeCount) > int64(buf.Len()/2) {
+		return msg, fmt.Errorf("change count %d exceeds plausible max for %d remaining bytes", changeCount, buf.Len())
+	}
 	msg.Changes = make([]string, changeCount)
 	for i := uint32(0); i < changeCount; i++ {
 		var changeLength uint16

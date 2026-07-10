@@ -9,6 +9,30 @@ import (
 	"strings"
 )
 
+// SafeJoin 把服务端下发的相对路径 rel 安全地拼到同步根 root 下。
+// rel 完全来自对端（不可信输入）：必须确保拼接、清洗后的最终路径仍落在
+// root 之内，否则一个 "../../etc/x" 之类的路径会逃出同步根，造成同步目录
+// 外的任意文件写入/删除。命中越界返回错误，调用方应拒绝该项而非落盘。
+//
+// 校验基于词法清洗（Clean），不依赖磁盘状态，因此对尚不存在的目标路径同样
+// 有效；root 自身允许（rel 为 "." 或 ""）。
+func SafeJoin(root, rel string) (string, error) {
+	// 绝对路径直接拒绝：拼接绝对路径会丢弃 root
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("路径越界（绝对路径）: %q", rel)
+	}
+	cleanRoot := filepath.Clean(root)
+	joined := filepath.Clean(filepath.Join(cleanRoot, rel))
+	if joined == cleanRoot {
+		return joined, nil
+	}
+	// 必须是 root 的真子路径：以 root+分隔符 为前缀
+	if !strings.HasPrefix(joined, cleanRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("路径越界（逃出同步根 %s）: %q", cleanRoot, rel)
+	}
+	return joined, nil
+}
+
 // dangerousPaths 返回当前平台上不应作为"可删除同步根目录"的关键路径列表。
 // 这些是操作系统或用户的核心目录，在其上启用删除极易造成灾难性数据损失。
 // 列表按需持续补充。

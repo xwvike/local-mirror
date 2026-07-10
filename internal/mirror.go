@@ -6,6 +6,7 @@ import (
 	"local-mirror/config"
 	"local-mirror/internal/appError"
 	"local-mirror/internal/network"
+	"local-mirror/internal/safety"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/stack"
 	"local-mirror/pkg/utils"
@@ -109,11 +110,17 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 			log.Debugf("跳过删除（未启用 --allow-delete）: %s", v.Path)
 			return nil
 		}
-		err := os.RemoveAll(filepath.Join(config.StartPath, v.Path))
-		if err == nil {
-			tree.DeleteNode(v.Path)
+		full, err := safety.SafeJoin(config.StartPath, v.Path)
+		if err != nil {
+			log.Errorf("拒绝删除越界路径: %v", err)
+			return nil
 		}
-		return err
+		if err := os.RemoveAll(full); err == nil {
+			tree.DeleteNode(v.Path)
+			return nil
+		} else {
+			return err
+		}
 
 	case "create", "modify":
 		if v.IsDir {
@@ -128,8 +135,12 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 }
 
 func processDirectoryDiff(v DiffResult) error {
-	// v.Path 是相对路径，必须拼接 StartPath 才能在正确的位置创建目录
-	fullPath := filepath.Join(config.StartPath, v.Path)
+	// v.Path 来自服务端，必须校验拼接后仍在同步根内，防止 ".." 越界建目录
+	fullPath, err := safety.SafeJoin(config.StartPath, v.Path)
+	if err != nil {
+		log.Errorf("拒绝创建越界目录: %v", err)
+		return nil
+	}
 	if err := os.MkdirAll(fullPath, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", fullPath, err)
 	}
@@ -179,7 +190,11 @@ func applyModTime(v DiffResult) {
 	if v.ModTime.IsZero() {
 		return
 	}
-	full := filepath.Join(config.StartPath, v.Path)
+	full, err := safety.SafeJoin(config.StartPath, v.Path)
+	if err != nil {
+		log.Errorf("拒绝对越界路径设置 mtime: %v", err)
+		return
+	}
 	if err := os.Chtimes(full, v.ModTime, v.ModTime); err != nil {
 		log.Warnf("Failed to set mtime for %s: %v", v.Path, err)
 	}
@@ -343,8 +358,16 @@ func detectRenames(diffs []DiffResult) []DiffResult {
 
 // applyRename 执行一次就地重命名：本地移动文件、对齐 mtime、更新数据库
 func applyRename(oldDiff, newDiff DiffResult) error {
-	oldFull := filepath.Join(config.StartPath, oldDiff.Path)
-	newFull := filepath.Join(config.StartPath, newDiff.Path)
+	oldFull, err := safety.SafeJoin(config.StartPath, oldDiff.Path)
+	if err != nil {
+		log.Errorf("拒绝重命名越界源路径: %v", err)
+		return nil
+	}
+	newFull, err := safety.SafeJoin(config.StartPath, newDiff.Path)
+	if err != nil {
+		log.Errorf("拒绝重命名到越界目标路径: %v", err)
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(newFull), 0755); err != nil {
 		return err
 	}

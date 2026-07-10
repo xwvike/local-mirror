@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/appError"
+	"local-mirror/internal/safety"
 	"local-mirror/pkg/utils"
 	"net"
 	"os"
@@ -425,6 +426,12 @@ func drainFileSession(conn net.Conn) error {
 }
 
 func (c *FileClient) DownloadFile(filePath string) (string, error) {
+	// filePath 来自服务端下发的目录树，属不可信输入：拼接后必须仍在同步根内。
+	// 越界（如 "../../etc/x"）直接拒绝，绝不向服务端发起请求、也绝不落盘，
+	// 否则服务端可借此把内容写到同步目录外的任意位置
+	if _, err := safety.SafeJoin(config.StartPath, filePath); err != nil {
+		return "", fmt.Errorf("拒绝下载越界路径: %w", err)
+	}
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
 		return "", fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
