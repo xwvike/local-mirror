@@ -40,7 +40,9 @@
   239.255.77.77:52345，`SO_REUSEADDR` 使同机多实例共享监听），交互终端下
   手写 raw-mode 列表（`internal/tui`，仅新增 `golang.org/x/term` 依赖）展示
   别名/地址/同步目录，方向键选择；即使只发现一台也要求确认，避免连错。
-  非终端（systemd 等）恰好一台自动连，零台/多台报错退出提示用 `-r`。
+  非终端（systemd 等）恰好一台自动连；零台 exit 1（上游可能未启动，
+  可重试，监督进程/systemd 退避重启再扫），多台 exit 2（配置歧义，
+  永久错误）提示用 `-r`。
   设置 `-k` 时探测/应答带 blake3 keyed MAC，服务端静默忽略未认证探测
   （不向局域网扫描者泄露同步路径）。新增 `-a/--alias`（默认主机名）。
   relay 不再强制 `-r`。落点 `internal/network/discovery.go`。

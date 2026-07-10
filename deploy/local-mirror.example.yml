@@ -10,7 +10,8 @@
 # - 同一台机器的服务端任务(reality/relay)共享 TCP 端口段
 #   52345-52354,最多 10 个
 # - mirror/relay 任务建议显式写 realityip;留空会走非交互自动发现,
-#   局域网里恰好一台服务端时才能自动连接,零台或多台会判为永久错误
+#   局域网里恰好一台服务端时才能自动连接。零台(上游可能还没启动)
+#   exit 1 会被退避重启再扫;多台是配置歧义,exit 2 判永久错误
 # - secret 经环境变量传给子进程,不出现在 ps 的命令行里;
 #   也可以不写,统一在 systemd unit 里设 Environment=LOCAL_MIRROR_SECRET=…
 

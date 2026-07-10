@@ -164,7 +164,9 @@ local-mirror --config /etc/local-mirror.yml
 
 注意：`--config` 与其余命令行参数互斥；同机服务端任务共享
 52345-52354 端口段（最多 10 个）；mirror/relay 任务建议显式写
-`realityip`；`secret` 经环境变量传给子进程，不出现在 `ps` 里。
+`realityip`（留空走自动发现：扫到零台按可重试处理，会退避重启再扫，
+兼容上游后启动的开机顺序；扫到多台是配置歧义，判永久错误）；
+`secret` 经环境变量传给子进程，不出现在 `ps` 里。
 
 ## 工作原理
 

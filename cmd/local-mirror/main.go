@@ -61,8 +61,10 @@ const discoveryWindow = 2 * time.Second
 // runDiscovery 扫描局域网服务端并确定上游地址，写入
 // config.DiscoveredAddr/DiscoveredAlias 后返回。
 // 交互终端下始终展示列表让用户确认（哪怕只发现一台，避免连错）；
-// 非终端（systemd/管道）下恰好一台才自动连接，零台或多台报错退出，
-// 提示用 -r 显式指定。失败路径全部在本函数内 os.Exit
+// 非终端（systemd/管道）下恰好一台才自动连接。零台 exit 1——上游可能
+// 只是还没启动（开机顺序），属可重试的暂时状态，监督进程/systemd 会
+// 退避重启再扫；多台 exit 2——配置歧义，重试无解，必须 -r 显式指定。
+// 失败路径全部在本函数内 os.Exit
 func runDiscovery() {
 	isTTY := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 	for {
@@ -87,9 +89,9 @@ func runDiscovery() {
 				log.Infof("自动发现上游: %s (%s)", servers[0].Addr(), servers[0].Alias)
 				return
 			case 0:
-				fmt.Fprintf(os.Stderr, "local-mirror: 未发现局域网服务端，请用 -r 指定上游\n"+
-					"（VPN、跨网段或防火墙环境不支持自动发现）\n")
-				os.Exit(2)
+				fmt.Fprintf(os.Stderr, "local-mirror: 未发现局域网服务端（上游未启动？稍后可重试），"+
+					"或用 -r 显式指定\n（VPN、跨网段或防火墙环境不支持自动发现）\n")
+				os.Exit(1)
 			default:
 				fmt.Fprintf(os.Stderr, "local-mirror: 发现 %d 个服务端，非交互环境无法自动选择，请用 -r 指定:\n", len(servers))
 				for _, s := range servers {
