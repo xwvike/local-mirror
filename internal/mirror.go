@@ -201,6 +201,12 @@ const maxItemRetries = 3
 // itemFailures/blacklist 是跨多次目录重试共享的状态（调用方持有），用于把
 // 持续失败的具体路径隔离掉，使目录内其余正常项不受拖累。
 func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, itemFailures map[string]int, blacklist map[string]bool) error {
+	// 客户端忽略：命中忽略列表的目录整体跳过（变更追踪可能推来
+	// 忽略目录内的深层路径，连目录列表请求都不必发）
+	if utils.IsIgnored(path, config.IgnoreFileList) {
+		log.Debugf("跳过忽略目录: %s", path)
+		return nil
+	}
 	treejson, err := fileClient.GetRealityTree(path)
 	if err != nil {
 		return handleConnectionError(err, fileClient)
@@ -215,6 +221,11 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 	if err != nil {
 		return fmt.Errorf("error analyzing diff for path %s: %w", path, err)
 	}
+
+	// 客户端忽略：命中项从 diff 中整体剔除——create/modify 不下载、
+	// delete 不删除、也不参与后面的重命名配对。服务端未忽略而客户端
+	// 忽略的条目由此对同步完全隐形（本地已有的副本也不会被碰）
+	diffs = filterIgnoredDiffs(diffs)
 
 	// 保真：就地重命名的文件走本地 rename，免整文件重新下载
 	diffs = detectRenames(diffs)
@@ -249,6 +260,10 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 
 	if recurseAll {
 		for _, node := range realityNodes {
+			if node.IsDir && utils.IsIgnored(node.Path, config.IgnoreFileList) {
+				// 忽略目录不下钻（服务端可能没忽略它，树里存在）
+				continue
+			}
 			if node.IsDir && !diffDirs[node.Path] {
 				NextLevel.Push(DiffResult{
 					Path:   node.Path,
@@ -261,6 +276,21 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 		}
 	}
 	return nil
+}
+
+// filterIgnoredDiffs 剔除命中忽略列表的 diff 项。
+// 客户端忽略语义：不下载（create/modify）、不删除（delete）——
+// 即便服务端树里有该条目，也当它不存在；本地磁盘上的同名内容原样保留
+func filterIgnoredDiffs(diffs []DiffResult) []DiffResult {
+	kept := diffs[:0]
+	for _, d := range diffs {
+		if utils.IsIgnored(d.Path, config.IgnoreFileList) {
+			log.Debugf("忽略 diff 项（%s）: %s", d.Action, d.Path)
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return kept
 }
 
 // detectRenames 在单个目录的 diff 内识别"就地重命名"：一个 delete 与一个

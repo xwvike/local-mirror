@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 
 	"github.com/zeebo/blake3"
@@ -99,14 +98,20 @@ func RelPath(root, fullPath string) string {
 }
 
 // IsIgnored 判断路径是否命中忽略列表。
-// 按路径段精确匹配，避免 strings.Contains 造成的误伤（如 "bin" 匹配到 "cabinet"）。
+// 按路径段逐一匹配（任意深度），避免 strings.Contains 造成的误伤
+// （如 "bin" 匹配到 "cabinet"）。每段用 filepath.Match 比较，支持
+// * ? [] 通配符（如 *.log）；纯名字模式退化为精确匹配。大小写敏感。
+// 模式合法性在加载时已校验（config.LoadIgnoreList），此处 Match
+// 出错按不匹配处理
 func IsIgnored(relPath string, patterns []string) bool {
 	for _, seg := range strings.Split(filepath.ToSlash(relPath), "/") {
 		if seg == "" || seg == "." {
 			continue
 		}
-		if slices.Contains(patterns, seg) {
-			return true
+		for _, p := range patterns {
+			if ok, _ := filepath.Match(p, seg); ok {
+				return true
+			}
 		}
 	}
 	return false

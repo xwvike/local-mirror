@@ -183,6 +183,13 @@ func main() {
 		}
 	}()
 
+	// 忽略列表：内置默认 + -i 旗子 + .local-mirror/ignore 文件合并。
+	// 必须在 InitDB 之后（状态目录已建）、BuildFileTree/watcher 启动之前
+	if err := config.LoadIgnoreList(config.StartPath); err != nil {
+		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+		os.Exit(2)
+	}
+
 	// 实例别名（服务端在局域网发现中广播）：--alias → 主机名 → 兜底
 	config.AliasName = *config.Alias
 	if config.AliasName == "" {
@@ -245,6 +252,14 @@ func printBanner() {
 		p.Bold, p.Cyan, p.Reset, version, p.Bold, *config.Mode, p.Reset, modeDesc)
 	fmt.Println(line)
 	row("同步目录", config.StartPath)
+	// 忽略规则最多展示 4 条，其余折叠为计数（完整列表见 --help 与配置）
+	ignoreShown := config.IgnoreFileList
+	suffix := ""
+	if len(ignoreShown) > 4 {
+		suffix = fmt.Sprintf(" %s(+%d)%s", p.Dim, len(ignoreShown)-4, p.Reset)
+		ignoreShown = ignoreShown[:4]
+	}
+	row("忽略规则", strings.Join(ignoreShown, ", ")+suffix)
 	if config.SyncsFromUpstream() {
 		switch {
 		case config.DiscoveredAddr != "":

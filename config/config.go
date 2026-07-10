@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 const (
@@ -22,8 +24,12 @@ const (
 )
 
 var (
-	// 忽略列表按路径段精确匹配（见 utils.IsIgnored）
-	IgnoreFileList = []string{"Library", ".gitignore", ".git", "node_modules", ".github", ".local-mirror", ".DS_Store", "server.log", "largeFile.log", ".local-mirror.db"}
+	// IgnoreFileList 生效的忽略列表：内置默认 + -i/--ignore + .local-mirror/ignore
+	// 文件合并去重后的结果（见 LoadIgnoreList，启动时调用一次，不热加载）。
+	// 匹配按路径段进行，每段支持 * ? [] 通配符（见 utils.IsIgnored）。
+	// 服务端命中即不扫描/不监听（不进树），客户端命中即不同步（不下载也不删除）。
+	// 初始值即内置默认：.local-mirror 是状态目录，任何情况下都不得同步（强制项）
+	IgnoreFileList = []string{".local-mirror", ".git", ".DS_Store"}
 )
 
 var (
@@ -43,6 +49,7 @@ var (
 	Secret          *string
 	Path            *string
 	Alias           *string
+	Ignore          *string
 	AllowDelete     *bool
 	Help            *bool
 	Version         *bool
@@ -60,6 +67,51 @@ var (
 	DiscoveredAddr  string = ""
 	DiscoveredAlias string = ""
 )
+
+// LoadIgnoreList 合并生效忽略列表：内置默认 + -i/--ignore 逗号分隔条目 +
+// <startPath>/.local-mirror/ignore 文件（每行一条，# 注释，空行跳过，
+// 文件不存在则静默跳过）。每条模式用 filepath.Match 预校验，非法模式
+// （如未闭合的 "["）返回错误。结果去重（保序）后写回 IgnoreFileList。
+// 启动时调用一次；运行中修改文件不生效，需重启
+func LoadIgnoreList(startPath string) error {
+	patterns := append([]string{}, IgnoreFileList...)
+
+	if *Ignore != "" {
+		for _, p := range strings.Split(*Ignore, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				patterns = append(patterns, p)
+			}
+		}
+	}
+
+	ignoreFile := filepath.Join(startPath, ".local-mirror", "ignore")
+	if data, err := os.ReadFile(ignoreFile); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			patterns = append(patterns, line)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("读取忽略配置 %s 失败: %w", ignoreFile, err)
+	}
+
+	seen := make(map[string]struct{}, len(patterns))
+	merged := make([]string, 0, len(patterns))
+	for _, p := range patterns {
+		if _, err := filepath.Match(p, "x"); err != nil {
+			return fmt.Errorf("非法的忽略模式 %q: %w", p, err)
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		merged = append(merged, p)
+	}
+	IgnoreFileList = merged
+	return nil
+}
 
 // ServesDownstream 当前模式是否对下游提供同步服务（需要监听端口）
 func ServesDownstream() bool {
@@ -100,6 +152,10 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  -r, --realityip string       上游服务器IP地址（mirror/relay）；留空时自动发现局域网服务端\n")
 	fmt.Fprintf(w, "                               （UDP 组播/广播，VPN、跨网段或防火墙环境请用 -r 直连）\n")
 	fmt.Fprintf(w, "  -a, --alias string           实例别名，展示在局域网发现列表中；默认为主机名\n")
+	fmt.Fprintf(w, "  -i, --ignore string          追加忽略模式（逗号分隔），按路径段匹配，支持 * ? [] 通配符；\n")
+	fmt.Fprintf(w, "                               服务端命中即不扫描，客户端命中即不同步（不下载也不删除）。\n")
+	fmt.Fprintf(w, "                               内置默认: .local-mirror .git .DS_Store；\n")
+	fmt.Fprintf(w, "                               也可写入 .local-mirror/ignore 文件（每行一条，# 注释），改后需重启\n")
 	fmt.Fprintf(w, "      --allow-delete           删除同步：允许删除本地多余文件（默认关闭，仅增量同步）\n")
 	fmt.Fprintf(w, "                               关键路径（如 ~、/etc、系统目录）上会被拒绝启动\n")
 	fmt.Fprintf(w, "  -k, --secret string          传输加密口令（Noise NNpsk0），两端必须一致；\n")
@@ -109,7 +165,8 @@ func PrintUsage(w io.Writer) {
 
 	fmt.Fprintf(w, "Files（位于同步根目录下）:\n")
 	fmt.Fprintf(w, "  .local-mirror/cache.db         目录树缓存（跨重启复用，加速启动）\n")
-	fmt.Fprintf(w, "  .local-mirror/logs/error.log   运行日志（错误同时输出到终端）\n\n")
+	fmt.Fprintf(w, "  .local-mirror/logs/error.log   运行日志（错误同时输出到终端）\n")
+	fmt.Fprintf(w, "  .local-mirror/ignore           忽略模式（每行一条，# 注释；与 -i 合并生效）\n\n")
 
 	fmt.Fprintf(w, "Examples:\n")
 	fmt.Fprintf(w, "  # 启动服务器模式（同步当前目录）\n")
@@ -132,7 +189,10 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -k mypassword\n\n")
 
 	fmt.Fprintf(w, "  # 客户端：把全量扫描安全网间隔调到 1 小时（变更本身实时推送）\n")
-	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -c 3600\n")
+	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -c 3600\n\n")
+
+	fmt.Fprintf(w, "  # 忽略 node_modules 与所有 .log 文件（服务端不扫描 / 客户端不同步）\n")
+	fmt.Fprintf(w, "  local-mirror -m reality -i \"node_modules,*.log\"\n")
 }
 
 func init() {
@@ -174,6 +234,9 @@ func init() {
 
 	Alias = flag.String("alias", "", "实例别名，服务端在局域网发现中展示；默认为主机名")
 	flag.StringVar(Alias, "a", "", "同 --alias")
+
+	Ignore = flag.String("ignore", "", "追加忽略模式（逗号分隔），按路径段匹配，支持 * ? [] 通配符")
+	flag.StringVar(Ignore, "i", "", "同 --ignore")
 
 	Version = flag.Bool("version", false, "显示版本信息")
 	flag.BoolVar(Version, "v", false, "同 --version")
