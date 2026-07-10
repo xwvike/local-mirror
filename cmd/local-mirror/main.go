@@ -9,6 +9,8 @@ import (
 	"local-mirror/internal/network"
 	"local-mirror/internal/safety"
 	"local-mirror/internal/tree"
+	"local-mirror/internal/tui"
+	"local-mirror/pkg/termstyle"
 	"local-mirror/pkg/utils"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/term"
 )
 
 // version 可在构建时注入: go build -ldflags "-X main.version=v1.2.3"
@@ -52,6 +55,68 @@ func resolveSyncRoot() (string, error) {
 	return abs, nil
 }
 
+// discoveryWindow 单轮 UDP 扫描的收集窗口
+const discoveryWindow = 2 * time.Second
+
+// runDiscovery 扫描局域网服务端并确定上游地址，写入
+// config.DiscoveredAddr/DiscoveredAlias 后返回。
+// 交互终端下始终展示列表让用户确认（哪怕只发现一台，避免连错）；
+// 非终端（systemd/管道）下恰好一台才自动连接，零台或多台报错退出，
+// 提示用 -r 显式指定。失败路径全部在本函数内 os.Exit
+func runDiscovery() {
+	isTTY := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	for {
+		if isTTY {
+			fmt.Printf("正在扫描局域网服务端（%s）…\n", discoveryWindow)
+		}
+		servers, err := network.DiscoverServers(discoveryWindow, *config.Secret, config.InstanceID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "local-mirror: 自动发现失败: %v\n请用 -r 指定上游服务器地址\n", err)
+			os.Exit(2)
+		}
+
+		if !isTTY {
+			switch len(servers) {
+			case 1:
+				config.DiscoveredAddr = servers[0].Addr()
+				config.DiscoveredAlias = servers[0].Alias
+				log.Infof("自动发现上游: %s (%s)", servers[0].Addr(), servers[0].Alias)
+				return
+			case 0:
+				fmt.Fprintf(os.Stderr, "local-mirror: 未发现局域网服务端，请用 -r 指定上游\n"+
+					"（VPN、跨网段或防火墙环境不支持自动发现）\n")
+				os.Exit(2)
+			default:
+				fmt.Fprintf(os.Stderr, "local-mirror: 发现 %d 个服务端，非交互环境无法自动选择，请用 -r 指定:\n", len(servers))
+				for _, s := range servers {
+					fmt.Fprintf(os.Stderr, "  %-20s %-21s %s\n", s.Alias, s.Addr(), s.SyncPath)
+				}
+				os.Exit(2)
+			}
+		}
+
+		opts := make([]tui.Option, len(servers))
+		for i, s := range servers {
+			opts[i] = tui.Option{Alias: s.Alias, Addr: s.Addr(), Path: s.SyncPath}
+		}
+		idx, outcome, err := tui.Select(fmt.Sprintf("发现 %d 个 local-mirror 服务端:", len(servers)), opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+			os.Exit(1)
+		}
+		switch outcome {
+		case tui.Rescan:
+			continue
+		case tui.Canceled:
+			os.Exit(130) // 128+SIGINT，用户主动取消
+		case tui.Selected:
+			config.DiscoveredAddr = servers[idx].Addr()
+			config.DiscoveredAlias = servers[idx].Alias
+			return
+		}
+	}
+}
+
 func main() {
 	flag.Parse()
 
@@ -83,13 +148,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "local-mirror: 无效的日志级别 %q (可选: debug, info, warn, error)\n", *config.LogLevel)
 		os.Exit(2)
 	}
-	// 中继必须显式指定上游：留空回退 127.0.0.1 几乎必然是配置错误
-	// （本机 127.0.0.1 上大概率只有它自己的服务端）
-	if *config.Mode == "relay" && *config.RealityIP == "" {
-		fmt.Fprintf(os.Stderr, "local-mirror: relay 模式必须用 -r 指定上游服务器地址\n")
-		os.Exit(2)
-	}
-
 	root, err := resolveSyncRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
@@ -121,6 +179,23 @@ func main() {
 		}
 	}()
 
+	// 实例别名（服务端在局域网发现中广播）：--alias → 主机名 → 兜底
+	config.AliasName = *config.Alias
+	if config.AliasName == "" {
+		if h, err := os.Hostname(); err == nil && h != "" {
+			config.AliasName = h
+		} else {
+			config.AliasName = "local-mirror"
+		}
+	}
+
+	// -r 留空的同步方（mirror/relay）先自动发现上游再继续启动。
+	// 必须在 InitDB（单实例锁）之后：否则用户选完服务器才因目录被占退出。
+	// 中继此刻自己的发现应答器尚未启动，结构上不会扫到自己
+	if config.SyncsFromUpstream() && *config.RealityIP == "" {
+		runDiscovery()
+	}
+
 	// 对下游提供服务的模式（reality/relay）在打印横幅前先绑定端口
 	// （从 DefaultPort 起自动探测），横幅里展示的才是真实监听端口；
 	// accept 循环稍后由 Reality 启动
@@ -132,6 +207,11 @@ func main() {
 		}
 		app.ServerListener = listener
 		config.ActualPort = port
+
+		// UDP 发现应答器：失败不致命（客户端仍可 -r 直连）
+		if _, err := network.StartDiscoveryResponder(port, config.AliasName, config.StartPath, *config.Secret); err != nil {
+			log.Warnf("UDP 服务发现应答器启动失败（客户端可用 -r 直连）: %v", err)
+		}
 	}
 
 	printBanner()
@@ -140,51 +220,17 @@ func main() {
 	app.App()
 }
 
-// ANSI 颜色码，仅在输出到终端时启用
-type palette struct {
-	bold, dim, cyan, green, reset string
-}
-
-func newPalette() palette {
-	// 遵守 NO_COLOR 约定 (https://no-color.org)；管道/重定向时输出纯文本
-	fi, err := os.Stdout.Stat()
-	isTTY := err == nil && fi.Mode()&os.ModeCharDevice != 0
-	if !isTTY || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
-		return palette{}
-	}
-	return palette{
-		bold:  "\033[1m",
-		dim:   "\033[2m",
-		cyan:  "\033[36m",
-		green: "\033[32m",
-		reset: "\033[0m",
-	}
-}
-
-// displayWidth 计算终端显示宽度：CJK 字符占两列，ASCII 占一列
-func displayWidth(s string) int {
-	w := 0
-	for _, r := range s {
-		if r >= 0x2E80 {
-			w += 2
-		} else {
-			w++
-		}
-	}
-	return w
-}
-
 // printBanner 向 stdout 输出启动状态。
 // 长驻进程默认日志级别下终端不应完全静默，用户需要知道进程在做什么
 func printBanner() {
-	p := newPalette()
+	p := termstyle.NewPalette(os.Stdout)
 	const width = 48
 	const labelWidth = 10
 
-	line := p.dim + strings.Repeat("─", width) + p.reset
+	line := p.Dim + strings.Repeat("─", width) + p.Reset
 	row := func(label, value string) {
-		pad := strings.Repeat(" ", max(1, labelWidth-displayWidth(label)))
-		fmt.Printf("  %s%s%s%s%s\n", p.dim, label, p.reset, pad, value)
+		pad := strings.Repeat(" ", max(1, labelWidth-termstyle.DisplayWidth(label)))
+		fmt.Printf("  %s%s%s%s%s\n", p.Dim, label, p.Reset, pad, value)
 	}
 
 	modeDescMap := map[string]string{"reality": "服务器", "mirror": "客户端", "relay": "中继"}
@@ -192,35 +238,41 @@ func printBanner() {
 
 	fmt.Println(line)
 	fmt.Printf("  %s%sLocal Mirror%s %s  ·  %s%s%s (%s)\n",
-		p.bold, p.cyan, p.reset, version, p.bold, *config.Mode, p.reset, modeDesc)
+		p.Bold, p.Cyan, p.Reset, version, p.Bold, *config.Mode, p.Reset, modeDesc)
 	fmt.Println(line)
 	row("同步目录", config.StartPath)
 	if config.SyncsFromUpstream() {
-		ip := *config.RealityIP
-		if ip == "" {
-			ip = "127.0.0.1"
+		switch {
+		case config.DiscoveredAddr != "":
+			row("上游服务器", fmt.Sprintf("%s%s%s %s(自动发现: %s)%s",
+				p.Green, config.DiscoveredAddr, p.Reset, p.Dim, config.DiscoveredAlias, p.Reset))
+		default:
+			ip := *config.RealityIP
+			if ip == "" {
+				ip = "127.0.0.1"
+			}
+			row("上游服务器", fmt.Sprintf("%s%s%s %s(端口探测 %d-%d)%s",
+				p.Green, ip, p.Reset, p.Dim, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, p.Reset))
 		}
-		row("上游服务器", fmt.Sprintf("%s%s%s %s(端口探测 %d-%d)%s",
-			p.green, ip, p.reset, p.dim, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, p.reset))
 	}
 	if config.ServesDownstream() {
-		row("监听地址", fmt.Sprintf("%s0.0.0.0:%d%s", p.green, config.ActualPort, p.reset))
+		row("监听地址", fmt.Sprintf("%s0.0.0.0:%d%s", p.Green, config.ActualPort, p.Reset))
 	}
 	if *config.Secret != "" {
-		row("传输加密", fmt.Sprintf("%s开启%s (Noise NNpsk0)", p.green, p.reset))
+		row("传输加密", fmt.Sprintf("%s开启%s (Noise NNpsk0)", p.Green, p.Reset))
 	} else {
-		row("传输加密", fmt.Sprintf("关闭 %s(明文传输，可用 -k 开启)%s", p.dim, p.reset))
+		row("传输加密", fmt.Sprintf("关闭 %s(明文传输，可用 -k 开启)%s", p.Dim, p.Reset))
 	}
 	// 仅同步方（mirror/relay）涉及删除，展示当前删除策略
 	if config.SyncsFromUpstream() {
 		if *config.AllowDelete {
-			row("删除同步", fmt.Sprintf("%s开启%s %s(忠实镜像，会删除本地多余文件)%s", p.green, p.reset, p.dim, p.reset))
+			row("删除同步", fmt.Sprintf("%s开启%s %s(忠实镜像，会删除本地多余文件)%s", p.Green, p.Reset, p.Dim, p.Reset))
 		} else {
-			row("删除同步", fmt.Sprintf("关闭 %s(仅增量，本地多余文件保留)%s", p.dim, p.reset))
+			row("删除同步", fmt.Sprintf("关闭 %s(仅增量，本地多余文件保留)%s", p.Dim, p.Reset))
 		}
 	}
 	row("实例 ID", fmt.Sprintf("%08x", config.InstanceID))
 	row("进程 PID", fmt.Sprintf("%d", os.Getpid()))
-	row("日志", fmt.Sprintf("%s %s(级别 %s)%s", logger.LogPath(), p.dim, *config.LogLevel, p.reset))
+	row("日志", fmt.Sprintf("%s %s(级别 %s)%s", logger.LogPath(), p.Dim, *config.LogLevel, p.Reset))
 	fmt.Println(line)
 }

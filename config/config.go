@@ -42,6 +42,7 @@ var (
 	RealityIP       *string
 	Secret          *string
 	Path            *string
+	Alias           *string
 	AllowDelete     *bool
 	Help            *bool
 	Version         *bool
@@ -50,6 +51,14 @@ var (
 	InstanceID      uint32 = 0x00000000 // Instance ID
 	ProtocolVersion uint16 = 0x0002     // Protocol version（v2：变更查询改为长轮询推送）
 	StartTime       int64  = 0          // Start time
+
+	// AliasName 解析后的最终实例别名（--alias → 主机名 → "local-mirror"），
+	// 服务端在 UDP 发现应答中广播，供客户端选择列表展示
+	AliasName string = ""
+	// DiscoveredAddr/DiscoveredAlias 客户端自动发现选定的上游 "ip:port" 与其别名。
+	// 仅在 -r 留空且发现流程成功时非空；InitConn 优先直连该地址
+	DiscoveredAddr  string = ""
+	DiscoveredAlias string = ""
 )
 
 // ServesDownstream 当前模式是否对下游提供同步服务（需要监听端口）
@@ -76,10 +85,11 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  reality     服务器模式：监听文件变化并提供同步服务。\n")
 	fmt.Fprintf(w, "              从 TCP %d 起自动选择第一个可用端口，实际端口见启动信息\n", DefaultPort)
 	fmt.Fprintf(w, "  mirror      客户端模式：连接服务器，将其目录镜像到本地。\n")
-	fmt.Fprintf(w, "              在 %d-%d 端口范围内自动探测服务端\n", DefaultPort, DefaultPort+PortScanRange-1)
+	fmt.Fprintf(w, "              -r 留空时自动发现局域网内的服务端（交互终端下列表选择），\n")
+	fmt.Fprintf(w, "              连接时在 %d-%d 端口范围内自动探测\n", DefaultPort, DefaultPort+PortScanRange-1)
 	fmt.Fprintf(w, "              默认仅增量同步（不删除）；加 --allow-delete 才会删除本地多余文件\n")
 	fmt.Fprintf(w, "  relay       中继模式：从上游服务器镜像到本地，同时向下游提供同步服务，\n")
-	fmt.Fprintf(w, "              可级联组成 A → B → C 传递链。必须用 -r 指定上游\n\n")
+	fmt.Fprintf(w, "              可级联组成 A → B → C 传递链。上游用 -r 指定或自动发现\n\n")
 
 	fmt.Fprintf(w, "Flags:\n")
 	fmt.Fprintf(w, "  -m, --mode string            运行模式: reality / mirror / relay (default \"reality\")\n")
@@ -87,7 +97,9 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  -l, --loglevel string        日志级别: debug, info, warn, error (default \"error\")\n")
 	fmt.Fprintf(w, "  -c, --cooldown int           全量扫描安全网间隔(秒)，仅客户端: 变更实时推送，此为兜底 (default 1800)\n")
 	fmt.Fprintf(w, "  -f, --filebuffersize uint    文件传输分块大小(字节)，仅服务端 (default 65536)\n")
-	fmt.Fprintf(w, "  -r, --realityip string       上游服务器IP地址（mirror/relay）；mirror 留空回退为 127.0.0.1\n")
+	fmt.Fprintf(w, "  -r, --realityip string       上游服务器IP地址（mirror/relay）；留空时自动发现局域网服务端\n")
+	fmt.Fprintf(w, "                               （UDP 组播/广播，VPN、跨网段或防火墙环境请用 -r 直连）\n")
+	fmt.Fprintf(w, "  -a, --alias string           实例别名，展示在局域网发现列表中；默认为主机名\n")
 	fmt.Fprintf(w, "      --allow-delete           删除同步：允许删除本地多余文件（默认关闭，仅增量同步）\n")
 	fmt.Fprintf(w, "                               关键路径（如 ~、/etc、系统目录）上会被拒绝启动\n")
 	fmt.Fprintf(w, "  -k, --secret string          传输加密口令（Noise NNpsk0），两端必须一致；\n")
@@ -108,6 +120,9 @@ func PrintUsage(w io.Writer) {
 
 	fmt.Fprintf(w, "  # 客户端连接到指定服务器\n")
 	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -p /srv/replica\n\n")
+
+	fmt.Fprintf(w, "  # 客户端自动发现局域网服务端（交互式列表选择）\n")
+	fmt.Fprintf(w, "  local-mirror -m mirror -p /srv/replica\n\n")
 
 	fmt.Fprintf(w, "  # 中继：从 192.168.1.100 镜像下来，同时向下游提供服务\n")
 	fmt.Fprintf(w, "  local-mirror -m relay -r 192.168.1.100 -p /srv/relay\n\n")
@@ -156,6 +171,9 @@ func init() {
 
 	Help = flag.Bool("help", false, "显示帮助信息")
 	flag.BoolVar(Help, "h", false, "同 --help")
+
+	Alias = flag.String("alias", "", "实例别名，服务端在局域网发现中展示；默认为主机名")
+	flag.StringVar(Alias, "a", "", "同 --alias")
 
 	Version = flag.Bool("version", false, "显示版本信息")
 	flag.BoolVar(Version, "v", false, "同 --version")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/network"
+	"net"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -15,22 +16,42 @@ import (
 // 单轮探测失败直接返回错误，重试交给 Mirror 主循环的退避逻辑。
 func InitConn() (*network.FileClient, error) {
 	ip := *config.RealityIP
+	exactAddr := ""
 	if ip == "" {
-		// 自动发现尚未实现，回退到本机地址
-		log.Warn("未指定服务器地址 (-r)，回退连接 127.0.0.1")
-		ip = "127.0.0.1"
+		if config.DiscoveredAddr != "" {
+			// 自动发现选定的精确地址优先直连；端口段扫描保留为后备
+			// （服务端重启可能落到相邻端口，重连时靠扫描自愈）
+			exactAddr = config.DiscoveredAddr
+			if host, _, err := net.SplitHostPort(exactAddr); err == nil {
+				ip = host
+			}
+		} else {
+			// 防御性回退：main 的发现流程已保证正常路径不会走到这里
+			log.Warn("未指定服务器地址 (-r)，回退连接 127.0.0.1")
+			ip = "127.0.0.1"
+		}
+	}
+
+	candidates := make([]string, 0, config.PortScanRange+1)
+	if exactAddr != "" {
+		candidates = append(candidates, exactAddr)
+	}
+	for port := config.DefaultPort; port < config.DefaultPort+config.PortScanRange; port++ {
+		addr := fmt.Sprintf("%s:%d", ip, port)
+		if addr != exactAddr {
+			candidates = append(candidates, addr)
+		}
 	}
 
 	var lastErr error
 	var handshakeErr error
-	for port := config.DefaultPort; port < config.DefaultPort+config.PortScanRange; port++ {
-		addr := fmt.Sprintf("%s:%d", ip, port)
+	for _, addr := range candidates {
 		log.Debugf("探测服务端端口: %s", addr)
 
 		fileClient, err := network.NewFileClient(addr, "default")
 		if err != nil {
 			if errors.Is(err, network.ErrSecureHandshake) {
-				log.Warnf("端口 %d 加密握手失败: %v", port, err)
+				log.Warnf("%s 加密握手失败: %v", addr, err)
 				handshakeErr = err
 			} else {
 				// 端口未开放，尝试下一个
@@ -39,7 +60,7 @@ func InitConn() (*network.FileClient, error) {
 			continue
 		}
 		if err := fileClient.Handshake(); err != nil {
-			log.Warnf("端口 %d 握手失败（口令不一致或被其他程序占用）: %v", port, err)
+			log.Warnf("%s 握手失败（口令不一致或被其他程序占用）: %v", addr, err)
 			fileClient.ConnectionClose()
 			// 端口开放但握手失败，比"端口拒连"更有定位价值，优先保留
 			handshakeErr = err
