@@ -19,6 +19,7 @@ type TaskConfig struct {
 	Secret         string   `yaml:"secret"`         // 传输加密口令（经环境变量传递，不进 argv）
 	LogLevel       string   `yaml:"loglevel"`       // 日志级别（-l）
 	AllowDelete    bool     `yaml:"allow_delete"`   // 删除同步（--allow-delete）
+	AllowCritical  bool     `yaml:"allow_critical"` // 允许在关键路径上同步（--allow-critical）
 	CoolDown       int64    `yaml:"cooldown"`       // 全量扫描间隔（-c）
 	FileBufferSize uint64   `yaml:"filebuffersize"` // 传输分块（-f）
 }
@@ -106,6 +107,9 @@ func applyDefaults(t, d *TaskConfig) {
 	}
 	if !t.AllowDelete {
 		t.AllowDelete = d.AllowDelete
+	}
+	if !t.AllowCritical {
+		t.AllowCritical = d.AllowCritical
 	}
 	if t.CoolDown == 0 {
 		t.CoolDown = d.CoolDown

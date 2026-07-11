@@ -3,6 +3,7 @@ package safety
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -96,17 +97,78 @@ func isAncestorOrEqual(ancestor, target string) bool {
 		!filepath.IsAbs(rel)
 }
 
-// CheckDeletableRoot 校验同步根目录能否安全地在其上启用删除。
-// 命中关键路径（相等，或该根目录是某个关键路径的祖先）时返回错误。
+// IsCriticalRoot 判断同步根是否落在关键路径上（相等，或是某关键路径的祖先，
+// 如根设为 / 或 ~）。命中返回 true 及命中的关键路径。
 // 校验对象是解引用后的真实路径，防止符号链接绕过。
-func CheckDeletableRoot(syncRoot string) error {
+func IsCriticalRoot(syncRoot string) (bool, string) {
 	root := normalize(syncRoot)
 	for _, danger := range dangerousPaths() {
 		d := normalize(danger)
-		// 根目录 == 关键路径，或根目录是关键路径的祖先（如根设为 / 或 ~）
 		if root == d || isAncestorOrEqual(root, d) {
-			return fmt.Errorf("拒绝在关键路径上启用删除同步: %s（命中 %s）", root, d)
+			return true, d
 		}
 	}
-	return nil
+	return false, ""
+}
+
+// CheckSyncSafety 三级安全阶梯的启动校验（仅同步方调用）。
+// 返回 snapshot 表示"覆盖已有文件前是否需要快照备份原文件"。
+//   - 非关键路径：无限制、不备份，行为与历史一致。
+//   - 关键路径 + 未解锁：拒绝（连只同步都不允许——同步会覆盖已存在文件）。
+//   - 关键路径 + allowCritical：允许同步并开启覆盖前快照；是否删除仍由
+//     --allow-delete 单独控制（两旗全给才在关键路径上删除；单给 delete 无
+//     allowCritical 会在此被拒）。
+func CheckSyncSafety(root string, allowCritical bool) (bool, error) {
+	isCrit, hit := IsCriticalRoot(root)
+	if !isCrit {
+		return false, nil
+	}
+	if !allowCritical {
+		return false, fmt.Errorf("拒绝在关键路径上同步: %s（命中 %s）。"+
+			"如确需请加 --allow-critical（仅同步不删除，首次覆盖会备份原文件到 .local-mirror/backups）；"+
+			"再加 --allow-delete 才会删除", normalize(root), hit)
+	}
+	return true, nil
+}
+
+// SnapshotBeforeOverwrite 在首次覆盖某文件前，把原文件快照到
+// <root>/.local-mirror/backups/<rel>，保留 local-mirror 动手前的原始版本。
+// 仅当目标已存在、且尚无快照时执行（反复同步不会 churn 掉原始版本）。
+// 用整文件复制而非硬链接：硬链接与原文件共享 inode，若覆盖是原地改写
+// （而非换 inode 的 rename）会连快照一起被改掉；复制的正确性不依赖覆盖方式。
+// 每个文件仅在首次覆盖时复制一次，系统/配置文件通常很小，代价可接受。
+// rel 由调用方保证已经过 SafeJoin 校验（在同步根内）。
+func SnapshotBeforeOverwrite(root, rel, fullPath string) error {
+	if _, err := os.Stat(fullPath); err != nil {
+		return nil // 新文件，无需备份
+	}
+	backupPath := filepath.Join(root, ".local-mirror", "backups", filepath.FromSlash(rel))
+	if _, err := os.Stat(backupPath); err == nil {
+		return nil // 已存原始快照，绝不覆盖它
+	}
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0755); err != nil {
+		return err
+	}
+	return copyFile(fullPath, backupPath)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }

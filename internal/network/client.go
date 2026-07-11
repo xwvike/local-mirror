@@ -571,6 +571,14 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				discardPartial(partialPath, metaPath)
 				return "", fmt.Errorf("file hash mismatch, expected %x, got %x", completeMsg.FileHash, fileHash)
 			}
+			// 关键路径解锁档：覆盖已有文件前先把原文件快照到 .local-mirror/backups。
+			// 快照失败即中止本文件覆盖（fail-safe：原文件必须先有退路才允许被覆盖），
+			// 其余文件不受影响（走既有单项失败隔离逻辑）
+			if config.SnapshotOverwrites {
+				if err := safety.SnapshotBeforeOverwrite(config.StartPath, filePath, fullPath); err != nil {
+					return "", fmt.Errorf("%w: 备份原文件失败，跳过覆盖 %s: %v", appError.ErrConnection, filePath, err)
+				}
+			}
 			if err := os.Rename(partialPath, fullPath); err != nil {
 				return "", fmt.Errorf("error renaming partial file to %s: %w", fullPath, err)
 			}

@@ -192,14 +192,17 @@ func main() {
 	}
 	config.StartPath = root
 
-	// 启用删除的同步方（mirror/relay）不得运行在关键路径上：
-	// 即使用户主动加了 --allow-delete，也用真实路径（解引用后）拒绝在
-	// ~、/、系统目录等位置删除，作为与用户意图无关的兜底防线
-	if *config.AllowDelete && config.SyncsFromUpstream() {
-		if err := safety.CheckDeletableRoot(root); err != nil {
+	// 三级安全阶梯（对所有同步方生效，不再只在 --allow-delete 时检查）：
+	// 关键路径（~、/、系统目录，真实路径解引用后判定）默认连"只同步"都拒绝
+	// ——因为同步会覆盖已存在文件；须 --allow-critical 显式解锁，解锁后开启
+	// 覆盖前快照备份。删除仍由 --allow-delete 单独控制
+	if config.SyncsFromUpstream() {
+		snapshot, err := safety.CheckSyncSafety(root, *config.AllowCritical)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
 			os.Exit(2)
 		}
+		config.SnapshotOverwrites = snapshot
 	}
 
 	logger.InitLogger()
@@ -321,6 +324,11 @@ func printBanner() {
 			row("删除同步", fmt.Sprintf("%s开启%s %s(忠实镜像，会删除本地多余文件)%s", p.Green, p.Reset, p.Dim, p.Reset))
 		} else {
 			row("删除同步", fmt.Sprintf("关闭 %s(仅增量，本地多余文件保留)%s", p.Dim, p.Reset))
+		}
+		// 关键路径解锁档：提示覆盖前会快照备份
+		if config.SnapshotOverwrites {
+			row("关键路径", fmt.Sprintf("%s已解锁%s %s(--allow-critical，首次覆盖备份到 .local-mirror/backups)%s",
+				p.Green, p.Reset, p.Dim, p.Reset))
 		}
 	}
 	row("实例 ID", fmt.Sprintf("%08x", config.InstanceID))

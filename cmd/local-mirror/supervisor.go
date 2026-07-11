@@ -207,6 +207,9 @@ func taskArgs(t config.TaskConfig) []string {
 	if t.AllowDelete {
 		args = append(args, "--allow-delete")
 	}
+	if t.AllowCritical {
+		args = append(args, "--allow-critical")
+	}
 	if t.CoolDown > 0 {
 		args = append(args, "-c", strconv.FormatInt(t.CoolDown, 10))
 	}

@@ -40,6 +40,14 @@ tasks:
     allow_delete: true
     cooldown: 3600
 
+  # 客户端:同步到关键路径(如 /etc)需显式解锁 allow_critical;
+  # 默认这些路径连同步都拒绝,解锁后首次覆盖会备份原文件到 .local-mirror/backups
+  # - name: etc-mirror
+  #   mode: mirror
+  #   path: /etc
+  #   realityip: 192.168.1.100
+  #   allow_critical: true      # 仅同步不删除;再加 allow_delete: true 才会删除
+
   # 中继:从上游镜像,同时向下游提供服务
   # - name: relay-hub
   #   mode: relay

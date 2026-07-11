@@ -52,6 +52,7 @@ var (
 	Ignore          *string
 	ConfigFile      *string
 	AllowDelete     *bool
+	AllowCritical   *bool
 	Help            *bool
 	Version         *bool
 	ActualPort      int    = 0          // 服务端实际监听的端口（启动时探测确定）
@@ -67,6 +68,10 @@ var (
 	// 仅在 -r 留空且发现流程成功时非空；InitConn 优先直连该地址
 	DiscoveredAddr  string = ""
 	DiscoveredAlias string = ""
+
+	// SnapshotOverwrites 为真时，客户端覆盖已有文件前先把原文件快照到
+	// .local-mirror/backups（关键路径 + --allow-critical 档位）。启动时置位
+	SnapshotOverwrites bool = false
 )
 
 // LoadIgnoreList 合并生效忽略列表：内置默认 + -i/--ignore 逗号分隔条目 +
@@ -158,7 +163,9 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               内置默认: .local-mirror .git .DS_Store；\n")
 	fmt.Fprintf(w, "                               也可写入 .local-mirror/ignore 文件（每行一条，# 注释），改后需重启\n")
 	fmt.Fprintf(w, "      --allow-delete           删除同步：允许删除本地多余文件（默认关闭，仅增量同步）\n")
-	fmt.Fprintf(w, "                               关键路径（如 ~、/etc、系统目录）上会被拒绝启动\n")
+	fmt.Fprintf(w, "      --allow-critical         允许在关键路径（~、/etc、系统目录）上同步；\n")
+	fmt.Fprintf(w, "                               默认这些路径连同步都拒绝。首次覆盖会把原文件备份到\n")
+	fmt.Fprintf(w, "                               .local-mirror/backups；再叠加 --allow-delete 才会删除\n")
 	fmt.Fprintf(w, "  -k, --secret string          传输加密口令（Noise NNpsk0），两端必须一致；\n")
 	fmt.Fprintf(w, "                               为空则明文传输。也可用环境变量 LOCAL_MIRROR_SECRET\n")
 	fmt.Fprintf(w, "      --config string          多任务 YAML 配置文件，以监督模式同时运行多个任务\n")
@@ -213,6 +220,8 @@ func init() {
 	// 默认关闭删除：仅增量同步（create/modify），本地多余文件不删。
 	// 这样源端异常清空不会级联删除下游。完全忠实镜像需显式解锁
 	AllowDelete = flag.Bool("allow-delete", false, "删除同步：允许删除本地多余文件（默认关闭，仅增量同步）")
+
+	AllowCritical = flag.Bool("allow-critical", false, "允许在关键路径（~、/etc、系统目录等）上同步；首次覆盖会备份原文件")
 
 	LogLevel = flag.String("loglevel", "error", "日志级别: debug, info, warn, error")
 	flag.StringVar(LogLevel, "l", "error", "同 --loglevel")
