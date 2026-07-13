@@ -34,13 +34,41 @@ func SafeJoin(root, rel string) (string, error) {
 	return joined, nil
 }
 
-// dangerousPaths 返回当前平台上不应作为"可删除同步根目录"的关键路径列表。
-// 这些是操作系统或用户的核心目录，在其上启用删除极易造成灾难性数据损失。
-// 列表按需持续补充。
-func dangerousPaths() []string {
+// 关键路径分两类，语义不同：
+//
+// criticalSubtrees：系统管理的目录树，**其内部任意子目录**都算关键路径。
+// 这是三级阶梯最初要防护的主场景——`-p /etc/nginx` 与 `-p /etc` 同样危险，
+// 覆盖的都是系统配置。
+//
+// criticalRootsOnly："容器"目录，只有**本身**算关键路径，子目录是正常的
+// 用户工作区。例如 `-p ~` 会镜像掉整个家目录（危险），但 `-p ~/Pictures`
+// 是这个工具最日常的用法，不该要求旗子。`/` 必须归此类：所有路径都是
+// `/` 的子目录，若按子树处理则一切路径都成关键路径，判定退化为恒真。
+func criticalSubtrees() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		// /var 不入子树：macOS 的用户临时目录（$TMPDIR）就在 /var/folders 下
+		return []string{
+			"/System", "/Library", "/Applications",
+			"/bin", "/sbin", "/usr", "/etc",
+		}
+	case "windows":
+		return []string{
+			`C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`,
+			`C:\ProgramData`,
+		}
+	default: // linux 及其它类 Unix
+		return []string{
+			"/bin", "/sbin", "/usr", "/etc", "/var", "/lib", "/lib64",
+			"/boot", "/sys", "/proc", "/dev", "/run",
+		}
+	}
+}
+
+func criticalRootsOnly() []string {
 	var paths []string
 
-	// 用户主目录本身（跨平台）
+	// 用户主目录本身（跨平台）；子目录是日常同步目标，不受限
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		paths = append(paths, home)
 	}
@@ -48,20 +76,13 @@ func dangerousPaths() []string {
 	switch runtime.GOOS {
 	case "darwin":
 		paths = append(paths,
-			"/", "/System", "/Library", "/Applications", "/Users",
-			"/bin", "/sbin", "/usr", "/etc", "/var", "/private",
-			"/opt", "/cores", "/Volumes",
+			"/", "/Users", "/private", "/var", "/opt", "/cores", "/Volumes",
 		)
 	case "windows":
-		paths = append(paths,
-			`C:\`, `C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`,
-			`C:\Users`, `C:\ProgramData`,
-		)
+		paths = append(paths, `C:\`, `C:\Users`)
 	default: // linux 及其它类 Unix
 		paths = append(paths,
-			"/", "/bin", "/sbin", "/usr", "/etc", "/var", "/lib", "/lib64",
-			"/boot", "/sys", "/proc", "/dev", "/root", "/opt", "/srv", "/run",
-			"/home", "/mnt", "/media",
+			"/", "/home", "/root", "/opt", "/srv", "/mnt", "/media",
 		)
 	}
 	return paths
@@ -69,17 +90,31 @@ func dangerousPaths() []string {
 
 // normalize 取路径的真实绝对形式：解引用符号链接后再清洗。
 // 必须解引用，否则可以用 `ln -s /etc alias` 之类的方式绕过关键路径校验。
-// 若路径不存在或无法解引用，退回到 Abs+Clean（尽力而为）。
+//
+// 路径尚不存在时，EvalSymlinks 会整体失败，但前缀里的符号链接依然必须
+// 解析——macOS 上 /etc 是指向 /private/etc 的链接，`-p /etc/尚未创建的目录`
+// 若不解析前缀就匹配不到关键路径。因此逐级回退：解析最深的已存在祖先，
+// 再把不存在的尾部拼回去。
 func normalize(p string) string {
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		if abs, err := filepath.Abs(resolved); err == nil {
-			return filepath.Clean(abs)
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	abs = filepath.Clean(abs)
+
+	suffix := ""
+	cur := abs
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Clean(filepath.Join(resolved, suffix))
 		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs // 连根都解析不了，退回 Abs+Clean（尽力而为）
+		}
+		suffix = filepath.Join(filepath.Base(cur), suffix)
+		cur = parent
 	}
-	if abs, err := filepath.Abs(p); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(p)
 }
 
 // isAncestorOrEqual 判断 ancestor 是否等于 target，或是 target 的祖先目录。
@@ -97,14 +132,25 @@ func isAncestorOrEqual(ancestor, target string) bool {
 		!filepath.IsAbs(rel)
 }
 
-// IsCriticalRoot 判断同步根是否落在关键路径上（相等，或是某关键路径的祖先，
-// 如根设为 / 或 ~）。命中返回 true 及命中的关键路径。
+// IsCriticalRoot 判断同步根是否落在关键路径上。命中返回 true 及命中的关键路径。
 // 校验对象是解引用后的真实路径，防止符号链接绕过。
+//
+// 系统目录树（criticalSubtrees）双向检测：同步根包含它（如 -p / 覆盖 /etc）
+// 或落在它内部（如 -p /etc/nginx）都算命中——后者是真实网络测试中发现的
+// 判定缺口（原实现只查了前一个方向）。
+// 容器目录（criticalRootsOnly）只检测"同步根等于或包含它"：其子目录
+// （~/Pictures、/Volumes/Backup/x 等）是正常工作区，不受限。
 func IsCriticalRoot(syncRoot string) (bool, string) {
 	root := normalize(syncRoot)
-	for _, danger := range dangerousPaths() {
+	for _, danger := range criticalSubtrees() {
 		d := normalize(danger)
-		if root == d || isAncestorOrEqual(root, d) {
+		if isAncestorOrEqual(root, d) || isAncestorOrEqual(d, root) {
+			return true, d
+		}
+	}
+	for _, danger := range criticalRootsOnly() {
+		d := normalize(danger)
+		if isAncestorOrEqual(root, d) {
 			return true, d
 		}
 	}
