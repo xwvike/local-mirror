@@ -145,3 +145,24 @@
 
 快照用整文件复制而非硬链接：硬链接共享 inode，原地改写会连快照一起改（已被单测
 抓到），复制的正确性不依赖覆盖方式。每文件仅首次覆盖复制一次。
+
+## 第二轮审计（2026-07-13）：健壮性加固
+
+主动复审并发/协议/资源面，未发现新的致命缺陷（首轮已覆盖路径穿越、OOM、日志）。
+以下为加固项：
+
+- **✅ 服务端连接数上限**：`Start` 的 accept 循环原本无限 `go handleConnection`，
+  未设 `-k` 时无认证，可被无限开连接耗尽 goroutine/内存。加带缓冲信号量
+  （`maxConcurrentConnections = 256`），非阻塞获取、满则拒绝关闭；`handleConnection`
+  退出释放。
+- **✅ 删除死代码 `FileClient.Ping()`**：全仓零调用，README 曾宣称"周期心跳"名不副实。
+  存活性实由长轮询往返（≤50s）+ TCP keepalive（30s）+ 服务端 90s 空闲超时覆盖，
+  心跳冗余。README 已更正；服务端 `handlePingRequest` 与 `MsgTypeReverify` 一并
+  留作已文档化的死路径，待未来协议清理统一移除。
+
+**已知局限（记录在案，暂不处理）**：
+- **tier2 冷目录修改检测**基于 size+mtime 轮询：同尺寸 + 同一秒内的修改会漏
+  （tier1 的 fsnotify 不受影响）。与 rsync 不带 `--checksum` 同性质。
+- **修改检测在两侧哈希都为空时**（仅建树哈希计算失败的边角）会把同尺寸文件判为未变。
+- **非 `ErrConnection` 的 handler 错误**（如 `handleTreeRequest` 的 DB 读失败）只 log
+  不关连接，客户端会阻塞到读超时才重连——是"停顿→超时→重连"的不干净自愈，非数据损坏。

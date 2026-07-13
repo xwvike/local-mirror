@@ -28,9 +28,18 @@ const LongPollHold = 50 * time.Second
 // 同时覆盖"建立了 TCP 连接但从不发消息"的僵尸连接
 const ClientIdleTimeout = 90 * time.Second
 
+// maxConcurrentConnections 服务端同时处理的连接数上限。
+// 未设 -k 时握手无认证，无上限会被无限开连接耗尽 goroutine/内存；
+// 达上限后新连接直接拒绝（关闭），已有连接不受影响。局域网多客户端
+// 场景 256 足够宽裕
+const maxConcurrentConnections = 256
+
 type fileServer struct {
 	listener  net.Listener
 	clientMap sync.Map
+	// connSlots 带缓冲的信号量，容量即连接上限；每条连接占一个槽，
+	// handleConnection 退出时释放
+	connSlots chan struct{}
 }
 
 // ListenAvailable 从 basePort 开始逐个尝试监听，返回第一个可用端口。
@@ -106,6 +115,7 @@ func NewFileServer(listener net.Listener) *fileServer {
 	return &fileServer{
 		listener:  listener,
 		clientMap: sync.Map{},
+		connSlots: make(chan struct{}, maxConcurrentConnections),
 	}
 }
 
@@ -121,6 +131,15 @@ func (s *fileServer) Start() error {
 			log.Error("Error accepting connection:", err)
 			continue
 		}
+		// 连接数上限：非阻塞获取槽位，满则直接拒绝，避免无认证时被无限
+		// 开连接耗尽资源。槽位在 handleConnection 退出时释放
+		select {
+		case s.connSlots <- struct{}{}:
+		default:
+			log.Warnf("并发连接数达上限 %d，拒绝 %s", maxConcurrentConnections, conn.RemoteAddr())
+			conn.Close()
+			continue
+		}
 		// 长轮询挂起期间连接静默，keepalive 帮助检测死客户端
 		enableKeepAlive(conn)
 		go s.handleConnection(conn)
@@ -128,6 +147,9 @@ func (s *fileServer) Start() error {
 }
 
 func (s *fileServer) handleConnection(conn net.Conn) {
+	// 释放连接槽位（与 Start 中的获取配对）；置于最前，任何退出路径都归还
+	defer func() { <-s.connSlots }()
+
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Client connected from %s to local port %s", clientAddr, conn.LocalAddr().String())
 
@@ -284,6 +306,9 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 	}
 }
 
+// handlePingRequest 处理客户端心跳。注意：当前客户端不再主动发送心跳
+// （存活性由长轮询往返节奏 + TCP keepalive 覆盖，见 README），此路径已成
+// 死代码，与 MsgTypeReverify 一并留待未来协议清理时移除。
 func (s *fileServer) handlePingRequest(ID uint32, bodyBytes []byte) error {
 	_client, ok := s.clientMap.Load(ID)
 	if !ok {
