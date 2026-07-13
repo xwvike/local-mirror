@@ -1,77 +1,44 @@
-# Local Mirror
+# local-mirror
 
-局域网目录镜像同步工具。把一台机器（服务端，reality）上的目录**单向**镜像到另一台机器（客户端，mirror），基于自定义 TCP 二进制协议，无外部服务依赖。
+English | [简体中文](README.zh-CN.md)
+
+One-way directory mirroring over TCP. One machine serves a directory (the
+`reality` mode), others keep a live replica of it (`mirror`), optionally
+through relays chained A → B → C. A single static binary with a small custom
+binary protocol — no external services, no cloud, nothing to install besides
+the binary itself.
 
 ```
-┌──────────────┐    自定义 TCP 协议     ┌──────────────┐
-│   reality    │ ────────────────────▶ │    mirror    │
-│  （服务端）    │   目录树 / 变更 / 文件  │  （客户端）    │
-└──────────────┘                       └──────────────┘
-      监听文件变化                          持续拉取，保持一致
+┌─────────────┐   tree / changes / files   ┌─────────────┐
+│   reality   │ ─────────────────────────▶ │   mirror    │
+│  (server)   │      custom TCP proto      │  (client)   │
+└─────────────┘                            └─────────────┘
+ watches the fs                             pulls, stays in sync
 ```
 
-> ⚠️ 镜像是单向的。**默认仅做增量同步（不删除）**：客户端本地多出来的文件会保留。
-> 如需服务端删除的文件也同步删除（完全忠实镜像），需显式加 `--allow-delete`；
-> 该模式下同步根目录若命中用户主目录、系统目录等关键路径会被拒绝启动。
+Mirroring is additive by default: files that exist only on the mirror side
+are left alone. Deletion must be enabled explicitly with `--allow-delete`,
+and even then the program refuses to run on critical paths (your home
+directory, `/etc`, system trees) unless you also pass `--allow-critical`.
 
-## 特性
-
-- **实时推送同步**
-  - 文件系统事件监听（fsnotify）：服务端实时记录变更目录
-  - 长轮询推送：客户端阻塞等待，服务端一有变更立即下发（约 2 秒内到达镜像端）；
-    空闲时客户端不轮询、不唤醒 CPU，仅阻塞在一个 socket 上
-  - 全量扫描：低频兜底，递归比对整棵目录树，作为最终一致性的安全网
-  - 正确性来自时间区间查询而非推送信号，任何一次通知丢失都会被下次查询捞回
-- **省电与休眠友好**：空闲时零轮询；服务端冷目录轮询自适应退避；
-  客户端检测到长时间休眠后强制全量对账，不信任已过期的增量窗口
-- **内容级比对**：基于 blake3 哈希 + 文件大小判断差异，不会重复传输未变化的文件
-- **保真镜像**：下载后将镜像文件的修改时间对齐服务端源文件；同目录内的重命名
-  被识别为移动，本地 `os.Rename` 完成，不重新下载整个文件
-- **中继级联**：`relay` 模式一个进程同时作为下游的服务端与上游的客户端，
-  组成 A → B → C 传递链；变更沿链实时传播，重命名在每一跳都免重传，
-  mtime 全链一致。自连接防护避免中继在端口扫描时接到自己
-- **可靠传输**：分块传输，落盘走"分片文件 → 全文件哈希校验 → 原子改名"，不会留下半截文件
-- **断点续传**：下载中断后分片保留在 `.local-mirror/partial/`，重试时从断点继续；
-  服务端文件在中断期间变化会被指纹识破，自动丢弃分片重新下载
-- **热度评分监视**（应对 fsnotify 的 watch 数量上限）：目录按事件频率/路径特征打分，
-  热门目录进 tier1 实时监听，冷门目录进 tier2 低频轮询
-- **端口自动探测**：服务端从 52345 起自动选择可用端口；客户端在同一范围内握手探测，
-  不会误连到恰好占用端口的其他程序
-- **服务自动发现**：客户端 `-r` 留空时 UDP 扫描局域网服务端，交互终端下弹出
-  方向键选择列表（别名/地址/同步目录）；非交互环境恰好一台自动连接。
-  查询-应答式，空闲零流量；设置 `-k` 时探测经 MAC 认证，未认证扫描不泄露目录信息。
-  组播/广播不过 VPN 与跨网段路由，这类环境用 `-r` 直连
-- **自定义忽略**：`-i "node_modules,*.log"` 或 `.local-mirror/ignore` 文件（每行一条，
-  # 注释），按路径段匹配、支持 `* ? []` 通配符。服务端命中即不扫描（不进树），
-  客户端命中即不同步（不下载、`--allow-delete` 下也不删除本地副本）。
-  注意：内置默认仅 `.local-mirror` `.git` `.DS_Store`——早期版本默认忽略的
-  node_modules、Library 等现在会正常同步，需要忽略请自行添加
-- **断线自愈**：客户端自动重连并通过握手确认仍是同一台服务端（服务端重启后
-  实例 ID 变化会被识破），失败则整体重建会话
-- **连接存活**：无需独立心跳——长轮询每 ≤50 秒就有一次往返，配合 TCP keepalive
-  （30 秒）在 OS 层探测死对端；服务端对空闲超 90 秒的连接自动断开，僵尸连接不常驻。
-  服务端同时限制并发连接数，避免被无限开连接耗尽资源
-- **传输加密**（可选）：Noise 协议 NNpsk0 模式（X25519 + ChaCha20-Poly1305 + BLAKE2s），
-  两端配置相同口令（`-k`）即开启——口令派生 PSK 完成双向认证，临时密钥提供前向保密；
-  口令不一致或对端明文时握手直接拒绝
-
-## 快速开始
+## Quick start
 
 ```bash
-# 服务端：共享指定目录（-p 省略时为当前工作目录）
+# serve a directory (-p defaults to the current working directory)
 local-mirror -m reality -p /path/to/source
 
-# 客户端：把服务端目录镜像到本地
+# replicate it on another machine
 local-mirror -m mirror -r 192.168.1.100 -p /path/to/replica
 
-# 客户端：不指定 -r，自动发现局域网服务端并交互选择
+# leave out -r to discover servers on the LAN and pick one interactively
 local-mirror -m mirror -p /path/to/replica
 
-# 中继：从上游镜像下来，同时向下游提供服务（可级联 A → B → C）
+# relay: mirror from upstream and serve downstream at the same time
 local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
 ```
 
-启动后会输出状态横幅（实际监听端口、同步目录、日志位置等）：
+On startup it prints a banner with the actual listen port, sync directory
+and log location. Fair warning: the CLI output is currently in Chinese.
 
 ```
 ────────────────────────────────────────────────
@@ -85,66 +52,137 @@ local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
 ────────────────────────────────────────────────
 ```
 
-## 参数
+## How it works
 
-| 参数 | 说明 | 默认值 |
+Both sides scan the sync directory on startup, hashing files with blake3 in
+parallel. The resulting tree is persisted to bbolt (`.local-mirror/cache.db`),
+so a restart only rehashes files whose size or mtime changed and prunes nodes
+deleted while the process was down.
+
+The server watches for changes with fsnotify. Directories are scored by
+activity: hot ones get real-time watches, cold ones fall back to slow polling
+with adaptive backoff. This keeps the watch count under the OS limit and lets
+an idle laptop actually go idle. Changed directories are recorded in a
+one-hour rolling journal.
+
+The client doesn't poll. It sends a "wait for changes" request and blocks;
+the server answers as soon as something changes, or after 50 seconds to keep
+the connection alive. Changes typically reach the mirror within a couple of
+seconds. Correctness never depends on a notification arriving: every request
+queries a time interval against the journal, so a lost wakeup is simply
+picked up by the next round trip. A low-frequency full rescan (every 30
+minutes by default) acts as the final safety net and is forced after the
+machine wakes from a long sleep.
+
+Files are diffed by blake3 hash and size — unchanged content is never
+re-transferred. Transfers are chunked, verified against the whole-file hash,
+and moved into place with an atomic rename, so you never see a half-written
+file. Interrupted downloads keep their partial data in `.local-mirror/partial/`
+and resume from the offset; if the source file changed in the meantime the
+fingerprint won't match and the download starts over. A rename within a
+directory is recognized by hash and performed locally instead of
+re-downloading, and mtimes are copied from the source. Relays apply changes
+through the same engine and wake their own downstream immediately, so
+renames stay cheap and mtimes stay accurate across every hop of a chain.
+
+The long-poll round trip doubles as a heartbeat: TCP keepalive probes dead
+peers at the OS level, the server drops connections idle for more than 90
+seconds, and caps how many it accepts concurrently. If the server restarts,
+the client notices the instance ID change during reconnect and rebuilds its
+session with a full reconciliation.
+
+Symlinks are not tracked at all — not synced, not dereferenced. This is
+deliberate: dereferencing links would let content from outside the sync
+root leak into the mirror. See [SECURITY.md](SECURITY.md).
+
+### LAN discovery
+
+When `-r` is omitted, mirror and relay probe the local network over UDP
+multicast/broadcast (query–response, zero idle traffic). In an interactive
+terminal you get a list to pick from; non-interactive environments connect
+automatically when exactly one server is found. With `-k` set, probes carry
+a keyed MAC and servers ignore unauthenticated scans instead of revealing
+their sync paths. Discovery does not cross routers or VPN tunnels — use
+`-r` there.
+
+## Flags
+
+| Flag | Description | Default |
 |---|---|---|
-| `-m, --mode` | 运行模式：`reality`（服务端）/ `mirror`（客户端）/ `relay`（中继） | `reality` |
-| `-p, --path` | 同步根目录（状态目录 `.local-mirror` 也位于其下），适合服务化部署 | 当前工作目录 |
-| `-r, --realityip` | 上游服务器 IP（mirror/relay）；留空时自动发现局域网服务端 | 空 |
-| `-a, --alias` | 实例别名，展示在局域网发现列表中 | 主机名 |
-| `-i, --ignore` | 追加忽略模式（逗号分隔），按路径段匹配、支持 `* ? []`；服务端不扫描 / 客户端不同步 | 空 |
-| `--config` | 多任务 YAML 配置，监督模式同时运行多个任务（与其余参数互斥） | 空 |
-| `--allow-delete` | 删除同步：允许删除本地多余文件（忠实镜像） | `false` |
-| `--allow-critical` | 允许在关键路径（`~`、`/etc`、系统目录等）上同步；默认这些路径连同步都拒绝。首次覆盖会备份原文件 | `false` |
-| `-c, --cooldown` | 全量扫描安全网间隔（秒），仅客户端；变更本身实时推送，此为兜底 | `1800` |
-| `-f, --filebuffersize` | 文件传输分块大小（字节），仅服务端 | `65536` |
-| `-k, --secret` | 传输加密口令（两端一致才能通信），空则明文；也可用环境变量 `LOCAL_MIRROR_SECRET` | 空 |
-| `-l, --loglevel` | 日志级别：`debug` / `info` / `warn` / `error` | `error` |
-| `-h, --help` | 显示帮助 | |
-| `-v, --version` | 显示版本 | |
+| `-m, --mode` | `reality` (server), `mirror` (client), or `relay` | `reality` |
+| `-p, --path` | sync root; state lives in `.local-mirror/` beneath it | working dir |
+| `-r, --realityip` | upstream address for mirror/relay; empty = LAN discovery | |
+| `-a, --alias` | instance name shown in discovery lists | hostname |
+| `-i, --ignore` | extra ignore patterns, comma-separated | |
+| `--config` | YAML config running multiple tasks (excludes the other flags) | |
+| `--allow-delete` | delete local files that no longer exist upstream | off |
+| `--allow-critical` | allow syncing on critical paths, with overwrite backups | off |
+| `-c, --cooldown` | full-rescan interval in seconds, client side | `1800` |
+| `-f, --filebuffersize` | transfer chunk size in bytes, server side | `65536` |
+| `-k, --secret` | transport encryption passphrase (or env `LOCAL_MIRROR_SECRET`) | |
+| `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
 
-完整说明见 `local-mirror --help`。
+`local-mirror --help` has the long version.
 
-## 构建
+Ignore patterns (from `-i` or a `.local-mirror/ignore` file, one per line,
+`#` comments) are matched per path segment at any depth and support `* ? []`
+globs. On the server a match means the entry is never scanned or served; on
+the client it means never downloaded and never deleted, even with
+`--allow-delete`. Built-in defaults are only `.local-mirror`, `.git` and
+`.DS_Store` — add things like `node_modules` yourself if you want them
+skipped.
 
-```bash
-# 本机构建
-go build -o local-mirror ./cmd/local-mirror
+## Deletion safety
 
-# 交叉编译全平台（输出到 dist/，版本号自动取 git describe）
-./build.sh        # Linux / macOS
-./build.ps1       # Windows
-```
+Syncing overwrites existing files, and `--allow-delete` removes extra ones,
+so the failure mode worth designing against is pointing the tool at the
+wrong directory. There are three levels:
 
-## 服务化部署（systemd）
+1. **Default** — sync only, no deletion. Critical paths are refused
+   outright: the home directory, filesystem roots, and system trees such as
+   `/etc` or `/usr` *including their subdirectories* (`-p /etc/nginx` is
+   refused just like `-p /etc`). Paths are resolved through symlinks before
+   the check, so aliasing tricks don't get around it. Ordinary directories
+   inside your home are not restricted.
+2. **`--allow-critical`** — unlocks syncing on critical paths, still without
+   deletion. The first time an existing file would be overwritten, the
+   original is copied to `.local-mirror/backups/<relative path>` first.
+   Later syncs never touch that backup, and if the copy fails the file is
+   skipped rather than overwritten without one.
+3. **`--allow-delete`** — enables deletion. On critical paths it only works
+   combined with `--allow-critical`; on normal paths it is enough on its
+   own.
 
-配合 `-p` 指定同步目录，无需 cd 即可从任何位置（包括服务管理器）启动。
-仓库提供了 systemd 服务示例：[deploy/local-mirror.service](deploy/local-mirror.service)。
+Independently of the ladder, every path the server sends is validated to
+stay inside the sync root. Anything that escapes — `..` traversal, absolute
+paths — is rejected before it touches the disk, so a malicious or buggy
+server cannot write or delete outside the directory you gave it.
 
-```bash
-sudo cp local-mirror /usr/local/bin/
-sudo cp deploy/local-mirror.service /etc/systemd/system/
-# 编辑 ExecStart 中的模式/目录/上游地址后：
-sudo systemctl daemon-reload
-sudo systemctl enable --now local-mirror
-journalctl -u local-mirror -f    # 横幅与错误输出
-```
+## Encryption
 
-加密口令建议通过 `Environment=LOCAL_MIRROR_SECRET=...` 或 `EnvironmentFile=`
-注入，避免出现在 `ps` 输出中。
+Optional, via the Noise protocol (NNpsk0: X25519 + ChaCha20-Poly1305 +
+BLAKE2s). Give both ends the same passphrase with `-k` and you get mutual
+authentication and forward secrecy; a peer with a wrong passphrase, or one
+speaking plaintext, fails the handshake immediately.
 
-## 多任务（YAML 配置）
+On anything but a trusted LAN — the public internet, shared Wi-Fi,
+multi-tenant networks — use `-k` together with an explicit `-r`. Without
+encryption the handshake is unauthenticated, and discovery replies are
+plaintext with an amplification factor, so discovery is a trusted-LAN
+feature only. The audit notes in [SECURITY.md](SECURITY.md) go into detail.
 
-一台机器要同时共享多个目录、或既做服务端又做备份客户端时，用一个 YAML
-声明全部任务，`--config` 一条命令启动（示例：[deploy/local-mirror.example.yml](deploy/local-mirror.example.yml)）：
+## Multiple tasks (YAML)
+
+One machine sharing several directories, or serving one and backing up
+another, can run everything from a single YAML file
+(example: [deploy/local-mirror.example.yml](deploy/local-mirror.example.yml)):
 
 ```yaml
 defaults:
   loglevel: info
 
 tasks:
-  - name: photos          # 任务名 = 发现别名 = 日志前缀,缺省取路径末段
+  - name: photos          # task name = discovery alias = log prefix
     mode: reality
     path: /srv/photos
     ignore: [cache, "*.log"]
@@ -159,75 +197,76 @@ tasks:
 local-mirror --config /etc/local-mirror.yml
 ```
 
-运行模型：**一任务一子进程**（监督模式），任务间零共享、互不波及；
-日志按 `[任务名]` 前缀汇聚到父进程输出。异常退出指数退避重启
-（5s 起封顶 60s），退出码 2（目录不存在、口令错等配置问题）判为
-永久错误，该任务停止、其余照常。父进程收到 SIGTERM/SIGINT 时
-统一停止全部子任务，适合直接作为 systemd 服务运行。
+Each task runs as its own child process, so tasks share nothing and can't
+take each other down. Logs are multiplexed with a `[task-name]` prefix.
+Crashed tasks restart with exponential backoff (5s up to 60s); exit code 2
+(missing directory, bad passphrase — configuration problems) is treated as
+permanent and stops only that task. SIGTERM/SIGINT to the parent shuts down
+all children, which makes the whole thing suitable as a single systemd
+service.
 
-注意：`--config` 与其余命令行参数互斥；同机服务端任务共享
-52345-52354 端口段（最多 10 个）；mirror/relay 任务建议显式写
-`realityip`（留空走自动发现：扫到零台按可重试处理，会退避重启再扫，
-兼容上游后启动的开机顺序；扫到多台是配置歧义，判永久错误）；
-`secret` 经环境变量传给子进程，不出现在 `ps` 里。
+A few practical notes: server tasks on one machine share the 52345–52354
+port range (10 at most); mirror/relay tasks are better off with an explicit
+`realityip` (with discovery, finding zero servers is retried with backoff —
+this tolerates the upstream booting later — but finding several is treated
+as a permanent configuration error); `secret` is passed to children through
+the environment, so it never shows up in `ps`.
 
-## 工作原理
+## Running under systemd
 
-1. **启动建树**：两端各自递归扫描同步目录，并发计算文件 blake3 哈希，
-   目录树持久化到 bbolt（`.local-mirror/cache.db`）。缓存跨重启复用：
-   启动时按 size+mtime 校准，只重算变化的文件，并清理离线期间被删除的节点。
-2. **服务端监听**：fsnotify 事件（含新目录的递归补扫）实时更新目录树，
-   变更目录按落库时间记录在一小时滚动窗口内。变更落库时广播信号，唤醒挂起的长轮询。
-3. **客户端同步（长轮询推送）**：
-   - 客户端发起"等变更"请求并阻塞；服务端 `[游标, 现在]` 内有变更立即返回，
-     否则挂起至保活上限（50s）再返回空包，客户端立即重新发起；
-   - 收到变更后仅比对这些目录及其新增子树，游标推进到服务端返回的 `CoveredUntil`，不重叠不遗漏；
-   - 每 `cooldown` 秒做一次低频全量扫描兜底；检测到长时间休眠则强制全量对账；
-   - 差异按 创建目录 / 下载文件 逐条执行，下载经哈希校验后原子落盘；
-     删除多余项默认跳过，仅在 `--allow-delete` 开启时才会执行。
-   - 符号链接完全不追踪（不同步、不解引用），避免把链接目标（可能在同步根目录
-     之外）的内容当作普通文件传输。
+`-p` means no working-directory games are needed. A unit file is included
+at [deploy/local-mirror.service](deploy/local-mirror.service):
 
-## 目录结构
+```bash
+sudo cp local-mirror /usr/local/bin/
+sudo cp deploy/local-mirror.service /etc/systemd/system/
+# edit mode/path/upstream in ExecStart, then:
+sudo systemctl daemon-reload
+sudo systemctl enable --now local-mirror
+journalctl -u local-mirror -f
+```
+
+Inject the passphrase via `Environment=LOCAL_MIRROR_SECRET=...` or an
+`EnvironmentFile=` rather than a `-k` argument, to keep it out of `ps`.
+
+## Files it creates
+
+Everything lives under `.local-mirror/` in the sync root (excluded from
+syncing and from git):
+
+- `cache.db` — the persisted directory tree; makes restarts on big trees
+  fast because unchanged files aren't rehashed
+- `logs/error.log` — runtime log, rotated at 10 MB keeping the last 3 files
+- `partial/` — chunks of interrupted downloads awaiting resume
+- `backups/` — pre-overwrite copies, only with `--allow-critical`
+- `ignore` — optional ignore patterns, merged with `-i` (restart to apply)
+
+## Building
+
+```bash
+go build -o local-mirror ./cmd/local-mirror
+
+# cross-compile everything into dist/ (version from git describe)
+./build.sh        # Linux / macOS
+./build.ps1       # Windows
+```
+
+## Layout
 
 ```
-cmd/local-mirror/    入口：参数校验、启动横幅、生命周期
-config/              flag 定义与全局配置
+cmd/local-mirror/   entry point, flag validation, banner, task supervisor
+config/             flag definitions and the YAML multi-task config
 internal/
-  network/           自定义 TCP 协议（编解码、服务端、客户端、端口探测）
-  tree/              目录树构建与 bbolt 持久化、变更目录记录
-  watcher/           热度评分监视器与事件过滤
-  *.go               reality / mirror 两种模式的编排逻辑
-pkg/
-  stack/             泛型栈
-  utils/             哈希、路径规范化、忽略规则等工具
+  network/          protocol, server, client, port probing, LAN discovery
+  tree/             directory tree, bbolt persistence, change journal
+  watcher/          heat-scored watching and event filtering
+  safety/           critical-path checks, path containment, overwrite backups
+  logger/           logging with size-based rotation
+  tui/              raw-mode picker for the discovery list
+  *.go              orchestration for the three modes
+pkg/                small shared helpers: hashing, paths, terminal styling
+deploy/             systemd unit and YAML examples
 ```
 
-## 运行时产物
-
-工作目录下会生成 `.local-mirror/`（已被同步逻辑和 git 忽略）：
-
-- `cache.db` — 目录树缓存（跨重启复用：未变化的文件不重算哈希，大目录树启动明显加速）
-- `logs/error.log` — 运行日志（错误同时输出到终端；单文件超 10MB 自动轮转，保留最近 3 个）
-- `ignore` — 可选，忽略模式配置（每行一条，`#` 注释，与 `-i` 合并；改后需重启）
-
-## 安全
-
-- **三级安全阶梯**（同步方 mirror/relay）：
-  - **默认**：只同步不删除；且**拒绝在关键路径**（`~`、`/`、`/etc`、系统目录等，
-    按解引用后的真实路径判定）上运行——因为同步会覆盖已存在文件。
-  - **`--allow-critical`**：在关键路径上同步（仍不删除）；**首次覆盖某文件前**
-    把原文件快照到 `.local-mirror/backups/<相对路径>`，保留 local-mirror 动手前的
-    原始版本（反复同步不会 churn 掉它，快照失败则跳过该文件的覆盖）。
-  - **`--allow-delete`**：允许删除本地多余文件（忠实镜像）。在关键路径上需
-    **同时**加 `--allow-critical` 才生效；非关键路径单给即可。
-- 客户端对服务端下发的路径做同步根内校验，越界路径（`..` 逃逸、绝对路径）
-  一律拒绝——服务端无法借此把内容写到同步目录之外。详见 [SECURITY.md](SECURITY.md)。
-- **不可信网络**（跨互联网、公共 Wi-Fi、多租户环境）务必用 `-k` 开启传输加密
-  **并**用 `-r` 显式指定上游，不要依赖局域网自动发现：未加密时握手无认证，
-  恶意服务端可诱导客户端连接。UDP 发现应答为明文且有放大特性，仅设计用于可信局域网。
-
-## 路线图
-
-见 [TODO.md](TODO.md)：发行打包（goreleaser / Homebrew / apt）等；
-已完成项（服务自动发现、断点续传、缓存跨重启持久化、传输加密、心跳等）的实现记录也在其中。
+Design notes for the push/long-poll architecture are in
+[DESIGN.md](DESIGN.md). Known limitations and plans are in [TODO.md](TODO.md).
