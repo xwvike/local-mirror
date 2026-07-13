@@ -3,6 +3,7 @@ package safety
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -44,6 +45,28 @@ func TestIsCriticalRoot(t *testing.T) {
 	if err == nil && home != "" {
 		if ok, _ := IsCriticalRoot(home); !ok {
 			t.Error("家目录应判为关键路径")
+		}
+		// 家目录是"仅自身关键"的容器：子目录是日常同步目标，不受限
+		if ok, hit := IsCriticalRoot(filepath.Join(home, "lm-test-nonexistent-sub")); ok {
+			t.Errorf("家目录子目录被误判为关键路径（命中 %s）", hit)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		// 系统树的子目录必须命中（真实网络测试发现的判定缺口）
+		if ok, _ := IsCriticalRoot("/etc/nginx"); !ok {
+			t.Error("/etc/nginx（系统树子目录）应判为关键路径")
+		}
+		// 不存在的子路径同样要命中：macOS 上 /etc 是符号链接，
+		// 依赖 normalize 的"已存在前缀解引用"
+		if ok, _ := IsCriticalRoot("/etc/lm-definitely-nonexistent/deep"); !ok {
+			t.Error("/etc 下不存在的子路径应判为关键路径")
+		}
+		if ok, _ := IsCriticalRoot("/usr/local/lm-test"); !ok {
+			t.Error("/usr 子目录应判为关键路径")
+		}
+		// 前缀兄弟陷阱：/etcetera 不在 /etc 内
+		if ok, hit := IsCriticalRoot("/tmp/etcetera-not-etc"); ok {
+			t.Errorf("/tmp 下的目录被误判为关键路径（命中 %s）", hit)
 		}
 	}
 }

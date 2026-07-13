@@ -27,6 +27,18 @@ var (
 	deleteTimerActive bool
 )
 
+// 文件哈希按路径防抖：正在被流式写入的大文件会连发 Write 事件，若每个
+// 事件都同步全量重哈希，唯一的事件消费 goroutine 会被占满，拖垮整个
+// 同步根的变更检测实时性（真实网络测试实测 300MB 写入卡住 50 秒长轮询）。
+// 改为：事件只重置该路径的定时器，静默 hashDebounce 后在定时器 goroutine
+// 里做一次最终的 stat+哈希+落库，不阻塞事件主循环。
+const hashDebounce = 1 * time.Second
+
+var (
+	pendingMu     sync.Mutex
+	pendingHashes = make(map[string]*time.Timer) // key: 事件的绝对路径
+)
+
 func eventFilter(event fsnotify.Event) {
 	relPath := utils.RelPath(config.StartPath, event.Name)
 	if utils.IsIgnored(relPath, config.IgnoreFileList) {
@@ -52,18 +64,10 @@ func eventFilter(event fsnotify.Event) {
 			log.Warnf("跳过符号链接（不支持同步）: %s", relPath)
 			return
 		}
-		fileInfo, err := os.Stat(event.Name)
-		if err != nil {
-			log.Error("Error getting file info:", err)
+		if !linfo.IsDir() {
+			// 文件：防抖后在定时器 goroutine 里哈希落库，不阻塞事件主循环
+			scheduleFileChange(event.Name)
 			return
-		}
-		hash := ""
-		if !fileInfo.IsDir() {
-			if h, hashErr := utils.CalcBlake3(event.Name); hashErr != nil {
-				log.Warnf("Failed to hash file %s: %v", event.Name, hashErr)
-			} else {
-				hash = fmt.Sprintf("%x", h)
-			}
 		}
 		uuid, _ := utils.RandomString(16)
 		newLeaf := &tree.Node{
@@ -71,39 +75,32 @@ func eventFilter(event fsnotify.Event) {
 			Path:     relPath,
 			Name:     filepath.Base(event.Name),
 			ParentID: fatherNode.ID,
-			IsDir:    fileInfo.IsDir(),
-			Size:     uint64(fileInfo.Size()),
-			ModTime:  fileInfo.ModTime(),
-			Hash:     hash,
+			IsDir:    true,
+			Size:     uint64(linfo.Size()),
+			ModTime:  linfo.ModTime(),
+			Hash:     "",
 			Depth:    strings.Count(relPath, string(filepath.Separator)),
 		}
-		if fileInfo.IsDir() {
-			if event.Has(fsnotify.Create) {
-				GlobalScoreWatch.addHeat(newLeaf.Path, newLeaf)
-			}
-			// 新目录的内容可能在 watch 建立之前就已写入（如 mkdir -p 或整体移入），
-			// 这些内容永远不会再有事件；立即落库目录节点并递归扫描其内容
-			eventMu.Lock()
-			createEventCache = append(createEventCache, newLeaf)
-			eventMu.Unlock()
-			flushCreateEvents()
-			tree.AddRecentChangedDir(fatherNode.Path)
-			scanNewDirContents(event.Name)
-			return
+		if event.Has(fsnotify.Create) {
+			GlobalScoreWatch.addHeat(newLeaf.Path, newLeaf)
 		}
-
+		// 新目录的内容可能在 watch 建立之前就已写入（如 mkdir -p 或整体移入），
+		// 这些内容永远不会再有事件；立即落库目录节点并递归扫描其内容
 		eventMu.Lock()
 		createEventCache = append(createEventCache, newLeaf)
-		if createTimerActive {
-			createTimer.Stop()
-		}
-		createTimer = time.AfterFunc(1*time.Second, flushCreateEvents)
-		createTimerActive = true
 		eventMu.Unlock()
-
+		flushCreateEvents()
 		tree.AddRecentChangedDir(fatherNode.Path)
+		scanNewDirContents(event.Name)
 	case event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename):
 		// Rename 事件表示旧路径消失，等同删除；若产生了新路径会另收到 Create 事件
+		// 若该文件还有未触发的哈希防抖，一并取消
+		pendingMu.Lock()
+		if t, ok := pendingHashes[event.Name]; ok {
+			t.Stop()
+			delete(pendingHashes, event.Name)
+		}
+		pendingMu.Unlock()
 		GlobalScoreWatch.removeHeat(relPath)
 
 		eventMu.Lock()
@@ -117,6 +114,72 @@ func eventFilter(event fsnotify.Event) {
 
 		tree.AddRecentChangedDir(fatherNode.Path)
 	}
+}
+
+// scheduleFileChange 为文件变更安排一次防抖后的哈希落库。
+// 同一文件的连续事件只会不断顺延定时器，静默 hashDebounce 后才真正处理。
+func scheduleFileChange(absPath string) {
+	pendingMu.Lock()
+	defer pendingMu.Unlock()
+	if t, ok := pendingHashes[absPath]; ok {
+		t.Stop()
+	}
+	pendingHashes[absPath] = time.AfterFunc(hashDebounce, func() {
+		pendingMu.Lock()
+		delete(pendingHashes, absPath)
+		pendingMu.Unlock()
+		finalizeFileChange(absPath)
+	})
+}
+
+// finalizeFileChange 在防抖静默期结束后运行（定时器 goroutine，不占事件
+// 主循环），对文件做最终的一次 stat+哈希并落库。所有状态现查现取：防抖
+// 期间文件可能已被删除、被替换为符号链接、或父目录已变。哈希期间文件若
+// 继续增长，随之而来的 Write 事件会再排一轮防抖，最终收敛到写入完成后的
+// 内容；服务端响应文件请求时还会现算哈希，这里的值过期不影响数据正确性。
+func finalizeFileChange(absPath string) {
+	relPath := utils.RelPath(config.StartPath, absPath)
+	linfo, err := os.Lstat(absPath)
+	if err != nil {
+		return // 防抖期间已删除，Remove 事件自会处理
+	}
+	if linfo.Mode()&os.ModeSymlink != 0 || linfo.IsDir() {
+		return
+	}
+	fatherNode, err := tree.GetNodeByPath(filepath.Dir(relPath))
+	if err != nil {
+		log.Errorf("Incomplete directory tree, unable to find parent node for %s: %v", filepath.Dir(relPath), err)
+		return
+	}
+	hash := ""
+	if h, hashErr := utils.CalcBlake3(absPath); hashErr != nil {
+		log.Warnf("Failed to hash file %s: %v", absPath, hashErr)
+	} else {
+		hash = fmt.Sprintf("%x", h)
+	}
+	uuid, _ := utils.RandomString(16)
+	newLeaf := &tree.Node{
+		ID:       uuid,
+		Path:     relPath,
+		Name:     filepath.Base(absPath),
+		ParentID: fatherNode.ID,
+		IsDir:    false,
+		Size:     uint64(linfo.Size()),
+		ModTime:  linfo.ModTime(),
+		Hash:     hash,
+		Depth:    strings.Count(relPath, string(filepath.Separator)),
+	}
+
+	eventMu.Lock()
+	createEventCache = append(createEventCache, newLeaf)
+	if createTimerActive {
+		createTimer.Stop()
+	}
+	createTimer = time.AfterFunc(1*time.Second, flushCreateEvents)
+	createTimerActive = true
+	eventMu.Unlock()
+
+	tree.AddRecentChangedDir(fatherNode.Path)
 }
 
 // scanNewDirContents 对新出现的目录做一次浅层扫描，
