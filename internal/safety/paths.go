@@ -18,9 +18,13 @@ import (
 // 校验基于词法清洗（Clean），不依赖磁盘状态，因此对尚不存在的目标路径同样
 // 有效；root 自身允许（rel 为 "." 或 ""）。
 func SafeJoin(root, rel string) (string, error) {
-	// 绝对路径直接拒绝：拼接绝对路径会丢弃 root
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("路径越界（绝对路径）: %q", rel)
+	// 一切非相对形式直接拒绝。仅查 IsAbs 在 Windows 上不够："/x"、"\x"
+	// （rooted，锚定到当前盘根）与 "C:x"（盘符相对）都不算 IsAbs，却携带
+	// 越界语义；合法的协议相对路径永远不会以分隔符或盘符开头，
+	// 为跨平台行为一致，三类形式在所有平台上一律拒绝
+	if filepath.IsAbs(rel) || filepath.VolumeName(rel) != "" ||
+		strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, `\`) {
+		return "", fmt.Errorf("路径越界（非相对路径）: %q", rel)
 	}
 	cleanRoot := filepath.Clean(root)
 	joined := filepath.Clean(filepath.Join(cleanRoot, rel))

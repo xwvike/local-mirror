@@ -2,6 +2,7 @@ package safety
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -31,8 +32,13 @@ func TestSafeJoin(t *testing.T) {
 		"../../../Users/foo/.zshrc",
 		"sub/../../escape",
 		"a/b/../../../out",
-		"/etc/passwd",       // 绝对路径
+		"/etc/passwd",       // 绝对路径（Windows 上为 rooted，同样拒绝）
 		"/srv/sync-sibling", // 前缀相似但非子路径
+		`\etc\passwd`,       // 反斜杠 rooted（Windows 语义锚定盘根，统一拒绝）
+	}
+	if runtime.GOOS == "windows" {
+		// 盘符形式仅 Windows 有意义；Unix 上 "C:\evil" 是合法文件名，不拒
+		badCases = append(badCases, `C:\evil`, "C:/evil", "C:evil")
 	}
 	for _, rel := range badCases {
 		if _, err := SafeJoin(root, rel); err == nil {
