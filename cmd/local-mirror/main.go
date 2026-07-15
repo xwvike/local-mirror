@@ -124,6 +124,12 @@ func runDiscovery() {
 }
 
 func main() {
+	// 尽早切换控制台代码页：--help/--version 与用法错误的输出同样是中文。
+	// os.Exit 的快速退出路径不经 defer，代码页会留在 UTF-8——两害相权：
+	// 留下 65001 只影响极老的 GBK 输出程序，而不切换则本程序全部输出乱码
+	restoreConsole := enableConsoleUTF8()
+	defer restoreConsole()
+
 	flag.Parse()
 
 	// 用户主动请求帮助：输出到 stdout，退出码 0
