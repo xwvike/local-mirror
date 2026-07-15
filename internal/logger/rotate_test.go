@@ -15,6 +15,8 @@ func TestRotatingWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newRotatingWriter: %v", err)
 	}
+	// Windows 上打开中的文件无法删除，必须先关闭 TempDir 清理才能成功
+	t.Cleanup(func() { w.Close() })
 
 	line := []byte(strings.Repeat("x", 40) + "\n") // 41 字节/行
 	// 写 10 行 = 410 字节，必然触发多次轮转
@@ -48,6 +50,7 @@ func TestRotatingWriterDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { w.Close() })
 	if w.maxSize != 10*1024*1024 || w.maxFiles != 3 {
 		t.Errorf("默认值未生效: size=%d files=%d", w.maxSize, w.maxFiles)
 	}
@@ -64,6 +67,7 @@ func TestRotatingWriterReopenSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { w.Close() })
 	if w.size != 50 {
 		t.Errorf("重开后 size=%d，应为已有文件大小 50", w.size)
 	}

@@ -68,6 +68,20 @@ func (w *rotatingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// Close 关闭当前日志文件。Windows 上打开中的文件无法被删除，
+// 持有者必须显式关闭句柄，目录清理（如测试的 TempDir）才能成功。
+// 关闭后再 Write 返回"日志文件未打开"错误，不会 panic。
+func (w *rotatingWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Close()
+	w.file = nil
+	return err
+}
+
 // rotate 关闭当前文件，把历史文件依次后移一位后重开。
 // .N 被丢弃，.（N-1）→.N，…，.1→.2，当前→.1
 func (w *rotatingWriter) rotate() error {
