@@ -3,6 +3,7 @@ package network
 import (
 	"bytes"
 	"encoding/binary"
+	"path/filepath"
 	"testing"
 )
 
@@ -40,7 +41,8 @@ func TestDecodeRecentChangeResponseBounds(t *testing.T) {
 	}
 }
 
-// TestDecodeRoundTripStillWorks 合法消息仍能正常往返（不误伤）
+// TestDecodeRoundTripStillWorks 合法消息仍能正常往返（不误伤）。
+// 路径按线格式约定（protocol.go）：解码结果是本机分隔符形式
 func TestDecodeRoundTripStillWorks(t *testing.T) {
 	orig := RecentChangeResponseMessage{
 		ServerID:     42,
@@ -51,7 +53,7 @@ func TestDecodeRoundTripStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("合法消息被误拒: %v", err)
 	}
-	if len(got.Changes) != 3 || got.Changes[2] != "深/目录" || got.ServerID != 42 {
+	if len(got.Changes) != 3 || got.Changes[2] != filepath.FromSlash("深/目录") || got.ServerID != 42 {
 		t.Errorf("往返结果不符: %+v", got)
 	}
 

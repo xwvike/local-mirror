@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"local-mirror/internal/tree"
+	"path/filepath"
 	"time"
 )
 
@@ -84,7 +85,9 @@ func Diff(realityNodes []tree.Node, path string) ([]DiffResult, error) {
 	return FindDifferences(realityNodes, localTree), nil
 }
 
-// UnmarshalRealityTree 解析服务端返回的目录树 JSON
+// UnmarshalRealityTree 解析服务端返回的目录树 JSON。
+// 线格式路径以 "/" 分隔（见 network/protocol.go 的约定），落回进程内
+// 统一转为本机分隔符——本地库、SafeJoin、变更日志此后拿到的都是本机形式
 func UnmarshalRealityTree(data []byte) ([]tree.Node, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -92,6 +95,9 @@ func UnmarshalRealityTree(data []byte) ([]tree.Node, error) {
 	var nodes []tree.Node
 	if err := json.Unmarshal(data, &nodes); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal reality tree: %w", err)
+	}
+	for i := range nodes {
+		nodes[i].Path = filepath.FromSlash(nodes[i].Path)
 	}
 	return nodes, nil
 }

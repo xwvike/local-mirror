@@ -352,6 +352,8 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 		for i := range treeLeaf {
 			treeLeaf[i].ID = ""
 			treeLeaf[i].ParentID = ""
+			// 节点路径随 JSON 进入线格式，统一转为 "/"（见 protocol.go 线格式约定）
+			treeLeaf[i].Path = filepath.ToSlash(treeLeaf[i].Path)
 		}
 		treeData, err := json.Marshal(treeLeaf)
 		if err != nil {
