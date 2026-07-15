@@ -6,9 +6,20 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 
 	log "github.com/sirupsen/logrus"
 )
+
+// 线格式路径约定：协议中所有文件/目录路径一律以 "/" 为分隔符传输。
+// 各端进程内部（目录树库、变更日志、fsnotify、SafeJoin）始终使用本机
+// filepath.Separator，转换只发生在编解码边界——encode 时 ToSlash，decode
+// 时 FromSlash（Unix 上两者都是恒等变换，线格式与历史版本逐字节相同）。
+// 若不统一，Windows 端发出的 `wnested\deep` 会被 Unix 端当成单个文件名
+// （字面反斜杠），Windows 中继进程内部的树节点与变更日志也会各持一种
+// 分隔符而互相查不到（2026-07-15 真机测试的两处实锤）。
+// 已知边缘：Unix 文件名中的字面反斜杠经线格式到达 Windows 端会被当作
+// 分隔符展开成子目录——该名字本就无法在 Windows 文件系统表示，可接受。
 
 // 协议常量定义
 const (
@@ -198,7 +209,8 @@ func decodeHandshake(data []byte) (HandshakeMessage, error) {
 func encodeFileRequest(msg FileRequestMessage) []byte {
 	buf := new(bytes.Buffer)
 	_ = binary.Write(buf, binary.BigEndian, msg.PathLength)
-	buf.Write([]byte(msg.FilePath))
+	// ToSlash 逐字节等长替换，调用方按原始路径算好的 PathLength 仍然成立
+	buf.Write([]byte(filepath.ToSlash(msg.FilePath)))
 	_ = binary.Write(buf, binary.BigEndian, msg.Offset)
 	return buf.Bytes()
 }
@@ -215,8 +227,7 @@ func decodeFileRequest(data []byte) (FileRequestMessage, error) {
 		log.Error("Error reading file name:", err)
 		return msg, err
 	}
-	filePath := string(filePathBytes)
-	msg.FilePath = filePath
+	msg.FilePath = filepath.FromSlash(string(filePathBytes))
 
 	if err := binary.Read(buf, binary.BigEndian, &msg.Offset); err != nil {
 		log.Error("Error decoding file offset:", err)
@@ -414,7 +425,7 @@ func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 func encodeTreeRequest(msg TreeRequestMessage) []byte {
 	buf := new(bytes.Buffer)
 	_ = binary.Write(buf, binary.BigEndian, msg.PathLength)
-	buf.Write([]byte(msg.RootPath))
+	buf.Write([]byte(filepath.ToSlash(msg.RootPath)))
 	return buf.Bytes()
 }
 
@@ -431,13 +442,13 @@ func decodeTreeRequest(data []byte) (TreeRequestMessage, error) {
 		log.Error("Error reading tree request path:", err)
 		return msg, err
 	}
-	msg.RootPath = string(pathBytes)
+	msg.RootPath = filepath.FromSlash(string(pathBytes))
 	return msg, nil
 }
 
 func encodeTreeResponse(msg TreeResponseMessage) []byte {
 	buf := new(bytes.Buffer)
-	pathBytes := []byte(msg.RootPath)
+	pathBytes := []byte(filepath.ToSlash(msg.RootPath))
 	_ = binary.Write(buf, binary.BigEndian, uint16(len(pathBytes)))
 	buf.Write(pathBytes)
 	_ = binary.Write(buf, binary.BigEndian, msg.DataLength)
@@ -460,7 +471,7 @@ func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 		log.Error("Error reading tree response path:", err)
 		return msg, err
 	}
-	msg.RootPath = string(pathBytes)
+	msg.RootPath = filepath.FromSlash(string(pathBytes))
 
 	if err := binary.Read(buf, binary.BigEndian, &msg.DataLength); err != nil {
 		log.Error("Error decoding tree response data length:", err)
@@ -590,7 +601,7 @@ func encodeRecentChangeResponse(msg RecentChangeResponseMessage) []byte {
 	changeCount := len(msg.Changes)
 	_ = binary.Write(buf, binary.BigEndian, uint32(changeCount))
 	for _, change := range msg.Changes {
-		changeBytes := []byte(change)
+		changeBytes := []byte(filepath.ToSlash(change))
 		_ = binary.Write(buf, binary.BigEndian, uint16(len(changeBytes)))
 		buf.Write(changeBytes)
 	}
@@ -634,7 +645,7 @@ func decodeRecentChangeResponse(data []byte) (RecentChangeResponseMessage, error
 			log.Error("Error reading recent change response change data:", err)
 			return msg, err
 		}
-		msg.Changes[i] = string(changeBytes)
+		msg.Changes[i] = filepath.FromSlash(string(changeBytes))
 	}
 
 	return msg, nil
