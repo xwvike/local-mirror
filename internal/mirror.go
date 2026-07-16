@@ -126,6 +126,15 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 		if v.IsDir {
 			return processDirectoryDiff(v)
 		}
+		// 上游哈希缺失 = 服务端自己都读不了这个文件（扫描/监听时哈希失败，
+		// 典型是权限问题），下载注定失败——确定性跳过并明确告知，而不是发一个
+		// 注定失败的请求。节点仍在上游树里，本地已有副本因此不会被
+		// --allow-delete 误删；上游修复权限后（watcher 对 Chmod 事件重算哈希）
+		// 自动恢复同步
+		if v.Hash == "" {
+			warnUnreadableOnce(v.Path)
+			return nil
+		}
 		return processFileDiff(v, fileClient)
 
 	default:
@@ -150,7 +159,40 @@ func processDirectoryDiff(v DiffResult) error {
 	return tree.AddNodes([]*tree.Node{node})
 }
 
+// diskReserve 磁盘空间预留：可用空间必须容得下目标文件之外再留出这个余量，
+// 否则跳过下载。把盘写到全满会连累状态库（bbolt）与日志的写入一起失败，
+// 且中途 ENOSPC 只能断连重连（协议无中止机制），代价远高于预检跳过
+const diskReserve uint64 = 64 << 20 // 64 MB
+
+// unreadableWarned 已提示过的"上游不可读"路径。每路径只提示一次，
+// 避免每轮变更推送/全量扫描都重复刷同一批文件
+var unreadableWarned sync.Map
+
+func warnUnreadableOnce(path string) {
+	if _, loaded := unreadableWarned.LoadOrStore(path, struct{}{}); !loaded {
+		log.Errorf("上游无法读取 %s（服务端未能计算哈希，通常是权限问题），跳过该文件；上游修复权限后会自动恢复同步", path)
+	}
+}
+
+func humanBytes(b uint64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1<<20))
+	default:
+		return fmt.Sprintf("%.1f KB", float64(b)/(1<<10))
+	}
+}
+
 func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
+	// 磁盘空间预检：不够就不发请求、不写分片，返回 ErrDiskFull 由调用方
+	// 按目录聚合提示。探测失败（极少见）时放行，交给写入时的兜底识别
+	if free, ferr := utils.DiskFree(config.StartPath); ferr == nil && free < v.Size+diskReserve {
+		return fmt.Errorf("%w: %s 需要 %s，可用仅 %s（预留 %s）",
+			appError.ErrDiskFull, v.Path, humanBytes(v.Size), humanBytes(free), humanBytes(diskReserve))
+	}
+
 	hash, err := fileClient.DownloadFile(v.Path)
 	if err != nil {
 		if errors.Is(err, appError.ErrConnection) {
@@ -247,12 +289,20 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 
 	log.Infof("Diff count for %s: %d", path, len(diffs))
 	diffDirs := make(map[string]bool)
+	diskFullSkipped := 0
 	for _, v := range diffs {
 		if blacklist[v.Path] {
 			// 已确认持续失败，本轮不再尝试，让其余正常项能被处理到
 			continue
 		}
 		if err := processDiffItem(v, fileClient); err != nil {
+			// 磁盘空间不足：跳过该文件继续处理其余项（小文件可能仍装得下），
+			// 目录处理完后聚合成一条提示，避免逐文件刷屏
+			if errors.Is(err, appError.ErrDiskFull) {
+				diskFullSkipped++
+				log.Debugf("空间不足跳过: %v", err)
+				continue
+			}
 			// 连接断了：无论是否拉黑，这次调用都不能继续复用这个连接处理
 			// 剩余项，必须整体返回交给上层重连后重试；其他错误跳过单项继续
 			if errors.Is(err, appError.ErrConnection) {
@@ -271,6 +321,11 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 			diffDirs[v.Path] = true
 			NextLevel.Push(v)
 		}
+	}
+	if diskFullSkipped > 0 {
+		free, _ := utils.DiskFree(config.StartPath)
+		log.Errorf("目录 %s: %d 个文件因磁盘空间不足未同步（当前可用 %s，预留 %s）；释放空间后会随下轮变更推送或全量扫描自动补上",
+			path, diskFullSkipped, humanBytes(free), humanBytes(diskReserve))
 	}
 
 	if recurseAll {

@@ -110,6 +110,8 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 
 	go GlobalScoreWatch.intelligentScan()
 
+	go recoverUnreadable(ctx)
+
 	return nil
 }
 

@@ -402,14 +402,18 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 		return fmt.Errorf("Error getting file info: %s :%v", fileRequest.FilePath, err)
 
 	} else {
+		// 错误带上系统级原因（如 permission denied），它会原样进错误应答
+		// 发给客户端——对端日志里能直接看到失败根因，不用两头对日志。
+		// 读取失败同时登记进不可读列表，恢复可读后由 watcher 恢复循环补哈希
 		fileHash, err := utils.CalcBlake3(fullPath)
 		if err != nil {
-			return fmt.Errorf("error calculating file hash for %s", fileRequest.FilePath)
+			tree.MarkUnreadable(fullPath)
+			return fmt.Errorf("error calculating file hash for %s: %v", fileRequest.FilePath, err)
 		}
 
 		file, err := os.Open(fullPath)
 		if err != nil {
-			return fmt.Errorf("error opening file %s", fileRequest.FilePath)
+			return fmt.Errorf("error opening file %s: %v", fileRequest.FilePath, err)
 		}
 		defer file.Close()
 
