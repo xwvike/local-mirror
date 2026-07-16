@@ -40,11 +40,11 @@ Linux（任意发行版；macOS 不想用 Homebrew 也能用）：
 curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
 ```
 
-脚本自动识别系统与架构，下载最新版本并校验 checksum，装到
-`~/.local/bin` 并在需要时自动补 PATH——全程不需要 root。环境变量
-`VERSION` 和 `INSTALL_DIR` 可覆盖默认行为。想走正经包管理的话，
-[releases 页面](https://github.com/xwvike/local-mirror/releases)上有
-deb 和 rpm。
+脚本自动识别系统与架构，下载最新版本并校验 checksum。root 运行装
+`/usr/local/bin`；普通用户装 `~/.local/bin`（需要时自动补 PATH），
+绝不索要提权。环境变量 `VERSION` 和 `INSTALL_DIR` 可覆盖默认行为。
+想走正经包管理的话，[releases 页面](https://github.com/xwvike/local-mirror/releases)
+上有 deb 和 rpm。
 
 或从源码构建：
 

@@ -43,11 +43,12 @@ Linux (any distro; also works on macOS without Homebrew):
 curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
 ```
 
-The script detects OS and architecture, downloads the latest release,
-verifies its checksum and installs to `~/.local/bin`, adding it to your
-PATH if needed — no root required at any point. `VERSION` and
-`INSTALL_DIR` environment variables override the defaults. If you prefer
-proper packages, deb and rpm files are on the
+The script detects OS and architecture, downloads the latest release and
+verifies its checksum. Run as root it installs to `/usr/local/bin`; as a
+regular user it installs to `~/.local/bin` (adding it to your PATH if
+needed) and never asks for elevation. `VERSION` and `INSTALL_DIR`
+environment variables override the defaults. If you prefer proper
+packages, deb and rpm files are on the
 [releases page](https://github.com/xwvike/local-mirror/releases).
 
 Or build from source:

@@ -6,8 +6,9 @@
 #
 # 可用环境变量覆盖：
 #   VERSION=v0.9.0     安装指定版本（默认最新）
-#   INSTALL_DIR=/path  安装目录（默认 ~/.local/bin——普通用户即可安装使用，
-#                      全程不需要 root/sudo；要装系统目录请自行指定并授权）
+#   INSTALL_DIR=/path  安装目录。默认按身份走：root 装 /usr/local/bin，
+#                      普通用户装 ~/.local/bin——脚本自身从不提权，
+#                      运行时同样以调用者权限做文件操作
 set -eu
 
 REPO="xwvike/local-mirror"
@@ -57,7 +58,13 @@ fi
 
 tar xzf "$tmp/$name.tar.gz" -C "$tmp" local-mirror
 
-dir=${INSTALL_DIR:-"$HOME/.local/bin"}
+if [ -n "${INSTALL_DIR:-}" ]; then
+	dir=$INSTALL_DIR
+elif [ "$(id -u)" -eq 0 ]; then
+	dir=/usr/local/bin
+else
+	dir="$HOME/.local/bin"
+fi
 mkdir -p "$dir"
 install -m 755 "$tmp/local-mirror" "$dir/local-mirror"
 
