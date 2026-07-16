@@ -7,11 +7,12 @@
 
 ### 发行打包
 
-`-p` 与 systemd 示例（deploy/）已就绪，缺的是分发渠道：
+主体已落地（方案与决策见 [docs/RELEASE.md](docs/RELEASE.md)）：goreleaser 由 v* tag
+触发 CI 发布——GitHub Releases 压缩包 + checksums、deb/rpm、Homebrew cask
+（xwvike/homebrew-tap）、Scoop manifest（xwvike/scoop-bucket）。剩余：
 
-- goreleaser 出 GitHub Releases（多平台二进制 + deb/rpm）
-- Homebrew tap（macOS）与 apt 源或 .deb 直装（Linux）
-- launchd plist 示例（macOS 服务化）
+- winget manifest（二期，等有分发量再提 winget-pkgs）
+- launchd plist 示例（macOS 服务化，对应 deploy/ 里的 systemd unit）
 
 ## 已知限制（记录在案，暂不处理）
 

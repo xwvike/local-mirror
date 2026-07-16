@@ -1,11 +1,17 @@
-# 发行与分发方案（待评审）
+# 发行与分发方案
 
-> 目的：为 local-mirror 定一套三平台（macOS / Linux / Windows）统一的发行方案，
-> 交给 mac 侧一起过一遍再落地。本文是**方案与决策记录**，不是操作手册——
-> 标注了「已定 / 建议 / 待确认」，评审时重点看「待确认」项。
+> 目的：为 local-mirror 定一套三平台（macOS / Linux / Windows）统一的发行方案。
+> 本文是**方案与决策记录**，不是操作手册。
 >
 > 背景：TODO.md 的「发行打包」条目此前只列了方向（goreleaser / Homebrew / apt）。
 > 本文把它具体化，并补上 Windows 侧的结论。
+>
+> **2026-07-16 评审通过，已落地**：`.goreleaser.yaml` + `.github/workflows/release.yml`
+> 进主仓库，tap（xwvike/homebrew-tap）与 bucket（xwvike/scoop-bucket）仓库已建。
+> 评审改动两处：§2 的 `brews` 块换成 `homebrew_casks`（goreleaser v2.16 起
+> `brews` 已弃用，cask 是分发预编译二进制的官方推荐，未签名二进制经
+> postflight 去 quarantine）；§4 的 token 结论纠正（见该节）。
+> 待确认清单的裁决记录在 §7。
 
 ## TL;DR
 
@@ -35,7 +41,7 @@
 | 产物 | goreleaser 配置块 | 对应平台 |
 |---|---|---|
 | 跨平台压缩包 + checksums.txt | `archives` / `checksum` | 全部（事实源） |
-| Homebrew formula（推到 tap 仓库） | `brews` | macOS |
+| Homebrew cask（推到 tap 仓库） | `homebrew_casks`（`brews` 已弃用） | macOS |
 | deb / rpm | `nfpms` | Linux |
 | Scoop manifest（推到 bucket 仓库） | `scoops` | Windows |
 | winget manifest（可选） | `winget` | Windows |
@@ -57,12 +63,13 @@
 
 ### 3.2 macOS —— Homebrew tap（建议：并入 goreleaser）
 
-- 你已经在用自定义 brew tap。如果那套目前是手工维护 formula，
-  **建议改用 goreleaser 的 `brews` 块自动生成并推送**到你的 tap 仓库
-  （`homebrew-<tap>`），版本、URL、SHA256 全自动。
-- 用户侧不变：`brew tap …` + `brew install local-mirror`。
-- 支持 Intel + Apple Silicon 双架构（goreleaser 自动出 universal 或分架构 formula）。
-- **待确认**：现有 tap 是手工还是已自动？要不要收编进 goreleaser 统一管理？
+- tap 此前并不存在（评审时纠正的过时假设），已新建 `xwvike/homebrew-tap`，
+  由 goreleaser 的 `homebrew_casks` 块自动生成 cask 并推送（`Casks/` 目录），
+  版本、URL、SHA256 全自动，人不手改。
+- 用户侧：`brew tap xwvike/tap` + `brew install local-mirror`。
+- 支持 Intel + Apple Silicon 双架构（cask 内按 on_intel / on_arm 分流）。
+- 未签名二进制经 cask postflight 去 quarantine 标记，绕开 Gatekeeper 拦截
+  （formula 时代无此问题，cask 需要显式处理——配置里已带）。
 
 ### 3.3 Linux —— nfpm（deb/rpm，已定方向）
 
@@ -102,12 +109,13 @@
 
 ## 4. 版本与 CI（建议）
 
-- 触发：推送 `v*` tag（如 `v1.0.0`）→ GitHub Actions 跑 `goreleaser release`。
+- 触发：推送 `v*` tag（如 `v1.0.0`）→ GitHub Actions 跑 `goreleaser release`
+  （workflow 里发布前先 `go test ./...` 拦一道）。
 - 版本注入：沿用现有 `-ldflags -X main.version=…`，值取 tag（goreleaser 自动带）。
-- 需要的 secrets：一个有权限推 tap / bucket 仓库的 token（`GITHUB_TOKEN`
-  或单独的 PAT，取决于 tap/bucket 是否同 owner）。
-- **待确认**：tap / bucket 仓库归属（同一 GitHub 账号？组织？）——决定用
-  `GITHUB_TOKEN` 还是 PAT。
+- secrets（评审时纠正）：Actions 自带的 `GITHUB_TOKEN` **只对当前仓库有权限**，
+  与 owner 是否相同无关——推 tap / bucket 这两个独立仓库**必须用 PAT**。
+  用 fine-grained PAT，只授权 `homebrew-tap` 与 `scoop-bucket` 两个仓库的
+  Contents 读写，存为主仓库 secret `TAP_GITHUB_TOKEN`。
 
 ## 5. 签名与 SmartScreen（的真相）
 
@@ -137,24 +145,27 @@ local-mirror-scoop-bucket/    Scoop bucket（goreleaser 自动推 manifest）
 
 tap / bucket 仓库只存自动生成的清单，人不手改。
 
-## 7. 待确认清单（评审时逐条过）
+## 7. 待确认清单（2026-07-16 评审裁决）
 
-1. **落地 goreleaser** 统一发行，`build.sh`/`build.ps1` 降为本地调试用——是否同意？
-2. **macOS tap**：现有 tap 手工还是自动？要不要收编进 goreleaser？
-3. **Linux**：一期只挂 deb/rpm 文件，还是要自建 apt/dnf 源？
-4. **Windows Scoop bucket**：独立仓库还是主仓库子目录？（建议独立）
-5. **winget**：一期做还是二期做？（建议二期）
-6. **签名**：确认本期不签名？
-7. **tap/bucket 仓库归属**：同账号 / 组织？决定 CI 用 `GITHUB_TOKEN` 还是 PAT。
-8. **首个 tag 版本号**：`v1.0.0` 还是先 `v0.x` 走一轮试发布？
+1. **落地 goreleaser** 统一发行，`build.sh`/`build.ps1` 降为本地调试用——**同意**。
+2. **macOS tap**：此前不存在，新建 `xwvike/homebrew-tap`，goreleaser 全自动维护。
+3. **Linux**：**一期只挂 deb/rpm 文件**，不自建 apt/dnf 源，有需求再上。
+4. **Windows Scoop bucket**：**独立仓库** `xwvike/scoop-bucket`
+   （与 homebrew-tap 命名对称，可容纳将来的其他工具）。
+5. **winget**：**二期**。
+6. **签名**：**本期不签名**（macOS 侧 cask postflight 去 quarantine 兜住）。
+7. **CI token**：tap/bucket 与主仓库同账号，但 `GITHUB_TOKEN` 仍推不了它们
+   （权限以仓库为界，非以 owner 为界）——**用 fine-grained PAT**，
+   见 §4。
+8. **首个 tag**：**`v0.9.0`** 先把整条流水线走通，产物验证无误后再打 `v1.0.0`。
 
-## 8. 下一步
+## 8. 落地记录
 
-评审通过后，落地顺序建议：
-
-1. 写 `.goreleaser.yaml`（archives + checksum + nfpms 先跑通，出 GitHub Releases）。
-2. 加 GitHub Actions release workflow，打个测试 tag 验证产物。
-3. 接 `brews`（对接 mac tap）与 `scoops`（建 Windows bucket）。
-4. 稳定后再评估 `winget`。
-
-需要我把 `.goreleaser.yaml` 和 CI workflow 的初稿写出来时说一声——那一步就是动手改仓库了。
+- `.goreleaser.yaml`：builds（linux/darwin/windows × amd64/arm64，CGO 关，
+  trimpath）+ archives + checksums + nfpms（deb/rpm，systemd unit 作为示例
+  文档进 /usr/share/doc）+ homebrew_casks + scoops。本地
+  `goreleaser release --snapshot --clean` 验证全部产物生成无误。
+- `.github/workflows/release.yml`：v* tag 触发，test → goreleaser release。
+- 许可证：评审时发现仓库没有 LICENSE，补 MIT（cask/scoop/nfpm 的 license
+  字段与公开分发都依赖它）。
+- 后续待办：winget（二期）、launchd plist 示例（见 TODO.md）。
