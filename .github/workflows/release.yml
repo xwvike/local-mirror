@@ -1,4 +1,4 @@
-# 推送 v* tag 时自动发行（配置见 .goreleaser.yaml，方案见 docs/RELEASE.md）。
+# 推送 v* tag 时自动发行（配置见 .goreleaser.yaml）。
 # TAP_GITHUB_TOKEN：fine-grained PAT，需对 xwvike/homebrew-tap 与
 # xwvike/scoop-bucket 两个仓库有 Contents 写权限（Actions 自带的
 # GITHUB_TOKEN 只对本仓库有效，推不了别的仓库）。

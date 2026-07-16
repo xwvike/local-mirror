@@ -1,7 +1,7 @@
 # 发行配置：git tag（v*）触发 CI 跑 `goreleaser release`，一份配置产出
 # GitHub Releases 压缩包 + checksums（唯一事实源）、Linux deb/rpm、
 # macOS Homebrew cask（推到 homebrew-tap）、Windows Scoop manifest
-# （推到 scoop-bucket）。方案与决策记录见 docs/RELEASE.md。
+# （推到 scoop-bucket）。
 # 本地验证：goreleaser check && goreleaser release --snapshot --clean
 version: 2
 
@@ -72,7 +72,7 @@ homebrew_casks:
     description: One-way directory mirroring over TCP with relays, LAN discovery and optional Noise encryption
     license: MIT
     # 未签名二进制：cask 安装后去掉 quarantine 标记，否则 Gatekeeper 拦截
-    # （方案见 docs/RELEASE.md §5——CLI 不做 Apple 签名/公证）
+    # （CLI 不做 Apple 签名/公证）
     hooks:
       post:
         install: |
