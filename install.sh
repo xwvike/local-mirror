@@ -14,6 +14,14 @@ REPO="xwvike/local-mirror"
 
 err() { printf 'install.sh: %s\n' "$1" >&2; exit 1; }
 
+# sudo 可用 = 免密直接过，或有终端能向用户要密码。
+# 非交互场景（ssh 无 -t、CI）里 sudo 只会报错，此时应退回 ~/.local/bin
+can_sudo() {
+	command -v sudo >/dev/null 2>&1 || return 1
+	sudo -n true 2>/dev/null && return 0
+	sh -c ': </dev/tty' 2>/dev/null
+}
+
 os=$(uname -s)
 case "$os" in
 Linux) os=linux ;;
@@ -64,7 +72,7 @@ if [ -n "${INSTALL_DIR:-}" ]; then
 elif [ -w /usr/local/bin ]; then
 	dir=/usr/local/bin
 	install -m 755 "$tmp/local-mirror" "$dir/local-mirror"
-elif command -v sudo >/dev/null 2>&1; then
+elif can_sudo; then
 	dir=/usr/local/bin
 	echo "安装到 ${dir}（需要 sudo）"
 	sudo install -m 755 "$tmp/local-mirror" "$dir/local-mirror"
