@@ -34,28 +34,17 @@ scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
 scoop install local-mirror
 ```
 
-Debian/Ubuntu——ARM 机器把 `amd64` 换成 `arm64`：
+Linux（任意发行版；macOS 不想用 Homebrew 也能用）：
 
 ```bash
-ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-curl -fLO "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.deb"
-sudo apt install "./local-mirror_${ver}_linux_amd64.deb"
+curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
 ```
 
-RHEL/Fedora——dnf 直接吃 URL：
-
-```bash
-ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-sudo dnf install "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.rpm"
-```
-
-其他 Linux——二进制是静态的，放进 PATH 即可：
-
-```bash
-ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-curl -fL "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.tar.gz" | tar xz local-mirror
-sudo install -m 755 local-mirror /usr/local/bin/
-```
+脚本自动识别系统与架构，下载最新版本并校验 checksum，装到
+`/usr/local/bin`（不可写则退到 `~/.local/bin` 并自动补 PATH）。环境变量
+`VERSION` 和 `INSTALL_DIR` 可覆盖默认行为。想走正经包管理的话，
+[releases 页面](https://github.com/xwvike/local-mirror/releases)上有
+deb 和 rpm。
 
 或从源码构建：
 

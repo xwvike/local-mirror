@@ -37,29 +37,18 @@ scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
 scoop install local-mirror
 ```
 
-Debian/Ubuntu — replace `amd64` with `arm64` on ARM machines:
+Linux (any distro; also works on macOS without Homebrew):
 
 ```bash
-ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-curl -fLO "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.deb"
-sudo apt install "./local-mirror_${ver}_linux_amd64.deb"
+curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
 ```
 
-RHEL/Fedora — dnf takes the URL directly:
-
-```bash
-ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-sudo dnf install "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.rpm"
-```
-
-Any other Linux — the binary is static, having it on your PATH is all it
-takes:
-
-```bash
-ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-curl -fL "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.tar.gz" | tar xz local-mirror
-sudo install -m 755 local-mirror /usr/local/bin/
-```
+The script detects OS and architecture, downloads the latest release,
+verifies its checksum and installs to `/usr/local/bin` (falling back to
+`~/.local/bin`, adding it to your PATH if needed). `VERSION` and
+`INSTALL_DIR` environment variables override the defaults. If you prefer
+proper packages, deb and rpm files are on the
+[releases page](https://github.com/xwvike/local-mirror/releases).
 
 Or build from source:
 
