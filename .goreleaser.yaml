@@ -1,0 +1,94 @@
+# 发行配置：git tag（v*）触发 CI 跑 `goreleaser release`，一份配置产出
+# GitHub Releases 压缩包 + checksums（唯一事实源）、Linux deb/rpm、
+# macOS Homebrew cask（推到 homebrew-tap）、Windows Scoop manifest
+# （推到 scoop-bucket）。方案与决策记录见 docs/RELEASE.md。
+# 本地验证：goreleaser check && goreleaser release --snapshot --clean
+version: 2
+
+project_name: local-mirror
+
+builds:
+  - main: ./cmd/local-mirror
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - README.zh-CN.md
+      - deploy/local-mirror.service
+      - deploy/local-mirror.example.yml
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs"
+      - "^test"
+      - "^ci"
+
+nfpms:
+  - package_name: local-mirror
+    vendor: XWVIKE
+    homepage: https://github.com/xwvike/local-mirror
+    maintainer: XWVIKE <xwvike@gmail.com>
+    description: One-way directory mirroring over TCP with relays, LAN discovery and optional Noise encryption.
+    license: MIT
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    contents:
+      # systemd unit 作为示例文档而非直接落 /lib/systemd/system：
+      # 示例里的 ExecStart 指向占位目录（/srv/data），必须编辑后才能用，
+      # 且路径写的是 /usr/local/bin（手工安装场景），与包管理器的 /usr/bin
+      # 不一致——用户复制示例到 /etc/systemd/system 时自行改掉这两处
+      - src: deploy/local-mirror.service
+        dst: /usr/share/doc/local-mirror/examples/local-mirror.service
+      - src: deploy/local-mirror.example.yml
+        dst: /usr/share/doc/local-mirror/examples/local-mirror.example.yml
+
+homebrew_casks:
+  - name: local-mirror
+    repository:
+      owner: xwvike
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/xwvike/local-mirror
+    description: One-way directory mirroring over TCP with relays, LAN discovery and optional Noise encryption
+    license: MIT
+    # 未签名二进制：cask 安装后去掉 quarantine 标记，否则 Gatekeeper 拦截
+    # （方案见 docs/RELEASE.md §5——CLI 不做 Apple 签名/公证）
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/local-mirror"]
+          end
+
+scoops:
+  - name: local-mirror
+    repository:
+      owner: xwvike
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/xwvike/local-mirror
+    description: One-way directory mirroring over TCP with relays, LAN discovery and optional Noise encryption
+    license: MIT
+
+release:
+  draft: false
