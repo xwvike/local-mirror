@@ -166,9 +166,9 @@ SIGTERM to the parent shuts down everything. Server tasks on one machine
 share the 52345–52354 port range, so ten at most. `secret` is passed to
 children through the environment and never shows up in `ps`.
 
-## Running under systemd
+## Running as a service
 
-A unit file example is included at
+Linux, with systemd — a unit file example is included at
 [deploy/local-mirror.service](deploy/local-mirror.service) (the deb/rpm
 packages install it under `/usr/share/doc/local-mirror/examples/`):
 
@@ -180,8 +180,23 @@ sudo systemctl enable --now local-mirror
 journalctl -u local-mirror -f
 ```
 
-Inject the passphrase via `Environment=LOCAL_MIRROR_SECRET=...` or an
-`EnvironmentFile=` rather than a `-k` argument, to keep it out of `ps`.
+macOS, with launchd — `brew services` only manages formulas, not casks, so
+use the LaunchAgent example at
+[deploy/com.xwvike.local-mirror.plist](deploy/com.xwvike.local-mirror.plist)
+(also shipped inside the release archives). It starts at login and restarts
+the process if it dies:
+
+```bash
+cp deploy/com.xwvike.local-mirror.plist ~/Library/LaunchAgents/
+# edit the binary path, mode/path/upstream and log path, then:
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.xwvike.local-mirror.plist
+# stop and unload:
+launchctl bootout gui/$(id -u)/com.xwvike.local-mirror
+```
+
+Either way, inject the passphrase through the environment
+(`Environment=`/`EnvironmentFile=` in the unit, `EnvironmentVariables` in
+the plist) rather than a `-k` argument, to keep it out of `ps`.
 
 ## Files it creates
 

@@ -146,9 +146,10 @@ local-mirror --config /etc/local-mirror.yml
 任务，父进程收到 SIGTERM 统一停全部。同机服务端任务共享 52345–52354
 端口段，最多 10 个。`secret` 经环境变量传给子进程，不出现在 `ps` 里。
 
-## systemd 部署
+## 服务化运行
 
-仓库带了单元文件示例：[deploy/local-mirror.service](deploy/local-mirror.service)
+Linux 用 systemd——单元文件示例在
+[deploy/local-mirror.service](deploy/local-mirror.service)
 （deb/rpm 包会把它装到 `/usr/share/doc/local-mirror/examples/`）：
 
 ```bash
@@ -159,8 +160,22 @@ sudo systemctl enable --now local-mirror
 journalctl -u local-mirror -f
 ```
 
-口令用 `Environment=LOCAL_MIRROR_SECRET=...` 或 `EnvironmentFile=` 注入，
-别写在 `-k` 参数里，免得出现在 `ps` 输出中。
+macOS 用 launchd——`brew services` 只支持 formula 不支持 cask，用
+LaunchAgent 示例
+[deploy/com.xwvike.local-mirror.plist](deploy/com.xwvike.local-mirror.plist)
+（发行压缩包里也有）。登录即启动，进程挂了自动拉起：
+
+```bash
+cp deploy/com.xwvike.local-mirror.plist ~/Library/LaunchAgents/
+# 编辑二进制路径、模式/目录/上游地址与日志路径后：
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.xwvike.local-mirror.plist
+# 停止并卸载：
+launchctl bootout gui/$(id -u)/com.xwvike.local-mirror
+```
+
+两边一样：口令走环境变量注入（unit 里 `Environment=`/`EnvironmentFile=`，
+plist 里 `EnvironmentVariables`），别写在 `-k` 参数里，免得出现在 `ps`
+输出中。
 
 ## 运行时产物
 

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  local-mirror launchd 服务示例（LaunchAgent，登录后以当前用户身份运行）。
+
+  安装：
+    cp com.xwvike.local-mirror.plist ~/Library/LaunchAgents/
+    按需修改 ProgramArguments 里的二进制路径、模式、目录与上游地址
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.xwvike.local-mirror.plist
+
+  停止并卸载：
+    launchctl bootout gui/$(id -u)/com.xwvike.local-mirror
+
+  查看状态与日志：
+    launchctl print gui/$(id -u)/com.xwvike.local-mirror
+    tail -f ~/Library/Logs/local-mirror.log            # stdout/stderr（横幅与错误）
+    tail -f <同步目录>/.local-mirror/logs/error.log    # 运行日志
+
+  开机（而非登录）即跑、或需跨用户运行时，改用 LaunchDaemon：
+  放 /Library/LaunchDaemons/ 并以 root bootstrap system/…，此处不展开。
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.xwvike.local-mirror</string>
+
+	<!-- 二进制路径按安装方式调整：
+	     brew（Apple Silicon）/opt/homebrew/bin/local-mirror
+	     brew（Intel）        /usr/local/bin/local-mirror
+	     install.sh 普通用户  ~/.local/bin/local-mirror（写绝对路径） -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/local-mirror</string>
+		<string>-m</string>
+		<string>reality</string>
+		<string>-p</string>
+		<string>/Users/you/sync</string>
+		<string>-l</string>
+		<string>warn</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- 异常退出才重启（正常退出码 0 不拉起）；launchd 默认有 10 秒重启节流 -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>/Users/you/Library/Logs/local-mirror.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/you/Library/Logs/local-mirror.log</string>
+
+	<!-- 传输加密口令建议放这里而非命令行参数（避免出现在 ps 输出中） -->
+	<!--
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>LOCAL_MIRROR_SECRET</key>
+		<string>changeme</string>
+	</dict>
+	-->
+</dict>
+</plist>
