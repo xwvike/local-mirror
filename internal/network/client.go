@@ -488,7 +488,13 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 			if _, err := file.Write(dataMsg.Data); err != nil {
 				// 写入失败发生在数据流中间：服务端仍在发送剩余数据，
 				// 此时提前返回会在连接里留下未消费的字节，后续请求将读到
-				// 错位数据被误解析。标记为连接错误，让上层关闭并重建连接
+				// 错位数据被误解析。标记为连接错误，让上层关闭并重建连接。
+				// 磁盘满是这里最常见的原因（预检存在竞态窗口），单独点名，
+				// 用户不必从连接错误噪音里猜真实原因
+				if appError.IsDiskFull(err) {
+					return "", fmt.Errorf("%w: 磁盘空间不足，%s 写入中断（分片保留待续传，释放空间后自动恢复）: %v",
+						appError.ErrConnection, filePath, err)
+				}
 				return "", fmt.Errorf("%w: error writing file data: %v", appError.ErrConnection, err)
 			}
 			// 不逐块回发 Acknowledge：服务端流式发送期间不读取 socket，

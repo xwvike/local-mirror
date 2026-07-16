@@ -152,7 +152,11 @@ func BuildFileTree(path string) error {
 			for node := range nodeChan {
 				if !node.IsDir && node.Hash == "" {
 					if hash, err := utils.CalcBlake3(filepath.Join(path, node.Path)); err != nil {
-						log.Warnf("Failed to hash file %s: %v", node.Path, err)
+						// 哈希缺失的节点仍进树：客户端会确定性跳过它（不发注定失败的
+						// 请求），但因节点存在，镜像侧已有副本不会被 --allow-delete 误删。
+						// 同时登记进不可读列表，由 watcher 的恢复循环定期探测
+						MarkUnreadable(filepath.Join(path, node.Path))
+						log.Errorf("无法读取 %s（%v），该文件暂不参与同步；修复权限后会自动恢复同步", node.Path, err)
 					} else {
 						node.Hash = fmt.Sprintf("%x", hash)
 						mu.Lock()

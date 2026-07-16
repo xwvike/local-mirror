@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"context"
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/tree"
@@ -113,6 +114,50 @@ func eventFilter(event fsnotify.Event) {
 		eventMu.Unlock()
 
 		tree.AddRecentChangedDir(fatherNode.Path)
+	case event.Has(fsnotify.Chmod):
+		// 权限/属性变化：文件可能此前因无读权限而哈希缺失（客户端确定性
+		// 跳过这类文件），chmod 修复后必须重算哈希同步才能自动恢复——
+		// 复用写事件的防抖流水线。内容未变时重算得到相同哈希，只是一次
+		// 幂等 upsert，代价可忽略；目录与符号链接的属性变化无需处理
+		linfo, err := os.Lstat(event.Name)
+		if err != nil || linfo.IsDir() || linfo.Mode()&os.ModeSymlink != 0 {
+			return
+		}
+		scheduleFileChange(event.Name)
+	}
+}
+
+// unreadableRecheckInterval 不可读文件的恢复探测周期。
+// 不能依赖事件：macOS kqueue 对无读权限的文件建不起 watch（需要 open），
+// 权限修复不产生任何事件；冷目录轮询只比 size+mtime，chmod 两者都不变。
+// 唯一可靠的自愈路径就是对登记过的不可读文件做低频 open 探测
+const unreadableRecheckInterval = 30 * time.Second
+
+// recoverUnreadable 定期探测登记的不可读文件，恢复可读即重新入队哈希
+// （复用防抖流水线，finalize 成功后自动从登记表移除）。
+// 登记表只在出现过读取失败时才有条目，空表时本循环仅一次锁开销
+func recoverUnreadable(ctx context.Context) {
+	ticker := time.NewTicker(unreadableRecheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, p := range tree.UnreadableSnapshot() {
+				f, err := os.Open(p)
+				if err != nil {
+					if os.IsNotExist(err) {
+						// 文件已被删除，Remove 事件/扫描会处理树节点，登记表里不再留守
+						tree.UnmarkUnreadable(p)
+					}
+					continue
+				}
+				f.Close()
+				log.Infof("检测到 %s 已恢复可读，重新计算哈希并恢复同步", p)
+				scheduleFileChange(p)
+			}
+		}
 	}
 }
 
@@ -153,9 +198,13 @@ func finalizeFileChange(absPath string) {
 	}
 	hash := ""
 	if h, hashErr := utils.CalcBlake3(absPath); hashErr != nil {
-		log.Warnf("Failed to hash file %s: %v", absPath, hashErr)
+		// 与 buildFileTree 语义一致：空哈希节点照常落库（客户端确定性跳过、
+		// 不误删镜像侧副本），登记进不可读列表由恢复循环定期探测
+		tree.MarkUnreadable(absPath)
+		log.Errorf("无法读取 %s（%v），该文件暂不参与同步；修复权限后会自动恢复", absPath, hashErr)
 	} else {
 		hash = fmt.Sprintf("%x", h)
+		tree.UnmarkUnreadable(absPath)
 	}
 	uuid, _ := utils.RandomString(16)
 	newLeaf := &tree.Node{
