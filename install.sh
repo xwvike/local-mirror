@@ -6,21 +6,13 @@
 #
 # 可用环境变量覆盖：
 #   VERSION=v0.9.0     安装指定版本（默认最新）
-#   INSTALL_DIR=/path  安装目录（默认 /usr/local/bin；不可写且无 sudo 时
-#                      退到 ~/.local/bin）
+#   INSTALL_DIR=/path  安装目录（默认 ~/.local/bin——普通用户即可安装使用，
+#                      全程不需要 root/sudo；要装系统目录请自行指定并授权）
 set -eu
 
 REPO="xwvike/local-mirror"
 
 err() { printf 'install.sh: %s\n' "$1" >&2; exit 1; }
-
-# sudo 可用 = 免密直接过，或有终端能向用户要密码。
-# 非交互场景（ssh 无 -t、CI）里 sudo 只会报错，此时应退回 ~/.local/bin
-can_sudo() {
-	command -v sudo >/dev/null 2>&1 || return 1
-	sudo -n true 2>/dev/null && return 0
-	sh -c ': </dev/tty' 2>/dev/null
-}
 
 os=$(uname -s)
 case "$os" in
@@ -65,22 +57,9 @@ fi
 
 tar xzf "$tmp/$name.tar.gz" -C "$tmp" local-mirror
 
-if [ -n "${INSTALL_DIR:-}" ]; then
-	dir=$INSTALL_DIR
-	mkdir -p "$dir"
-	install -m 755 "$tmp/local-mirror" "$dir/local-mirror"
-elif [ -w /usr/local/bin ]; then
-	dir=/usr/local/bin
-	install -m 755 "$tmp/local-mirror" "$dir/local-mirror"
-elif can_sudo; then
-	dir=/usr/local/bin
-	echo "安装到 ${dir}（需要 sudo）"
-	sudo install -m 755 "$tmp/local-mirror" "$dir/local-mirror"
-else
-	dir="$HOME/.local/bin"
-	mkdir -p "$dir"
-	install -m 755 "$tmp/local-mirror" "$dir/local-mirror"
-fi
+dir=${INSTALL_DIR:-"$HOME/.local/bin"}
+mkdir -p "$dir"
+install -m 755 "$tmp/local-mirror" "$dir/local-mirror"
 
 case ":$PATH:" in
 *":$dir:"*) ;;
@@ -91,7 +70,9 @@ case ":$PATH:" in
 	*/bash) rc="$HOME/.bashrc" ;;
 	esac
 	if [ -n "$rc" ]; then
-		printf '\n# local-mirror install.sh 添加\nexport PATH="%s:$PATH"\n' "$dir" >>"$rc"
+		if ! grep -qs '# local-mirror install.sh 添加' "$rc"; then
+			printf '\n# local-mirror install.sh 添加\nexport PATH="%s:$PATH"\n' "$dir" >>"$rc"
+		fi
 		echo "已把 $dir 加进 PATH（写入 ${rc}，开新终端生效）"
 	else
 		echo "注意: $dir 不在 PATH 里，请自行加进 shell 配置"

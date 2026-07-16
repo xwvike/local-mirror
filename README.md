@@ -44,8 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh
 ```
 
 The script detects OS and architecture, downloads the latest release,
-verifies its checksum and installs to `/usr/local/bin` (falling back to
-`~/.local/bin`, adding it to your PATH if needed). `VERSION` and
+verifies its checksum and installs to `~/.local/bin`, adding it to your
+PATH if needed — no root required at any point. `VERSION` and
 `INSTALL_DIR` environment variables override the defaults. If you prefer
 proper packages, deb and rpm files are on the
 [releases page](https://github.com/xwvike/local-mirror/releases).

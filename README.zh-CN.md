@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh
 ```
 
 脚本自动识别系统与架构，下载最新版本并校验 checksum，装到
-`/usr/local/bin`（不可写则退到 `~/.local/bin` 并自动补 PATH）。环境变量
+`~/.local/bin` 并在需要时自动补 PATH——全程不需要 root。环境变量
 `VERSION` 和 `INSTALL_DIR` 可覆盖默认行为。想走正经包管理的话，
 [releases 页面](https://github.com/xwvike/local-mirror/releases)上有
 deb 和 rpm。
