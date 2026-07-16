@@ -34,20 +34,30 @@ scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
 scoop install local-mirror
 ```
 
-Debian/Ubuntu——从 [releases 页面](https://github.com/xwvike/local-mirror/releases)
-下载对应架构的 `.deb`，然后：
+Debian/Ubuntu——ARM 机器把 `amd64` 换成 `arm64`：
 
 ```bash
-sudo apt install ./local-mirror_*_linux_amd64.deb
+ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fLO "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.deb"
+sudo apt install "./local-mirror_${ver}_linux_amd64.deb"
 ```
 
-RHEL/Fedora 同理，换 `.rpm`：
+RHEL/Fedora——dnf 直接吃 URL：
 
 ```bash
-sudo dnf install ./local-mirror_*_linux_amd64.rpm
+ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+sudo dnf install "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.rpm"
 ```
 
-其他环境：从 releases 页面下载 tar.gz/zip，把二进制放进 PATH；或从源码构建：
+其他 Linux——二进制是静态的，放进 PATH 即可：
+
+```bash
+ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fL "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.tar.gz" | tar xz local-mirror
+sudo install -m 755 local-mirror /usr/local/bin/
+```
+
+或从源码构建：
 
 ```bash
 git clone https://github.com/xwvike/local-mirror && cd local-mirror

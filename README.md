@@ -37,21 +37,31 @@ scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
 scoop install local-mirror
 ```
 
-Debian/Ubuntu — download the `.deb` for your architecture from the
-[releases page](https://github.com/xwvike/local-mirror/releases), then:
+Debian/Ubuntu — replace `amd64` with `arm64` on ARM machines:
 
 ```bash
-sudo apt install ./local-mirror_*_linux_amd64.deb
+ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fLO "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.deb"
+sudo apt install "./local-mirror_${ver}_linux_amd64.deb"
 ```
 
-RHEL/Fedora, same but with the `.rpm`:
+RHEL/Fedora — dnf takes the URL directly:
 
 ```bash
-sudo dnf install ./local-mirror_*_linux_amd64.rpm
+ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+sudo dnf install "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.rpm"
 ```
 
-Any other setup: grab the tar.gz/zip from the releases page and put the
-binary somewhere on your PATH, or build from source:
+Any other Linux — the binary is static, having it on your PATH is all it
+takes:
+
+```bash
+ver=$(curl -fsSL https://api.github.com/repos/xwvike/local-mirror/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fL "https://github.com/xwvike/local-mirror/releases/download/v${ver}/local-mirror_${ver}_linux_amd64.tar.gz" | tar xz local-mirror
+sudo install -m 755 local-mirror /usr/local/bin/
+```
+
+Or build from source:
 
 ```bash
 git clone https://github.com/xwvike/local-mirror && cd local-mirror
