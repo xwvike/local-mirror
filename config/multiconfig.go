@@ -37,14 +37,14 @@ type MultiConfig struct {
 func LoadMultiConfig(path string) (*MultiConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 	var cfg MultiConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("解析 YAML 失败: %w", err)
+		return nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
 	if len(cfg.Tasks) == 0 {
-		return nil, fmt.Errorf("配置中没有任务（tasks 为空）")
+		return nil, fmt.Errorf("no tasks in config (tasks is empty)")
 	}
 
 	seenPaths := make(map[string]string) // 绝对路径 → 任务名
@@ -54,27 +54,27 @@ func LoadMultiConfig(path string) (*MultiConfig, error) {
 		applyDefaults(t, &cfg.Defaults)
 
 		if _, ok := ModeMap[t.Mode]; !ok {
-			return nil, fmt.Errorf("任务 %d: 无效的运行模式 %q (可选: reality, mirror, relay)", i+1, t.Mode)
+			return nil, fmt.Errorf("task %d: invalid mode %q (valid: reality, mirror, relay)", i+1, t.Mode)
 		}
 		if t.Path == "" {
-			return nil, fmt.Errorf("任务 %d: path 不能为空", i+1)
+			return nil, fmt.Errorf("task %d: path must not be empty", i+1)
 		}
 		abs, err := filepath.Abs(t.Path)
 		if err != nil {
-			return nil, fmt.Errorf("任务 %d: 无法解析路径 %q: %w", i+1, t.Path, err)
+			return nil, fmt.Errorf("task %d: cannot resolve path %q: %w", i+1, t.Path, err)
 		}
 		t.Path = abs
 		// 同一目录不能被两个任务使用：会争抢 .local-mirror 的 bbolt 锁，
 		// 子进程反复启动失败，必须在这里前置拒绝
 		if prev, dup := seenPaths[abs]; dup {
-			return nil, fmt.Errorf("任务 %q 与 %q 使用了同一路径 %s", t.Name, prev, abs)
+			return nil, fmt.Errorf("tasks %q and %q share the same path %s", t.Name, prev, abs)
 		}
 
 		if t.Name == "" {
 			t.Name = filepath.Base(abs)
 		}
 		if seenNames[t.Name] {
-			return nil, fmt.Errorf("任务名 %q 重复（name 缺省取路径末段，冲突时请显式命名）", t.Name)
+			return nil, fmt.Errorf("duplicate task name %q (name defaults to the path basename; set it explicitly to resolve)", t.Name)
 		}
 		seenPaths[abs] = t.Name
 		seenNames[t.Name] = true
@@ -83,7 +83,7 @@ func LoadMultiConfig(path string) (*MultiConfig, error) {
 			switch t.LogLevel {
 			case "debug", "info", "warn", "error":
 			default:
-				return nil, fmt.Errorf("任务 %q: 无效的日志级别 %q", t.Name, t.LogLevel)
+				return nil, fmt.Errorf("task %q: invalid log level %q", t.Name, t.LogLevel)
 			}
 		}
 	}

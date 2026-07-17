@@ -35,11 +35,11 @@ func InitLogger() {
 	// 文件侧走基于大小的轮转 writer，长驻进程不会写满磁盘
 	output := io.Writer(os.Stderr)
 	if err := os.MkdirAll(getLogDir(), 0755); err != nil {
-		log.Warnf("创建日志目录失败，日志仅输出到终端: %v", err)
+		log.Warnf("failed to create log directory, logging to terminal only: %v", err)
 	} else {
 		rw, err := newRotatingWriter(LogPath(), logMaxSize, logMaxFiles)
 		if err != nil {
-			log.Warnf("日志文件打开失败，日志仅输出到终端: %v", err)
+			log.Warnf("failed to open log file, logging to terminal only: %v", err)
 		} else {
 			output = io.MultiWriter(rw, os.Stderr)
 		}

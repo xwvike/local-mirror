@@ -52,13 +52,13 @@ func ListenAvailable(basePort, count int) (net.Listener, int, error) {
 		listener, err := net.Listen("tcp4", fmt.Sprintf("0.0.0.0:%d", port))
 		if err == nil {
 			if port != basePort {
-				log.Warnf("端口 %d 不可用，使用 %d", basePort, port)
+				log.Warnf("port %d unavailable, using %d", basePort, port)
 			}
 			return listener, port, nil
 		}
 		lastErr = err
 	}
-	return nil, 0, fmt.Errorf("在 %d-%d 范围内没有可用端口: %w", basePort, basePort+count-1, lastErr)
+	return nil, 0, fmt.Errorf("no free port in range %d-%d: %w", basePort, basePort+count-1, lastErr)
 }
 
 type session struct {
@@ -136,7 +136,7 @@ func (s *fileServer) Start() error {
 		select {
 		case s.connSlots <- struct{}{}:
 		default:
-			log.Warnf("并发连接数达上限 %d，拒绝 %s", maxConcurrentConnections, conn.RemoteAddr())
+			log.Warnf("concurrent connection cap %d reached, rejecting %s", maxConcurrentConnections, conn.RemoteAddr())
 			conn.Close()
 			continue
 		}

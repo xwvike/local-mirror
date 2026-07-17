@@ -19,21 +19,21 @@ os=$(uname -s)
 case "$os" in
 Linux) os=linux ;;
 Darwin) os=darwin ;;
-*) err "不支持的系统: $os（Windows 请用 scoop install local-mirror）" ;;
+*) err "unsupported OS: $os (on Windows use: scoop install local-mirror)" ;;
 esac
 
 arch=$(uname -m)
 case "$arch" in
 x86_64 | amd64) arch=amd64 ;;
 aarch64 | arm64) arch=arm64 ;;
-*) err "不支持的架构: $arch" ;;
+*) err "unsupported architecture: $arch" ;;
 esac
 
 ver=${VERSION:-}
 if [ -z "$ver" ]; then
 	ver=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
 		sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
-	[ -n "$ver" ] || err "无法获取最新版本号"
+	[ -n "$ver" ] || err "failed to resolve the latest version"
 fi
 ver=${ver#v}
 
@@ -43,18 +43,18 @@ base="https://github.com/$REPO/releases/download/v${ver}"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "下载 local-mirror v${ver}（${os}/${arch}）..."
+echo "downloading local-mirror v${ver} (${os}/${arch})..."
 curl -fsSL -o "$tmp/$name.tar.gz" "$base/$name.tar.gz"
 curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt"
 
 want=$(grep " ${name}.tar.gz\$" "$tmp/checksums.txt" | cut -d' ' -f1)
-[ -n "$want" ] || err "checksums.txt 里找不到 $name.tar.gz"
+[ -n "$want" ] || err "$name.tar.gz not found in checksums.txt"
 if command -v sha256sum >/dev/null 2>&1; then
 	got=$(sha256sum "$tmp/$name.tar.gz" | cut -d' ' -f1)
 else
 	got=$(shasum -a 256 "$tmp/$name.tar.gz" | cut -d' ' -f1)
 fi
-[ "$got" = "$want" ] || err "checksum 校验失败（下载可能被截断或篡改）"
+[ "$got" = "$want" ] || err "checksum mismatch (download may be truncated or tampered with)"
 
 tar xzf "$tmp/$name.tar.gz" -C "$tmp" local-mirror
 
@@ -77,15 +77,15 @@ case ":$PATH:" in
 	*/bash) rc="$HOME/.bashrc" ;;
 	esac
 	if [ -n "$rc" ]; then
-		if ! grep -qs '# local-mirror install.sh 添加' "$rc"; then
-			printf '\n# local-mirror install.sh 添加\nexport PATH="%s:$PATH"\n' "$dir" >>"$rc"
+		if ! grep -qs '# added by local-mirror install.sh' "$rc"; then
+			printf '\n# added by local-mirror install.sh\nexport PATH="%s:$PATH"\n' "$dir" >>"$rc"
 		fi
-		echo "已把 $dir 加进 PATH（写入 ${rc}，开新终端生效）"
+		echo "added $dir to PATH (written to ${rc}; open a new shell to apply)"
 	else
-		echo "注意: $dir 不在 PATH 里，请自行加进 shell 配置"
+		echo "note: $dir is not on your PATH; add it in your shell config"
 	fi
 	;;
 esac
 
-echo "安装完成: $dir/local-mirror"
+echo "installed: $dir/local-mirror"
 "$dir/local-mirror" --version

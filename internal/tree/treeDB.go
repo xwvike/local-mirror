@@ -62,7 +62,7 @@ func InitDB() {
 	// 状态目录位于同步根目录下（支持 -p 从任意 CWD 启动）
 	stateDir := filepath.Join(config.StartPath, ".local-mirror")
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		log.Errorf("创建状态目录失败: %v", err)
+		log.Errorf("failed to create state directory: %v", err)
 		os.Exit(1)
 	}
 
@@ -72,7 +72,7 @@ func InitDB() {
 	// 这个锁同时充当"每目录单实例"的互斥量，与模式组合无关
 	DB, err = bolt.Open(filepath.Join(stateDir, "cache.db"), 0600, &bolt.Options{Timeout: 3 * time.Second})
 	if err != nil {
-		log.Errorf("打开数据库失败（该目录可能已有另一个 local-mirror 实例在运行）: %v", err)
+		log.Errorf("failed to open database (another local-mirror instance may be running on this directory): %v", err)
 		os.Exit(1)
 	}
 
@@ -92,7 +92,7 @@ func InitDB() {
 		}
 
 		if reuse {
-			log.Info("复用上次运行的目录树缓存")
+			log.Info("reusing directory tree cache from the previous run")
 			// 变更记录属于上一个实例的时间线：服务端重启后 InstanceID 变化，
 			// 客户端会重建会话并全量扫描，旧记录只会造成误导，直接清空
 			if err := tx.DeleteBucket([]byte("changed_dirs")); err != nil {
@@ -102,7 +102,7 @@ func InitDB() {
 				return fmt.Errorf("failed to recreate changed_dirs: %w", err)
 			}
 		} else {
-			log.Info("缓存不可复用（首次运行/目录变化/结构升级），重建数据库")
+			log.Info("cache not reusable (first run / root changed / schema upgrade), rebuilding database")
 			for _, name := range allBuckets {
 				if tx.Bucket([]byte(name)) != nil {
 					if err := tx.DeleteBucket([]byte(name)); err != nil {
@@ -224,7 +224,7 @@ func AddNodes(nodes []*Node) error {
 							if err := childrenBucket.Put(pid, cd); err != nil {
 								return err
 							}
-							log.Warnf("修复孤儿节点的父链接: %s", node.Path)
+							log.Warnf("repaired orphaned node linkage: %s", node.Path)
 						}
 					}
 				}

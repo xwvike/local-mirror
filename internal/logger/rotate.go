@@ -54,13 +54,13 @@ func (w *rotatingWriter) Write(p []byte) (int, error) {
 	defer w.mu.Unlock()
 
 	if w.file == nil {
-		return 0, fmt.Errorf("日志文件未打开")
+		return 0, fmt.Errorf("log file not open")
 	}
 	// 单条超过上限也整条写入（不切分日志行），写完再滚动
 	if w.size+int64(len(p)) > w.maxSize && w.size > 0 {
 		if err := w.rotate(); err != nil {
 			// 轮转失败不丢日志：继续写当前文件（宁可超限也不静默丢失）
-			fmt.Fprintf(os.Stderr, "日志轮转失败，继续写当前文件: %v\n", err)
+			fmt.Fprintf(os.Stderr, "log rotation failed, continuing with current file: %v\n", err)
 		}
 	}
 	n, err := w.file.Write(p)

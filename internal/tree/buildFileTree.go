@@ -156,7 +156,7 @@ func BuildFileTree(path string) error {
 						// 请求），但因节点存在，镜像侧已有副本不会被 --allow-delete 误删。
 						// 同时登记进不可读列表，由 watcher 的恢复循环定期探测
 						MarkUnreadable(filepath.Join(path, node.Path))
-						log.Errorf("无法读取 %s（%v），该文件暂不参与同步；修复权限后会自动恢复同步", node.Path, err)
+						log.Errorf("cannot read %s (%v); the file is excluded from sync and recovers automatically once readable", node.Path, err)
 					} else {
 						node.Hash = fmt.Sprintf("%x", hash)
 						mu.Lock()
@@ -199,7 +199,7 @@ func BuildFileTree(path string) error {
 		// 发给客户端，造成信息泄露/路径穿越；且符号链接的删除也无法被可靠检测。
 		// WalkDir 用 Lstat 语义，d.Type() 能识别链接本身而不追踪目标
 		if d.Type()&fs.ModeSymlink != 0 {
-			log.Warnf("跳过符号链接（不支持同步）: %s", relPath)
+			log.Warnf("skipping symlink (not synced): %s", relPath)
 			return nil
 		}
 
@@ -285,7 +285,7 @@ func BuildFileTree(path string) error {
 		}
 	}
 
-	log.Infof("file tree build completed, time taken: %d ms (哈希复用 %d, 重算 %d, 清理失效 %d)",
+	log.Infof("file tree build completed, time taken: %d ms (hashes reused %d, computed %d, stale pruned %d)",
 		time.Now().UnixMilli()-startTime, reusedHashes, computedHashes, len(stale))
 
 	fileCount, _ := GetMeta("file_count")

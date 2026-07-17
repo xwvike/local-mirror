@@ -37,20 +37,20 @@ func resolveSyncRoot() (string, error) {
 	if root == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			return "", fmt.Errorf("获取当前工作目录失败: %v", err)
+			return "", fmt.Errorf("failed to get working directory: %v", err)
 		}
 		root = wd
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return "", fmt.Errorf("无法解析路径 %q: %v", root, err)
+		return "", fmt.Errorf("cannot resolve path %q: %v", root, err)
 	}
 	info, err := os.Stat(abs)
 	if err != nil {
-		return "", fmt.Errorf("同步目录不存在: %s", abs)
+		return "", fmt.Errorf("sync directory does not exist: %s", abs)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("同步路径不是目录: %s", abs)
+		return "", fmt.Errorf("sync path is not a directory: %s", abs)
 	}
 	return abs, nil
 }
@@ -69,7 +69,7 @@ func runDiscovery() {
 	isTTY := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 	for {
 		if isTTY {
-			fmt.Printf("正在扫描局域网服务端（%s）…\n", discoveryWindow)
+			fmt.Printf("scanning for LAN servers (%s)...\n", discoveryWindow)
 		}
 		servers, err := network.DiscoverServers(discoveryWindow, *config.Secret, config.InstanceID)
 		if isTTY {
@@ -77,7 +77,7 @@ func runDiscovery() {
 			fmt.Print("\x1b[1A\x1b[K")
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "local-mirror: 自动发现失败: %v\n请用 -r 指定上游服务器地址\n", err)
+			fmt.Fprintf(os.Stderr, "local-mirror: discovery failed: %v\nspecify the upstream server with -r\n", err)
 			os.Exit(2)
 		}
 
@@ -86,14 +86,14 @@ func runDiscovery() {
 			case 1:
 				config.DiscoveredAddr = servers[0].Addr()
 				config.DiscoveredAlias = servers[0].Alias
-				log.Infof("自动发现上游: %s (%s)", servers[0].Addr(), servers[0].Alias)
+				log.Infof("discovered upstream: %s (%s)", servers[0].Addr(), servers[0].Alias)
 				return
 			case 0:
-				fmt.Fprintf(os.Stderr, "local-mirror: 未发现局域网服务端（上游未启动？稍后可重试），"+
-					"或用 -r 显式指定\n（VPN、跨网段或防火墙环境不支持自动发现）\n")
+				fmt.Fprintf(os.Stderr, "local-mirror: no LAN server found (upstream not running yet? retry later), "+
+					"or specify one with -r\n(discovery does not cross VPNs, subnets or firewalls)\n")
 				os.Exit(1)
 			default:
-				fmt.Fprintf(os.Stderr, "local-mirror: 发现 %d 个服务端，非交互环境无法自动选择，请用 -r 指定:\n", len(servers))
+				fmt.Fprintf(os.Stderr, "local-mirror: found %d servers; cannot pick one non-interactively, use -r:\n", len(servers))
 				for _, s := range servers {
 					fmt.Fprintf(os.Stderr, "  %-20s %-21s %s\n", s.Alias, s.Addr(), s.SyncPath)
 				}
@@ -105,7 +105,7 @@ func runDiscovery() {
 		for i, s := range servers {
 			opts[i] = tui.Option{Alias: s.Alias, Addr: s.Addr(), Path: s.SyncPath}
 		}
-		idx, outcome, err := tui.Select(fmt.Sprintf("发现 %d 个 local-mirror 服务端:", len(servers)), opts)
+		idx, outcome, err := tui.Select(fmt.Sprintf("found %d local-mirror servers:", len(servers)), opts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
 			os.Exit(1)
@@ -163,7 +163,7 @@ func main() {
 			extra = append(extra, dash+f.Name)
 		})
 		if len(extra) > 0 {
-			fmt.Fprintf(os.Stderr, "local-mirror: --config 模式下其余参数无效: %v\n", extra)
+			fmt.Fprintf(os.Stderr, "local-mirror: other flags are ignored in --config mode: %v\n", extra)
 			os.Exit(2)
 		}
 		multiCfg, err := config.LoadMultiConfig(*config.ConfigFile)
@@ -172,7 +172,7 @@ func main() {
 			os.Exit(2)
 		}
 		if n := countRealityTasks(multiCfg); n > config.PortScanRange {
-			fmt.Fprintf(os.Stderr, "local-mirror: 警告: %d 个服务端任务超过端口探测范围（%d），超出部分将无法绑定端口\n",
+			fmt.Fprintf(os.Stderr, "local-mirror: warning: %d server tasks exceed the port scan range (%d); the excess cannot bind a port\n",
 				n, config.PortScanRange)
 		}
 		runSupervisor(multiCfg) // 不返回
@@ -181,17 +181,17 @@ func main() {
 
 	// 用法错误：信息到 stderr，退出码 2（与 flag 包解析失败时的约定一致）
 	if flag.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "local-mirror: 未知参数: %v\n请使用 --help 查看用法\n", flag.Args())
+		fmt.Fprintf(os.Stderr, "local-mirror: unknown arguments: %v\nsee --help for usage\n", flag.Args())
 		os.Exit(2)
 	}
 	if _, ok := config.ModeMap[*config.Mode]; !ok {
-		fmt.Fprintf(os.Stderr, "local-mirror: 无效的运行模式 %q (可选: reality, mirror, relay)\n", *config.Mode)
+		fmt.Fprintf(os.Stderr, "local-mirror: invalid mode %q (valid: reality, mirror, relay)\n", *config.Mode)
 		os.Exit(2)
 	}
 	switch *config.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
-		fmt.Fprintf(os.Stderr, "local-mirror: 无效的日志级别 %q (可选: debug, info, warn, error)\n", *config.LogLevel)
+		fmt.Fprintf(os.Stderr, "local-mirror: invalid log level %q (valid: debug, info, warn, error)\n", *config.LogLevel)
 		os.Exit(2)
 	}
 	root, err := resolveSyncRoot()
@@ -223,7 +223,7 @@ func main() {
 	defer func() {
 		if tree.DB != nil {
 			if err := tree.DB.Close(); err != nil {
-				log.Errorf("关闭数据库时出错: %v", err)
+				log.Errorf("error closing database: %v", err)
 			}
 		}
 	}()
@@ -266,12 +266,12 @@ func main() {
 
 		// UDP 发现应答器：失败不致命（客户端仍可 -r 直连）
 		if _, err := network.StartDiscoveryResponder(port, config.AliasName, config.StartPath, *config.Secret); err != nil {
-			log.Warnf("UDP 服务发现应答器启动失败（客户端可用 -r 直连）: %v", err)
+			log.Warnf("UDP discovery responder failed to start (clients can still use -r): %v", err)
 		}
 	}
 
 	printBanner()
-	log.Infof("启动: version=%s mode=%s instance=%08x root=%s", version, *config.Mode, config.InstanceID, config.StartPath)
+	log.Infof("startup: version=%s mode=%s instance=%08x root=%s", version, *config.Mode, config.InstanceID, config.StartPath)
 
 	app.App()
 }
@@ -281,7 +281,7 @@ func main() {
 func printBanner() {
 	p := termstyle.NewPalette(os.Stdout)
 	const width = 48
-	const labelWidth = 10
+	const labelWidth = 11
 
 	line := p.Dim + strings.Repeat("─", width) + p.Reset
 	row := func(label, value string) {
@@ -289,14 +289,14 @@ func printBanner() {
 		fmt.Printf("  %s%s%s%s%s\n", p.Dim, label, p.Reset, pad, value)
 	}
 
-	modeDescMap := map[string]string{"reality": "服务器", "mirror": "客户端", "relay": "中继"}
+	modeDescMap := map[string]string{"reality": "server", "mirror": "client", "relay": "relay"}
 	modeDesc := modeDescMap[*config.Mode]
 
 	fmt.Println(line)
 	fmt.Printf("  %s%sLocal Mirror%s %s  ·  %s%s%s (%s)\n",
 		p.Bold, p.Cyan, p.Reset, version, p.Bold, *config.Mode, p.Reset, modeDesc)
 	fmt.Println(line)
-	row("同步目录", config.StartPath)
+	row("Sync root", config.StartPath)
 	// 忽略规则最多展示 4 条，其余折叠为计数（完整列表见 --help 与配置）
 	ignoreShown := config.IgnoreFileList
 	suffix := ""
@@ -304,44 +304,44 @@ func printBanner() {
 		suffix = fmt.Sprintf(" %s(+%d)%s", p.Dim, len(ignoreShown)-4, p.Reset)
 		ignoreShown = ignoreShown[:4]
 	}
-	row("忽略规则", strings.Join(ignoreShown, ", ")+suffix)
+	row("Ignores", strings.Join(ignoreShown, ", ")+suffix)
 	if config.SyncsFromUpstream() {
 		switch {
 		case config.DiscoveredAddr != "":
-			row("上游服务器", fmt.Sprintf("%s%s%s %s(自动发现: %s)%s",
+			row("Upstream", fmt.Sprintf("%s%s%s %s(discovered: %s)%s",
 				p.Green, config.DiscoveredAddr, p.Reset, p.Dim, config.DiscoveredAlias, p.Reset))
 		default:
 			ip := *config.RealityIP
 			if ip == "" {
 				ip = "127.0.0.1"
 			}
-			row("上游服务器", fmt.Sprintf("%s%s%s %s(端口探测 %d-%d)%s",
+			row("Upstream", fmt.Sprintf("%s%s%s %s(port scan %d-%d)%s",
 				p.Green, ip, p.Reset, p.Dim, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, p.Reset))
 		}
 	}
 	if config.ServesDownstream() {
-		row("监听地址", fmt.Sprintf("%s0.0.0.0:%d%s", p.Green, config.ActualPort, p.Reset))
+		row("Listen", fmt.Sprintf("%s0.0.0.0:%d%s", p.Green, config.ActualPort, p.Reset))
 	}
 	if *config.Secret != "" {
-		row("传输加密", fmt.Sprintf("%s开启%s (Noise NNpsk0)", p.Green, p.Reset))
+		row("Encryption", fmt.Sprintf("%son%s (Noise NNpsk0)", p.Green, p.Reset))
 	} else {
-		row("传输加密", fmt.Sprintf("关闭 %s(明文传输，可用 -k 开启)%s", p.Dim, p.Reset))
+		row("Encryption", fmt.Sprintf("off %s(plaintext; enable with -k)%s", p.Dim, p.Reset))
 	}
 	// 仅同步方（mirror/relay）涉及删除，展示当前删除策略
 	if config.SyncsFromUpstream() {
 		if *config.AllowDelete {
-			row("删除同步", fmt.Sprintf("%s开启%s %s(忠实镜像，会删除本地多余文件)%s", p.Green, p.Reset, p.Dim, p.Reset))
+			row("Deletion", fmt.Sprintf("%son%s %s(faithful mirror; local extras get deleted)%s", p.Green, p.Reset, p.Dim, p.Reset))
 		} else {
-			row("删除同步", fmt.Sprintf("关闭 %s(仅增量，本地多余文件保留)%s", p.Dim, p.Reset))
+			row("Deletion", fmt.Sprintf("off %s(additive only; local extras kept)%s", p.Dim, p.Reset))
 		}
 		// 关键路径解锁档：提示覆盖前会快照备份
 		if config.SnapshotOverwrites {
-			row("关键路径", fmt.Sprintf("%s已解锁%s %s(--allow-critical，首次覆盖备份到 .local-mirror/backups)%s",
+			row("Critical", fmt.Sprintf("%sunlocked%s %s(--allow-critical; first overwrite backed up to .local-mirror/backups)%s",
 				p.Green, p.Reset, p.Dim, p.Reset))
 		}
 	}
-	row("实例 ID", fmt.Sprintf("%08x", config.InstanceID))
-	row("进程 PID", fmt.Sprintf("%d", os.Getpid()))
-	row("日志", fmt.Sprintf("%s %s(级别 %s)%s", logger.LogPath(), p.Dim, *config.LogLevel, p.Reset))
+	row("Instance", fmt.Sprintf("%08x", config.InstanceID))
+	row("PID", fmt.Sprintf("%d", os.Getpid()))
+	row("Log", fmt.Sprintf("%s %s(level %s)%s", logger.LogPath(), p.Dim, *config.LogLevel, p.Reset))
 	fmt.Println(line)
 }

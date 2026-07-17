@@ -380,7 +380,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	// 越界（如 "../../etc/x"）直接拒绝，绝不向服务端发起请求、也绝不落盘，
 	// 否则服务端可借此把内容写到同步目录外的任意位置
 	if _, err := safety.SafeJoin(config.StartPath, filePath); err != nil {
-		return "", fmt.Errorf("拒绝下载越界路径: %w", err)
+		return "", fmt.Errorf("refusing to download out-of-root path: %w", err)
 	}
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
@@ -447,7 +447,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	var file *os.File
 	if resume {
 		file, err = os.OpenFile(partialPath, os.O_WRONLY|os.O_APPEND, 0644)
-		log.Infof("断点续传 %s: 已有 %d/%d 字节", filePath, offset, fileResponse.FileSize)
+		log.Infof("resuming %s: %d/%d bytes already present", filePath, offset, fileResponse.FileSize)
 	} else {
 		file, err = os.Create(partialPath)
 		if err == nil {
@@ -492,7 +492,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				// 磁盘满是这里最常见的原因（预检存在竞态窗口），单独点名，
 				// 用户不必从连接错误噪音里猜真实原因
 				if appError.IsDiskFull(err) {
-					return "", fmt.Errorf("%w: 磁盘空间不足，%s 写入中断（分片保留待续传，释放空间后自动恢复）: %v",
+					return "", fmt.Errorf("%w: disk full, write of %s interrupted (partial kept for resume; recovers once space is freed): %v",
 						appError.ErrConnection, filePath, err)
 				}
 				return "", fmt.Errorf("%w: error writing file data: %v", appError.ErrConnection, err)
@@ -532,7 +532,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 			// 其余文件不受影响（走既有单项失败隔离逻辑）
 			if config.SnapshotOverwrites {
 				if err := safety.SnapshotBeforeOverwrite(config.StartPath, filePath, fullPath); err != nil {
-					return "", fmt.Errorf("%w: 备份原文件失败，跳过覆盖 %s: %v", appError.ErrConnection, filePath, err)
+					return "", fmt.Errorf("%w: backing up the original failed, skipping overwrite of %s: %v", appError.ErrConnection, filePath, err)
 				}
 			}
 			if err := os.Rename(partialPath, fullPath); err != nil {

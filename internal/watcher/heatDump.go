@@ -19,7 +19,7 @@ import (
 func WriteHeatSnapshot() {
 	sw := GlobalScoreWatch
 	if sw == nil {
-		log.Warn("热度快照：watcher 未运行（仅 reality/relay 模式有热度表）")
+		log.Warn("heat snapshot: watcher not running (only reality/relay have a heat table)")
 		return
 	}
 
@@ -40,16 +40,16 @@ func WriteHeatSnapshot() {
 	outPath := filepath.Join(config.StartPath, ".local-mirror", "heat.txt")
 	f, err := os.Create(outPath)
 	if err != nil {
-		log.Errorf("热度快照写入失败: %v", err)
+		log.Errorf("failed to write heat snapshot: %v", err)
 		return
 	}
 	defer f.Close()
 
 	t1 := len(tier1)
-	fmt.Fprintf(f, "# local-mirror 目录热度快照  %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(f, "# 目录总数 %d：tier1(实时 watch) %d / 上限 %d，tier2(冷轮询) %d\n",
+	fmt.Fprintf(f, "# local-mirror directory heat snapshot  %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(f, "# %d directories: tier1 (real-time watch) %d / limit %d, tier2 (lazy poll) %d\n",
 		len(entries), t1, tier1Limit, len(entries)-t1)
-	fmt.Fprintf(f, "# %-8s %-6s %-8s %s\n", "分数", "层级", "事件数", "目录")
+	fmt.Fprintf(f, "# %-9s %-6s %-7s %s\n", "score", "tier", "events", "directory")
 	for _, e := range entries {
 		tier := "tier2"
 		if _, ok := tier1[e.Path]; ok {
@@ -57,5 +57,5 @@ func WriteHeatSnapshot() {
 		}
 		fmt.Fprintf(f, "%10.2f %-6s %8d %s\n", e.Score, tier, e.EventCount, e.Path)
 	}
-	log.Infof("热度快照已写入 %s（%d 个目录）", outPath, len(entries))
+	log.Infof("heat snapshot written to %s (%d directories)", outPath, len(entries))
 }

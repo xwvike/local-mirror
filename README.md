@@ -75,7 +75,7 @@ local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
 ```
 
 On startup it prints a banner with the actual listen port, sync directory
-and log location. Fair warning: the CLI output is currently in Chinese.
+and log location.
 
 ## Flags
 

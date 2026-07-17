@@ -46,11 +46,11 @@ func (r *childRef) signal(sig os.Signal) {
 func runSupervisor(cfg *config.MultiConfig) {
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "local-mirror: 无法确定自身可执行文件路径: %v\n", err)
+		fmt.Fprintf(os.Stderr, "local-mirror: cannot determine own executable path: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Local Mirror %s · 多任务监督模式（%d 个任务）\n", version, len(cfg.Tasks))
+	fmt.Printf("Local Mirror %s · supervisor mode (%d tasks)\n", version, len(cfg.Tasks))
 	for _, t := range cfg.Tasks {
 		fmt.Printf("  [%s] %s  %s\n", t.Name, t.Mode, t.Path)
 	}
@@ -77,7 +77,7 @@ func runSupervisor(cfg *config.MultiConfig) {
 
 	select {
 	case <-sigCh:
-		fmt.Fprintln(os.Stderr, "local-mirror: 收到关停信号，正在停止全部任务…")
+		fmt.Fprintln(os.Stderr, "local-mirror: shutdown signal received, stopping all tasks...")
 		cancel()
 		for _, r := range refs {
 			r.signal(syscall.SIGTERM)
@@ -94,7 +94,7 @@ func runSupervisor(cfg *config.MultiConfig) {
 		os.Exit(0)
 	case <-allDone:
 		// 所有管理 goroutine 自然退出 = 每个任务都永久失败
-		fmt.Fprintln(os.Stderr, "local-mirror: 所有任务均已永久失败，退出")
+		fmt.Fprintln(os.Stderr, "local-mirror: all tasks failed permanently, exiting")
 		os.Exit(1)
 	}
 }
@@ -113,16 +113,16 @@ func superviseTask(ctx context.Context, exe string, t config.TaskConfig, ref *ch
 			return // 父进程关停引起的退出，不算失败
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] 启动失败: %v\n", t.Name, err)
+			fmt.Fprintf(os.Stderr, "[%s] failed to start: %v\n", t.Name, err)
 		}
 		if code == 2 {
-			fmt.Fprintf(os.Stderr, "[%s] 退出码 2（配置/用法错误），不再重启\n", t.Name)
+			fmt.Fprintf(os.Stderr, "[%s] exit code 2 (config/usage error), not restarting\n", t.Name)
 			return
 		}
 		if time.Since(start) > healthyRunReset {
 			delay = superviseBaseDelay
 		}
-		fmt.Fprintf(os.Stderr, "[%s] 退出码 %d，%s 后重启\n", t.Name, code, delay)
+		fmt.Fprintf(os.Stderr, "[%s] exit code %d, restarting in %s\n", t.Name, code, delay)
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
