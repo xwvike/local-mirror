@@ -278,6 +278,41 @@ func main() {
 
 // printBanner 向 stdout 输出启动状态。
 // 长驻进程默认日志级别下终端不应完全静默，用户需要知道进程在做什么
+// bannerGlyphs 字标用的方角字模（5 行高），只含字标需要的字母。
+// 笔画统一用 █，幽灵渲染时整体替换为 ░
+var bannerGlyphs = map[rune][]string{
+	'L': {"██    ", "██    ", "██    ", "██    ", "██████"},
+	'O': {" ████ ", "██  ██", "██  ██", "██  ██", " ████ "},
+	'C': {" █████", "██    ", "██    ", "██    ", " █████"},
+	'A': {" ████ ", "██  ██", "██████", "██  ██", "██  ██"},
+	'M': {"██   ██", "███ ███", "██ █ ██", "██   ██", "██   ██"},
+	'I': {"████", " ██ ", " ██ ", " ██ ", "████"},
+	'R': {"█████ ", "██  ██", "█████ ", "██ ██ ", "██  ██"},
+}
+
+// renderWord 把单词渲染成 5 行字模拼版；ghost 为真时以 ░ 作笔画（虚象）
+func renderWord(word string, ghost bool) []string {
+	rows := make([]string, 5)
+	for i, ch := range word {
+		g, ok := bannerGlyphs[ch]
+		if !ok {
+			continue
+		}
+		for r := range rows {
+			if i > 0 {
+				rows[r] += " "
+			}
+			rows[r] += g[r]
+		}
+	}
+	if ghost {
+		for r := range rows {
+			rows[r] = strings.ReplaceAll(rows[r], "█", "░")
+		}
+	}
+	return rows
+}
+
 func printBanner() {
 	p := termstyle.NewPalette(os.Stdout)
 	const width = 48
@@ -292,28 +327,19 @@ func printBanner() {
 	modeDescMap := map[string]string{"reality": "server", "mirror": "client", "relay": "relay"}
 	modeDesc := modeDescMap[*config.Mode]
 
-	// ASCII 版项目 logo（assets/icon.png 的字符演绎）：实心文件夹 + 三条
-	// 渐隐倒影，倒影的透明度用字符浓度（▓▒░）表达。字符全部来自 CP437
-	// 时代的块元素，Windows 控制台同样可靠
-	logoArt := []string{
-		"█████▄▄▄▄▄▄▄▄▄▄▄▄▄▄",
-		"███████████████████",
-		"███████████████████",
-		"███████████████████",
-		"▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
-		"▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓",
-		" ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒",
-		"   ░░░░░░░░░░░░░",
-	}
-	logoIndent := strings.Repeat(" ", (width-len([]rune(logoArt[0])))/2)
+	// 字标横幅：LOCAL 实心在上，一条镜面线，MIRROR 以幽灵笔画（░）在下
+	// ——项目命名哲学（真实与镜像）的字符演绎。字模为手工设计的方角
+	// 硬朗风，笔画字符（█░）都来自 CP437 块元素，Windows 控制台可靠
 	fmt.Println()
-	fmt.Printf("%s%s▄▄▄▄▄%s\n", logoIndent, p.Cyan, p.Reset) // 文件夹标签页
-	for i, l := range logoArt {
-		tint := p.Cyan
-		if i >= 5 {
-			tint = p.Cyan + p.Dim // 倒影整体再压暗一档
-		}
-		fmt.Printf("%s%s%s%s\n", logoIndent, tint, l, p.Reset)
+	wordIndent := func(w string) string {
+		return strings.Repeat(" ", max(0, (width-len([]rune(w)))/2))
+	}
+	for _, l := range renderWord("LOCAL", false) {
+		fmt.Printf("%s%s%s%s\n", wordIndent(l), p.Cyan, l, p.Reset)
+	}
+	fmt.Printf("%s%s\n", p.Dim, strings.Repeat("─", width)+p.Reset) // 镜面
+	for _, l := range renderWord("MIRROR", true) {
+		fmt.Printf("%s%s%s%s%s\n", wordIndent(l), p.Cyan, p.Dim, l, p.Reset)
 	}
 	fmt.Println()
 
