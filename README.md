@@ -77,7 +77,25 @@ local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
 ```
 
 On startup it prints a banner with the actual listen port, sync directory
-and log location.
+and log location:
+
+```
+█   █▀█ █▀▀ █▀█ █      █▄ ▄█ ▀█▀ █▀█ █▀█ █▀█ █▀█
+█   █ █ █   █▀█ █   ▀▀ █ ▀ █  █  █▀▄ █▀▄ █ █ █▀▄
+▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀ ▀▀▀    ▀   ▀ ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀
+
+────────────────────────────────────────────────
+  Local Mirror 0.12.0  ·  reality (server)
+────────────────────────────────────────────────
+  Sync root  /path/to/source
+  Ignores    .local-mirror, .git, .DS_Store
+  Listen     0.0.0.0:52345
+  Encryption on (Noise NNpsk0)
+  Instance   3b7b81ee
+  PID        62289
+  Log        .local-mirror/logs/error.log (level warn)
+────────────────────────────────────────────────
+```
 
 ## Flags
 

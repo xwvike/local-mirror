@@ -71,7 +71,25 @@ local-mirror -m mirror -p /path/to/replica
 local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
 ```
 
-启动后打印状态横幅：实际监听端口、同步目录、日志位置。
+启动后打印状态横幅：实际监听端口、同步目录、日志位置：
+
+```
+█   █▀█ █▀▀ █▀█ █      █▄ ▄█ ▀█▀ █▀█ █▀█ █▀█ █▀█
+█   █ █ █   █▀█ █   ▀▀ █ ▀ █  █  █▀▄ █▀▄ █ █ █▀▄
+▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀ ▀▀▀    ▀   ▀ ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀
+
+────────────────────────────────────────────────
+  Local Mirror 0.12.0  ·  reality (server)
+────────────────────────────────────────────────
+  Sync root  /path/to/source
+  Ignores    .local-mirror, .git, .DS_Store
+  Listen     0.0.0.0:52345
+  Encryption on (Noise NNpsk0)
+  Instance   3b7b81ee
+  PID        62289
+  Log        .local-mirror/logs/error.log (level warn)
+────────────────────────────────────────────────
+```
 
 ## 参数
 
