@@ -58,6 +58,10 @@ func eventFilter(event fsnotify.Event) {
 		return
 	}
 
+	// 事件反馈进所属目录的热度：活跃目录随 performScan 上浮到 tier1 实时
+	// watch，沉寂后衰减回落（见 recordEvent/performScan）
+	GlobalScoreWatch.recordEvent(nodeDir)
+
 	switch {
 	case event.Has(fsnotify.Create) || event.Has(fsnotify.Write):
 		// 路径重新出现：撤销针对同一路径的未落库删除，否则删除合并窗口
