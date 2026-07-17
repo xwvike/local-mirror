@@ -1,6 +1,11 @@
 # local-mirror
 
-<p align="center"><img src="assets/icon-512.png" width="128" alt="local-mirror logo"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dark.svg">
+    <img src="assets/wordmark.svg" width="480" alt="LOCAL-MIRROR">
+  </picture>
+</p>
 
 [English](README.md) | 简体中文
 
