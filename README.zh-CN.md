@@ -34,7 +34,8 @@ macOS：
 brew install xwvike/tap/local-mirror
 ```
 
-Windows：
+Windows，经 [Scoop](https://scoop.sh)（没装 Scoop 的话 `irm get.scoop.sh | iex`
+先装它，不需要管理员权限）：
 
 ```powershell
 scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
