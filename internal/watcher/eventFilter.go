@@ -53,7 +53,7 @@ func eventFilter(event fsnotify.Event) {
 		// 磁盘永久脱节——热目录不做磁盘校验，只有重启才能愈合。改为从
 		// 最近的已知祖先按磁盘现状重建缺失链；本事件对应的条目会在重建
 		// 扫描中重新产生，不会丢失
-		log.Warnf("目录树缺失 %s 的父节点，从最近已知祖先重建缺失链", relPath)
+		log.Warnf("parent node of %s missing from tree, rebuilding the chain from the nearest known ancestor", relPath)
 		repairMissingChain(nodeDir)
 		return
 	}
@@ -76,7 +76,7 @@ func eventFilter(event fsnotify.Event) {
 			return
 		}
 		if linfo.Mode()&os.ModeSymlink != 0 {
-			log.Warnf("跳过符号链接（不支持同步）: %s", relPath)
+			log.Warnf("skipping symlink (not synced): %s", relPath)
 			return
 		}
 		if !linfo.IsDir() {
@@ -184,7 +184,7 @@ func recoverUnreadable(ctx context.Context) {
 					continue
 				}
 				f.Close()
-				log.Infof("检测到 %s 已恢复可读，重新计算哈希并恢复同步", p)
+				log.Infof("%s is readable again, rehashing and resuming sync", p)
 				scheduleFileChange(p)
 			}
 		}
@@ -225,7 +225,7 @@ func finalizeFileChange(absPath string) {
 	if err != nil {
 		// 与 eventFilter 同源的竞态：父目录节点缺失即重建缺失链。
 		// 重建扫描会重新调度本文件的哈希，此处直接返回不丢数据
-		log.Warnf("目录树缺失 %s 的父节点，从最近已知祖先重建缺失链", relPath)
+		log.Warnf("parent node of %s missing from tree, rebuilding the chain from the nearest known ancestor", relPath)
 		repairMissingChain(filepath.Dir(relPath))
 		return
 	}
@@ -234,7 +234,7 @@ func finalizeFileChange(absPath string) {
 		// 与 buildFileTree 语义一致：空哈希节点照常落库（客户端确定性跳过、
 		// 不误删镜像侧副本），登记进不可读列表由恢复循环定期探测
 		tree.MarkUnreadable(absPath)
-		log.Errorf("无法读取 %s（%v），该文件暂不参与同步；修复权限后会自动恢复", absPath, hashErr)
+		log.Errorf("cannot read %s (%v); the file is excluded from sync and recovers automatically once readable", absPath, hashErr)
 	} else {
 		hash = fmt.Sprintf("%x", h)
 		tree.UnmarkUnreadable(absPath)

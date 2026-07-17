@@ -34,7 +34,7 @@ var noiseCipherSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPol
 
 // ErrSecureHandshake 加密握手失败的哨兵错误。
 // 端口扫描时它比"端口拒连"更有定位价值（通常意味着口令配置不一致）
-var ErrSecureHandshake = errors.New("加密握手失败")
+var ErrSecureHandshake = errors.New("secure handshake failed")
 
 // enableKeepAlive 在 TCP 连接上开启 keepalive，长轮询挂起期间连接
 // 长时间无应用层流量，靠它在 OS 层检测死对端
@@ -78,7 +78,7 @@ func readFrame(conn net.Conn, maxLen int) ([]byte, error) {
 	}
 	n := int(binary.BigEndian.Uint16(lenBuf[:]))
 	if n > maxLen {
-		return nil, fmt.Errorf("frame too large: %d bytes (对端可能未启用加密)", n)
+		return nil, fmt.Errorf("frame too large: %d bytes (peer may not have encryption enabled)", n)
 	}
 	frame := make([]byte, n)
 	if _, err := io.ReadFull(conn, frame); err != nil {
@@ -95,7 +95,7 @@ func (s *secureConn) Read(p []byte) (int, error) {
 		}
 		plain, err := s.dec.Decrypt(nil, nil, frame)
 		if err != nil {
-			return 0, fmt.Errorf("decrypt failed (密钥不匹配或数据被篡改): %w", err)
+			return 0, fmt.Errorf("decrypt failed (key mismatch or tampered data): %w", err)
 		}
 		s.readBuf.Write(plain)
 	}
@@ -153,7 +153,7 @@ func SecureConn(conn net.Conn, secret string, initiator bool) (net.Conn, error) 
 		}
 		_, cs0, cs1, err := hs.ReadMessage(nil, reply)
 		if err != nil {
-			return nil, fmt.Errorf("noise handshake failed（两端口令是否一致？）: %w", err)
+			return nil, fmt.Errorf("noise handshake failed (do the passphrases match?): %w", err)
 		}
 		// cs0 固定用于 发起方→响应方 方向
 		return &secureConn{Conn: conn, enc: cs0, dec: cs1}, nil
@@ -165,7 +165,7 @@ func SecureConn(conn net.Conn, secret string, initiator bool) (net.Conn, error) 
 		return nil, fmt.Errorf("noise handshake recv: %w", err)
 	}
 	if _, _, _, err := hs.ReadMessage(nil, first); err != nil {
-		return nil, fmt.Errorf("noise handshake failed（对端口令不一致或未启用加密）: %w", err)
+		return nil, fmt.Errorf("noise handshake failed (peer passphrase mismatch or encryption disabled): %w", err)
 	}
 	// -> e, ee
 	msg, cs0, cs1, err := hs.WriteMessage(nil, nil)

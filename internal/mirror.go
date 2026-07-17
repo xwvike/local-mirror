@@ -84,18 +84,18 @@ func executeTaskWithClient(taskName string, fileClient *network.FileClient, task
 	isTaskActive = true
 	defer func() { isTaskActive = false }()
 
-	log.Infof("开始执行任务: %s", taskName)
+	log.Infof("task started: %s", taskName)
 	startTime := time.Now()
 
 	if err := taskFunc(fileClient); err != nil {
-		log.Errorf("任务执行失败 %s: %v", taskName, err)
+		log.Errorf("task failed %s: %v", taskName, err)
 		if errors.Is(err, appError.ErrConnection) {
 			return fmt.Errorf("client became deprecated during task: %w", err)
 		}
 	}
 
 	duration := time.Since(startTime)
-	log.Infof("任务完成: %s, 耗时: %v", taskName, duration)
+	log.Infof("task done: %s, took %v", taskName, duration)
 	return nil
 }
 
@@ -107,12 +107,12 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 		// 这样源端异常清空（路径配错、盘没挂上等）不会级联删除下游。
 		// 需 --allow-delete 显式开启才做真正的忠实镜像删除
 		if !*config.AllowDelete {
-			log.Debugf("跳过删除（未启用 --allow-delete）: %s", v.Path)
+			log.Debugf("skipping deletion (--allow-delete off): %s", v.Path)
 			return nil
 		}
 		full, err := safety.SafeJoin(config.StartPath, v.Path)
 		if err != nil {
-			log.Errorf("拒绝删除越界路径: %v", err)
+			log.Errorf("refusing to delete out-of-root path: %v", err)
 			return nil
 		}
 		if err := os.RemoveAll(full); err == nil {
@@ -147,7 +147,7 @@ func processDirectoryDiff(v DiffResult) error {
 	// v.Path 来自服务端，必须校验拼接后仍在同步根内，防止 ".." 越界建目录
 	fullPath, err := safety.SafeJoin(config.StartPath, v.Path)
 	if err != nil {
-		log.Errorf("拒绝创建越界目录: %v", err)
+		log.Errorf("refusing to create out-of-root directory: %v", err)
 		return nil
 	}
 	if err := os.MkdirAll(fullPath, 0755); err != nil {
@@ -170,7 +170,7 @@ var unreadableWarned sync.Map
 
 func warnUnreadableOnce(path string) {
 	if _, loaded := unreadableWarned.LoadOrStore(path, struct{}{}); !loaded {
-		log.Errorf("上游无法读取 %s（服务端未能计算哈希，通常是权限问题），跳过该文件；上游修复权限后会自动恢复同步", path)
+		log.Errorf("upstream cannot read %s (server failed to hash it, usually a permission problem); skipping. Sync resumes automatically once fixed upstream", path)
 	}
 }
 
@@ -189,7 +189,7 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 	// 磁盘空间预检：不够就不发请求、不写分片，返回 ErrDiskFull 由调用方
 	// 按目录聚合提示。探测失败（极少见）时放行，交给写入时的兜底识别
 	if free, ferr := utils.DiskFree(config.StartPath); ferr == nil && free < v.Size+diskReserve {
-		return fmt.Errorf("%w: %s 需要 %s，可用仅 %s（预留 %s）",
+		return fmt.Errorf("%w: %s needs %s but only %s is free (reserve %s)",
 			appError.ErrDiskFull, v.Path, humanBytes(v.Size), humanBytes(free), humanBytes(diskReserve))
 	}
 
@@ -234,7 +234,7 @@ func applyModTime(v DiffResult) {
 	}
 	full, err := safety.SafeJoin(config.StartPath, v.Path)
 	if err != nil {
-		log.Errorf("拒绝对越界路径设置 mtime: %v", err)
+		log.Errorf("refusing to set mtime on out-of-root path: %v", err)
 		return
 	}
 	if err := os.Chtimes(full, v.ModTime, v.ModTime); err != nil {
@@ -261,7 +261,7 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 	// 客户端忽略：命中忽略列表的目录整体跳过（变更追踪可能推来
 	// 忽略目录内的深层路径，连目录列表请求都不必发）
 	if utils.IsIgnored(path, config.IgnoreFileList) {
-		log.Debugf("跳过忽略目录: %s", path)
+		log.Debugf("skipping ignored directory: %s", path)
 		return nil
 	}
 	treejson, err := fileClient.GetRealityTree(path)
@@ -300,7 +300,7 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 			// 目录处理完后聚合成一条提示，避免逐文件刷屏
 			if errors.Is(err, appError.ErrDiskFull) {
 				diskFullSkipped++
-				log.Debugf("空间不足跳过: %v", err)
+				log.Debugf("skipped for low disk space: %v", err)
 				continue
 			}
 			// 连接断了：无论是否拉黑，这次调用都不能继续复用这个连接处理
@@ -309,7 +309,7 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 				itemFailures[v.Path]++
 				if itemFailures[v.Path] > maxItemRetries {
 					blacklist[v.Path] = true
-					log.Errorf("%s 连续失败 %d 次，本轮放弃同步该项（不影响目录内其他文件）", v.Path, itemFailures[v.Path]-1)
+					log.Errorf("%s failed %d times in a row, giving it up for this round (other files unaffected)", v.Path, itemFailures[v.Path]-1)
 				}
 				return err
 			}
@@ -324,7 +324,7 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 	}
 	if diskFullSkipped > 0 {
 		free, _ := utils.DiskFree(config.StartPath)
-		log.Errorf("目录 %s: %d 个文件因磁盘空间不足未同步（当前可用 %s，预留 %s）；释放空间后会随下轮变更推送或全量扫描自动补上",
+		log.Errorf("directory %s: %d files skipped for low disk space (%s free, %s reserved); they will catch up automatically once space is freed",
 			path, diskFullSkipped, humanBytes(free), humanBytes(diskReserve))
 	}
 
@@ -355,7 +355,7 @@ func filterIgnoredDiffs(diffs []DiffResult) []DiffResult {
 	kept := diffs[:0]
 	for _, d := range diffs {
 		if utils.IsIgnored(d.Path, config.IgnoreFileList) {
-			log.Debugf("忽略 diff 项（%s）: %s", d.Action, d.Path)
+			log.Debugf("ignoring diff item (%s): %s", d.Action, d.Path)
 			continue
 		}
 		kept = append(kept, d)
@@ -391,12 +391,12 @@ func detectRenames(diffs []DiffResult) []DiffResult {
 			continue
 		}
 		if err := applyRename(diffs[di], d); err != nil {
-			log.Warnf("移动 %s -> %s 失败，回退为下载: %v", diffs[di].Path, d.Path, err)
+			log.Warnf("rename %s -> %s failed, falling back to download: %v", diffs[di].Path, d.Path, err)
 			continue
 		}
 		handled[i] = true
 		handled[di] = true
-		log.Infof("检测到移动: %s -> %s（本地重命名，免下载）", diffs[di].Path, d.Path)
+		log.Infof("move detected: %s -> %s (local rename, no download)", diffs[di].Path, d.Path)
 	}
 	if len(handled) == 0 {
 		return diffs
@@ -415,12 +415,12 @@ func detectRenames(diffs []DiffResult) []DiffResult {
 func applyRename(oldDiff, newDiff DiffResult) error {
 	oldFull, err := safety.SafeJoin(config.StartPath, oldDiff.Path)
 	if err != nil {
-		log.Errorf("拒绝重命名越界源路径: %v", err)
+		log.Errorf("refusing to rename from out-of-root path: %v", err)
 		return nil
 	}
 	newFull, err := safety.SafeJoin(config.StartPath, newDiff.Path)
 	if err != nil {
-		log.Errorf("拒绝重命名到越界目标路径: %v", err)
+		log.Errorf("refusing to rename to out-of-root path: %v", err)
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(newFull), 0755); err != nil {
@@ -484,7 +484,7 @@ func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 				retries[v.Path]++
 			}
 			if retries[v.Path] > maxDirRetries {
-				log.Errorf("目录 %s 连续失败 %d 次，放弃本轮同步", v.Path, retries[v.Path]-1)
+				log.Errorf("directory %s failed %d times in a row, giving up this round", v.Path, retries[v.Path]-1)
 				continue
 			}
 			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
@@ -544,7 +544,7 @@ const sleepDetectThreshold = 3 * time.Minute
 
 func runMirrorTasks(fileClient *network.FileClient) error {
 	// 连接后先全量对账；重连（含休眠后 socket 断开）都会重新走到这里
-	if err := executeTaskWithClient("初始化全量扫描", fileClient, fullScan); err != nil {
+	if err := executeTaskWithClient("initial full scan", fileClient, fullScan); err != nil {
 		return err
 	}
 
@@ -556,15 +556,15 @@ func runMirrorTasks(fileClient *network.FileClient) error {
 		// 长轮询：阻塞等待服务端推送变更（无变更时约 LongPollHold 后返回空）。
 		// 空闲时客户端就阻塞在这一个 socket 读上，零轮询、零额外唤醒
 		beforePoll := time.Now()
-		if err := executeTaskWithClient("变更追踪", fileClient, TrackingChanges); err != nil {
+		if err := executeTaskWithClient("change tracking", fileClient, TrackingChanges); err != nil {
 			return err
 		}
 
 		// 休眠感知：长轮询最多挂 ~60s，墙钟却跳了远超此值 → 刚从休眠醒来。
 		// 服务端 changed_dirs 只保留 1 小时，睡久了增量窗口不可信，强制全量对账
 		if elapsed := time.Since(beforePoll); elapsed > sleepDetectThreshold {
-			log.Warnf("检测到长时间休眠（%v），强制全量对账", elapsed.Round(time.Second))
-			if err := executeTaskWithClient("休眠唤醒全量扫描", fileClient, fullScan); err != nil {
+			log.Warnf("long sleep detected (%v), forcing a full reconciliation", elapsed.Round(time.Second))
+			if err := executeTaskWithClient("post-wake full scan", fileClient, fullScan); err != nil {
 				return err
 			}
 			lastFullScan = time.Now()
@@ -573,7 +573,7 @@ func runMirrorTasks(fileClient *network.FileClient) error {
 
 		// 低频全量扫描安全网，兜住推送链路任何潜在遗漏
 		if time.Since(lastFullScan) >= fullScanInterval {
-			if err := executeTaskWithClient("全量扫描", fileClient, fullScan); err != nil {
+			if err := executeTaskWithClient("full scan", fileClient, fullScan); err != nil {
 				return err
 			}
 			lastFullScan = time.Now()

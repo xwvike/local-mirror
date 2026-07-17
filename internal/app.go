@@ -14,7 +14,7 @@ import (
 
 func App() {
 	if err := tree.BuildFileTree(config.StartPath); err != nil {
-		log.Fatalf("构建文件树失败: %v", err)
+		log.Fatalf("failed to build file tree: %v", err)
 	}
 
 	switch *config.Mode {
@@ -24,13 +24,13 @@ func App() {
 			log.Fatal(err)
 		}
 		defer func() {
-			log.Info("正在关闭监视器...")
+			log.Info("shutting down watcher...")
 			if err := _watcher.Close(); err != nil {
-				log.Errorf("关闭监视器时出错: %v", err)
+				log.Errorf("error closing watcher: %v", err)
 			}
 		}()
 		if err := watcher.InitWatcher(_watcher); err != nil {
-			log.Fatalf("初始化监视器失败: %v", err)
+			log.Fatalf("failed to init watcher: %v", err)
 		}
 		go Reality()
 	case "mirror":
@@ -43,7 +43,7 @@ func App() {
 		go Reality()
 		go Mirror()
 	default:
-		log.Fatalf("未知运行模式: %s (可选: reality, mirror, relay)", *config.Mode)
+		log.Fatalf("unknown mode: %s (valid: reality, mirror, relay)", *config.Mode)
 	}
 
 	sigChan := make(chan os.Signal, 1)

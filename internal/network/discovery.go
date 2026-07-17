@@ -227,11 +227,11 @@ func handleProbe(pkt []byte, version uint16, self DiscoveredServer, key []byte) 
 	}
 	if key != nil {
 		if !probe.Authed {
-			log.Debugf("忽略未认证的发现探测")
+			log.Debugf("ignoring unauthenticated discovery probe")
 			return nil, false
 		}
 		if subtle.ConstantTimeCompare(pkt[20:36], discoveryMAC(key, pkt[:20])) != 1 {
-			log.Debugf("忽略 MAC 不匹配的发现探测")
+			log.Debugf("ignoring discovery probe with bad MAC")
 			return nil, false
 		}
 	}
@@ -271,7 +271,7 @@ func StartDiscoveryResponder(tcpPort int, alias, syncPath, secret string) (func(
 			}
 			c, err := net.ListenMulticastUDP("udp4", &ifi, gaddr)
 			if err != nil {
-				log.Debugf("发现应答器: 接口 %s 入组失败: %v", ifi.Name, err)
+				log.Debugf("discovery responder: failed to join group on %s: %v", ifi.Name, err)
 				continue
 			}
 			conns = append(conns, c)
@@ -281,14 +281,14 @@ func StartDiscoveryResponder(tcpPort int, alias, syncPath, secret string) (func(
 		// 退回默认接口入组，仍然失败则报给调用方（非致命，可 -r 直连）
 		c, err := net.ListenMulticastUDP("udp4", nil, gaddr)
 		if err != nil {
-			return nil, fmt.Errorf("加入发现组播组失败: %w", err)
+			return nil, fmt.Errorf("failed to join discovery multicast group: %w", err)
 		}
 		conns = append(conns, c)
 	}
 	for _, c := range conns {
 		go discoveryRespondLoop(c, self, key)
 	}
-	log.Infof("UDP 服务发现应答器已启动（%d 个接口，端口 %d）", len(conns), DiscoveryPort)
+	log.Infof("UDP discovery responder started (%d interfaces, port %d)", len(conns), DiscoveryPort)
 	return func() {
 		for _, c := range conns {
 			_ = c.Close()
@@ -308,7 +308,7 @@ func discoveryRespondLoop(conn *net.UDPConn, self DiscoveredServer, key []byte) 
 			continue
 		}
 		if _, err := conn.WriteToUDP(reply, raddr); err != nil {
-			log.Debugf("发现应答发送失败 %s: %v", raddr, err)
+			log.Debugf("failed to send discovery reply to %s: %v", raddr, err)
 		}
 	}
 }
@@ -362,7 +362,7 @@ func buildProbeSenders() ([]probeSender, error) {
 				}
 				conn, err := listenProbeUDP(ipnet.IP.To4())
 				if err != nil {
-					log.Debugf("发现扫描: 接口 %s (%s) 建 socket 失败: %v", ifi.Name, ipnet.IP, err)
+					log.Debugf("discovery scan: socket on %s (%s) failed: %v", ifi.Name, ipnet.IP, err)
 					continue
 				}
 				targets := []*net.UDPAddr{{IP: discoveryGroup, Port: DiscoveryPort}}
@@ -384,7 +384,7 @@ func buildProbeSenders() ([]probeSender, error) {
 	}
 
 	if len(senders) == 0 {
-		return nil, fmt.Errorf("没有可用于发现扫描的网络接口")
+		return nil, fmt.Errorf("no usable network interface for discovery")
 	}
 	return senders, nil
 }
@@ -415,7 +415,7 @@ func discoverOn(senders []probeSender, timeout time.Duration, secret string, sel
 	}
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		return nil, fmt.Errorf("生成发现 nonce 失败: %w", err)
+		return nil, fmt.Errorf("failed to generate discovery nonce: %w", err)
 	}
 	probe := encodeProbe(config.ProtocolVersion, selfID, nonce, key)
 	deadline := time.Now().Add(timeout)
@@ -424,7 +424,7 @@ func discoverOn(senders []probeSender, timeout time.Duration, secret string, sel
 		for _, s := range senders {
 			for _, t := range s.targets {
 				if _, err := s.conn.WriteToUDP(probe, t); err != nil {
-					log.Debugf("发现探测发送失败 %s: %v", t, err)
+					log.Debugf("failed to send discovery probe to %s: %v", t, err)
 				}
 			}
 		}
@@ -450,7 +450,7 @@ func discoverOn(senders []probeSender, timeout time.Duration, secret string, sel
 				}
 				srv, err := parseResponse(buf[:n], nonce, key, config.ProtocolVersion)
 				if err != nil {
-					log.Debugf("忽略无效发现应答（来自 %s）: %v", raddr, err)
+					log.Debugf("ignoring invalid discovery reply from %s: %v", raddr, err)
 					continue
 				}
 				srv.IP = raddr.IP.String()

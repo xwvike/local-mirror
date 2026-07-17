@@ -60,13 +60,13 @@ func TestLoadMultiConfigErrors(t *testing.T) {
 		yml     string
 		wantSub string
 	}{
-		"empty tasks":  {"tasks: []", "没有任务"},
-		"bad mode":     {"tasks:\n  - mode: server\n    path: /tmp/x", "无效的运行模式"},
-		"empty path":   {"tasks:\n  - mode: reality\n    path: \"\"", "path 不能为空"},
-		"dup path":     {"tasks:\n  - mode: reality\n    path: /tmp/x\n  - name: y\n    mode: mirror\n    path: /tmp/x", "同一路径"},
-		"dup name":     {"tasks:\n  - name: n\n    mode: reality\n    path: /tmp/x1\n  - name: n\n    mode: reality\n    path: /tmp/x2", "重复"},
-		"bad loglevel": {"tasks:\n  - mode: reality\n    path: /tmp/x\n    loglevel: verbose", "无效的日志级别"},
-		"bad yaml":     {"tasks: [<<<", "解析 YAML 失败"},
+		"empty tasks":  {"tasks: []", "no tasks"},
+		"bad mode":     {"tasks:\n  - mode: server\n    path: /tmp/x", "invalid mode"},
+		"empty path":   {"tasks:\n  - mode: reality\n    path: \"\"", "path must not be empty"},
+		"dup path":     {"tasks:\n  - mode: reality\n    path: /tmp/x\n  - name: y\n    mode: mirror\n    path: /tmp/x", "share the same path"},
+		"dup name":     {"tasks:\n  - name: n\n    mode: reality\n    path: /tmp/x1\n  - name: n\n    mode: reality\n    path: /tmp/x2", "duplicate task name"},
+		"bad loglevel": {"tasks:\n  - mode: reality\n    path: /tmp/x\n    loglevel: verbose", "invalid log level"},
+		"bad yaml":     {"tasks: [<<<", "failed to parse YAML"},
 	}
 	for name, c := range cases {
 		_, err := LoadMultiConfig(writeYAML(t, c.yml))

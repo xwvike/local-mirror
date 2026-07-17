@@ -27,7 +27,7 @@ func InitConn() (*network.FileClient, error) {
 			}
 		} else {
 			// 防御性回退：main 的发现流程已保证正常路径不会走到这里
-			log.Warn("未指定服务器地址 (-r)，回退连接 127.0.0.1")
+			log.Warn("no server address (-r) given, falling back to 127.0.0.1")
 			ip = "127.0.0.1"
 		}
 	}
@@ -46,12 +46,12 @@ func InitConn() (*network.FileClient, error) {
 	var lastErr error
 	var handshakeErr error
 	for _, addr := range candidates {
-		log.Debugf("探测服务端端口: %s", addr)
+		log.Debugf("probing server port: %s", addr)
 
 		fileClient, err := network.NewFileClient(addr, "default")
 		if err != nil {
 			if errors.Is(err, network.ErrSecureHandshake) {
-				log.Warnf("%s 加密握手失败: %v", addr, err)
+				log.Warnf("%s: secure handshake failed: %v", addr, err)
 				handshakeErr = err
 			} else {
 				// 端口未开放，尝试下一个
@@ -60,13 +60,13 @@ func InitConn() (*network.FileClient, error) {
 			continue
 		}
 		if err := fileClient.Handshake(); err != nil {
-			log.Warnf("%s 握手失败（口令不一致或被其他程序占用）: %v", addr, err)
+			log.Warnf("%s: handshake failed (passphrase mismatch or port taken by another program): %v", addr, err)
 			fileClient.ConnectionClose()
 			// 端口开放但握手失败，比"端口拒连"更有定位价值，优先保留
 			handshakeErr = err
 			continue
 		}
-		log.Infof("已连接服务端 %s", addr)
+		log.Infof("connected to server %s", addr)
 		return fileClient, nil
 	}
 
@@ -75,6 +75,6 @@ func InitConn() (*network.FileClient, error) {
 	}
 	// 返回非 nil 的占位 client，调用方（ensureConnected）依赖非 nil 返回值
 	dummy := &network.FileClient{RealityAddr: ip, Alias: "default", State: network.Offline}
-	return dummy, fmt.Errorf("在 %s 的端口 %d-%d 范围内未找到可用的 local-mirror 服务端: %w",
+	return dummy, fmt.Errorf("no local-mirror server found on %s in port range %d-%d: %w",
 		ip, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, lastErr)
 }

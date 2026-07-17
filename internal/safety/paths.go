@@ -24,7 +24,7 @@ func SafeJoin(root, rel string) (string, error) {
 	// 为跨平台行为一致，三类形式在所有平台上一律拒绝
 	if filepath.IsAbs(rel) || filepath.VolumeName(rel) != "" ||
 		strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, `\`) {
-		return "", fmt.Errorf("路径越界（非相对路径）: %q", rel)
+		return "", fmt.Errorf("path escapes sync root (not relative): %q", rel)
 	}
 	cleanRoot := filepath.Clean(root)
 	joined := filepath.Clean(filepath.Join(cleanRoot, rel))
@@ -33,7 +33,7 @@ func SafeJoin(root, rel string) (string, error) {
 	}
 	// 必须是 root 的真子路径：以 root+分隔符 为前缀
 	if !strings.HasPrefix(joined, cleanRoot+string(filepath.Separator)) {
-		return "", fmt.Errorf("路径越界（逃出同步根 %s）: %q", cleanRoot, rel)
+		return "", fmt.Errorf("path escapes sync root %s: %q", cleanRoot, rel)
 	}
 	return joined, nil
 }
@@ -174,9 +174,10 @@ func CheckSyncSafety(root string, allowCritical bool) (bool, error) {
 		return false, nil
 	}
 	if !allowCritical {
-		return false, fmt.Errorf("拒绝在关键路径上同步: %s（命中 %s）。"+
-			"如确需请加 --allow-critical（仅同步不删除，首次覆盖会备份原文件到 .local-mirror/backups）；"+
-			"再加 --allow-delete 才会删除", normalize(root), hit)
+		return false, fmt.Errorf("refusing to sync on critical path %s (matched %s). "+
+			"Pass --allow-critical if you really mean it (sync without deletion; "+
+			"the first overwrite backs the original up to .local-mirror/backups); "+
+			"add --allow-delete on top to enable deletion", normalize(root), hit)
 	}
 	return true, nil
 }

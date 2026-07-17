@@ -44,7 +44,7 @@ func Select(title string, opts []Option) (int, Outcome, error) {
 	stdinFd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(stdinFd)
 	if err != nil {
-		return 0, Canceled, fmt.Errorf("进入终端 raw 模式失败: %w", err)
+		return 0, Canceled, fmt.Errorf("failed to enter raw terminal mode: %w", err)
 	}
 	// 恢复终端的 defer 必须先于一切输出注册：Select 内部 panic 时
 	// 终端也绝不能停留在 raw 模式（重复 Restore 无害）
@@ -93,7 +93,7 @@ func Select(title string, opts []Option) (int, Outcome, error) {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
 			clearFrame()
-			return 0, Canceled, fmt.Errorf("读取按键失败: %w", err)
+			return 0, Canceled, fmt.Errorf("failed to read keypress: %w", err)
 		}
 		if n == 0 {
 			continue
@@ -134,7 +134,7 @@ func Select(title string, opts []Option) (int, Outcome, error) {
 			return 0, Rescan, nil
 		case key == 'q', key == keyCtrlC, key == keyEsc: // 裸 ESC（n==1）走到这里
 			clearFrame()
-			fmt.Printf("%s已取消%s\r\n", p.Dim, p.Reset)
+			fmt.Printf("%scanceled%s\r\n", p.Dim, p.Reset)
 			return 0, Canceled, nil
 		}
 	}
@@ -158,8 +158,8 @@ func renderFrame(p termstyle.Palette, title string, opts []Option, cursor int) i
 	line(fmt.Sprintf("%s%s%s", p.Bold, title, p.Reset))
 
 	if len(opts) == 0 {
-		line(fmt.Sprintf("  %s未发现服务端%s", p.Dim, p.Reset))
-		line(fmt.Sprintf("  %sr 重新扫描 · q 退出%s", p.Dim, p.Reset))
+		line(fmt.Sprintf("  %sno servers found%s", p.Dim, p.Reset))
+		line(fmt.Sprintf("  %sr rescan · q quit%s", p.Dim, p.Reset))
 		fmt.Print(b.String())
 		return 3
 	}
@@ -192,7 +192,7 @@ func renderFrame(p termstyle.Palette, title string, opts []Option, cursor int) i
 				p.Dim, path, p.Reset))
 		}
 	}
-	line(fmt.Sprintf("  %s↑↓/jk 移动 · Enter 选择 · r 重新扫描 · q 退出%s", p.Dim, p.Reset))
+	line(fmt.Sprintf("  %sup/down/jk move · Enter select · r rescan · q quit%s", p.Dim, p.Reset))
 	fmt.Print(b.String())
 	return len(opts) + 2
 }
