@@ -48,12 +48,22 @@ func eventFilter(event fsnotify.Event) {
 	nodeDir := filepath.Dir(relPath)
 	fatherNode, err := tree.GetNodeByPath(nodeDir)
 	if err != nil {
-		log.Errorf("Incomplete directory tree, unable to find parent node for %s: %v", nodeDir, err)
+		// 父节点缺失通常是事件竞态的结果（典型：目录被删后 1 秒内重建，
+		// 延迟的批量删除把重建的新子树清掉了）。丢弃事件会让服务端树与
+		// 磁盘永久脱节——热目录不做磁盘校验，只有重启才能愈合。改为从
+		// 最近的已知祖先按磁盘现状重建缺失链；本事件对应的条目会在重建
+		// 扫描中重新产生，不会丢失
+		log.Warnf("目录树缺失 %s 的父节点，从最近已知祖先重建缺失链", relPath)
+		repairMissingChain(nodeDir)
 		return
 	}
 
 	switch {
 	case event.Has(fsnotify.Create) || event.Has(fsnotify.Write):
+		// 路径重新出现：撤销针对同一路径的未落库删除，否则删除合并窗口
+		// 结束后 DeleteNodes 按路径查到的是重建后的新节点，会连同其子树
+		// 一起误删（对称于 Remove 分支撤销 pendingHashes）
+		cancelPendingDelete(relPath)
 		// 用 Lstat 而非 Stat：先判断是不是符号链接，若是则跳过不追踪
 		// （与 buildFileTree 一致，防止解引用泄露链接目标内容）
 		linfo, err := os.Lstat(event.Name)
@@ -90,8 +100,7 @@ func eventFilter(event fsnotify.Event) {
 		eventMu.Lock()
 		createEventCache = append(createEventCache, newLeaf)
 		eventMu.Unlock()
-		flushCreateEvents()
-		tree.AddRecentChangedDir(fatherNode.Path)
+		flushCreateEvents() // 变更日志由 flush 在落库后记录
 		scanNewDirContents(event.Name)
 	case event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename):
 		// Rename 事件表示旧路径消失，等同删除；若产生了新路径会另收到 Create 事件
@@ -112,8 +121,7 @@ func eventFilter(event fsnotify.Event) {
 		deleteTimer = time.AfterFunc(1*time.Second, flushDeleteEvents)
 		deleteTimerActive = true
 		eventMu.Unlock()
-
-		tree.AddRecentChangedDir(fatherNode.Path)
+		// 变更日志由 flushDeleteEvents 在删除落库后记录
 	case event.Has(fsnotify.Chmod):
 		// 权限/属性变化：文件可能此前因无读权限而哈希缺失（客户端确定性
 		// 跳过这类文件），chmod 修复后必须重算哈希同步才能自动恢复——
@@ -193,7 +201,10 @@ func finalizeFileChange(absPath string) {
 	}
 	fatherNode, err := tree.GetNodeByPath(filepath.Dir(relPath))
 	if err != nil {
-		log.Errorf("Incomplete directory tree, unable to find parent node for %s: %v", filepath.Dir(relPath), err)
+		// 与 eventFilter 同源的竞态：父目录节点缺失即重建缺失链。
+		// 重建扫描会重新调度本文件的哈希，此处直接返回不丢数据
+		log.Warnf("目录树缺失 %s 的父节点，从最近已知祖先重建缺失链", relPath)
+		repairMissingChain(filepath.Dir(relPath))
 		return
 	}
 	hash := ""
@@ -227,8 +238,51 @@ func finalizeFileChange(absPath string) {
 	createTimer = time.AfterFunc(1*time.Second, flushCreateEvents)
 	createTimerActive = true
 	eventMu.Unlock()
+	// 变更日志由 flushCreateEvents 在节点落库后记录（先记后写会丢变更）
+}
 
-	tree.AddRecentChangedDir(fatherNode.Path)
+// repairMissingChain 当事件的父目录节点不在树中时，从最近的已存在祖先
+// 开始按磁盘现状重建缺失的目录链：对链上第一个缺失的目录合成 Create
+// 事件，目录分支落库后会递归扫描其内容，缺失的整条链（含触发本次修复
+// 的那个条目）由此重建。只触及缺失链本身，不波及已一致的兄弟子树
+func repairMissingChain(relDir string) {
+	missing := relDir
+	for {
+		parent := filepath.Dir(missing)
+		if parent == missing {
+			return // 防御：不应到达
+		}
+		if parent == "." {
+			break // 根目录必在树中
+		}
+		if ok, err := tree.HasPath(parent); err == nil && ok {
+			break
+		}
+		missing = parent
+	}
+	absMissing := filepath.Join(config.StartPath, missing)
+	if info, err := os.Lstat(absMissing); err != nil || !info.IsDir() {
+		return // 磁盘上也已不存在（纯删除场景），无需重建
+	}
+	eventFilter(fsnotify.Event{Name: absMissing, Op: fsnotify.Create})
+}
+
+// cancelPendingDelete 撤销尚未落库的删除。路径在删除合并窗口内重新出现
+// （构建工具删目录再快速重建是常态）时必须撤销，否则窗口结束后的批量
+// 删除按路径解析到的是重建后的新节点，会连同新子树一起误删
+func cancelPendingDelete(relPath string) {
+	eventMu.Lock()
+	defer eventMu.Unlock()
+	if len(deleteEventCache) == 0 {
+		return
+	}
+	kept := deleteEventCache[:0]
+	for _, p := range deleteEventCache {
+		if p != relPath {
+			kept = append(kept, p)
+		}
+	}
+	deleteEventCache = kept
 }
 
 // scanNewDirContents 对新出现的目录做一次浅层扫描，
@@ -259,8 +313,18 @@ func flushCreateEvents() {
 	}
 	if err := tree.AddNodes(batch); err != nil {
 		log.Errorf("Failed to add nodes: %v", err)
-	} else {
-		log.Debugf("Added nodes count %d", len(batch))
+		return
+	}
+	log.Debugf("Added nodes count %d", len(batch))
+	// 变更日志必须在节点落库之后记录，且由落库方记录：若先记日志后落库
+	//（此前 finalizeFileChange 的顺序），客户端会在间隙里醒来读到旧树，
+	// 而落库本身不再产生新的日志条目，这次变更就静默丢失到下次全量扫描
+	parents := make(map[string]struct{}, len(batch))
+	for _, n := range batch {
+		parents[filepath.Dir(n.Path)] = struct{}{}
+	}
+	for p := range parents {
+		tree.AddRecentChangedDir(p)
 	}
 }
 
@@ -276,7 +340,15 @@ func flushDeleteEvents() {
 	}
 	if err := tree.DeleteNodes(batch); err != nil {
 		log.Errorf("Failed to delete nodes: %v", err)
-	} else {
-		log.Debugf("Deleted nodes count %d", len(batch))
+		return
+	}
+	log.Debugf("Deleted nodes count %d", len(batch))
+	// 同 flushCreateEvents：日志跟着落库走，删除对下游可见后才通知
+	parents := make(map[string]struct{}, len(batch))
+	for _, p := range batch {
+		parents[filepath.Dir(p)] = struct{}{}
+	}
+	for p := range parents {
+		tree.AddRecentChangedDir(p)
 	}
 }
