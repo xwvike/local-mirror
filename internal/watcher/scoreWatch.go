@@ -287,7 +287,6 @@ const tier2MaxInterval = 5 * time.Minute
 func (sw *ScoreWatch) monitorTier2() {
 	base := sw.tier2Interval
 	interval := base
-	tier2Index := 0
 
 	// 用可重置的 timer 而非固定 ticker：检测到变化就回到基础间隔积极轮询，
 	// 连续空转则指数退避，让空闲的机器能进入深度 idle
@@ -299,24 +298,27 @@ func (sw *ScoreWatch) monitorTier2() {
 	for {
 		select {
 		case <-timer.C:
+			// 每个周期扫完整个 tier2 列表，而不是每周期只查一个目录：
+			// 后者在真实规模下彻底失效——数千个冷目录配上退避到 5 分钟的
+			// 间隔，轮完一圈要数天，冷目录里的变更实际上永远不会被发现
+			// （客户端全量扫描救不了：它扫的是服务端的树，树自己不知道）。
+			// 一轮全扫的代价是每目录一次 ReadDir + 一次 bbolt 读，数千目录
+			// 约一两秒，频率仍受退避控制，省电语义不变；最坏检测延迟由此
+			// 从"数天"降到 tier2MaxInterval
 			sw.mu.Lock()
-			var heat *HeatScore
-			if n := len(sw.tier2); n > 0 {
-				if tier2Index >= n {
-					tier2Index = 0
-				}
-				heat = sw.tier2[tier2Index]
-				tier2Index++
-			}
+			batch := make([]*HeatScore, len(sw.tier2))
+			copy(batch, sw.tier2)
 			sw.mu.Unlock()
 
 			changed := false
-			if heat != nil {
+			for _, heat := range batch {
 				c, err := hasDirectoryChanged(heat.Path)
 				if err != nil {
 					log.Warnf("Failed to check directory change for %s: %v", heat.Path, err)
 				}
-				changed = c
+				if c {
+					changed = true
+				}
 			}
 
 			if changed {
