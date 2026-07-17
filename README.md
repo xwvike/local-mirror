@@ -198,6 +198,22 @@ Either way, inject the passphrase through the environment
 (`Environment=`/`EnvironmentFile=` in the unit, `EnvironmentVariables` in
 the plist) rather than a `-k` argument, to keep it out of `ps`.
 
+## Peeking at the watch tiers
+
+The server scores every directory by activity and watches the hot ones in
+real time while polling the cold ones lazily; events raise a directory's
+score and idleness decays it. To see the current table, send the server
+process `SIGUSR1` (Unix only) and read the snapshot it writes:
+
+```bash
+kill -USR1 $(pgrep -f 'local-mirror -m reality')
+cat /path/to/source/.local-mirror/heat.txt
+```
+
+Directories are listed hottest first with their score, tier and event
+count. Handy for checking whether the directories you actually work in
+got real-time watches.
+
 ## Files it creates
 
 Everything lives under `.local-mirror/` in the sync root (excluded from
@@ -208,6 +224,7 @@ syncing and from git):
 - `partial/` — chunks of interrupted downloads awaiting resume
 - `backups/` — pre-overwrite copies, only with `--allow-critical`
 - `ignore` — optional ignore patterns, merged with `-i` (restart to apply)
+- `heat.txt` — watch-tier snapshot, written on `SIGUSR1` (server side)
 
 ## Development
 

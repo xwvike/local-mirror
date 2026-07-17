@@ -177,6 +177,20 @@ launchctl bootout gui/$(id -u)/com.xwvike.local-mirror
 plist 里 `EnvironmentVariables`），别写在 `-k` 参数里，免得出现在 `ps`
 输出中。
 
+## 查看监听分级
+
+服务端按活跃度给每个目录打分：热门目录实时监听，冷门目录低频轮询；
+事件会给目录加分，沉寂则逐步衰减。想看当前的热度表，给服务端进程发
+`SIGUSR1`（仅 Unix），然后读它写出的快照：
+
+```bash
+kill -USR1 $(pgrep -f 'local-mirror -m reality')
+cat /path/to/source/.local-mirror/heat.txt
+```
+
+目录按分数降序列出，带层级和事件计数——可以直观确认你正在干活的
+目录有没有拿到实时监听。
+
 ## 运行时产物
 
 全部在同步根下的 `.local-mirror/` 里（同步逻辑和 git 都忽略它）：
@@ -186,6 +200,7 @@ plist 里 `EnvironmentVariables`），别写在 `-k` 参数里，免得出现在
 - `partial/` — 中断下载的分片，等待续传
 - `backups/` — 覆盖前备份，仅 `--allow-critical` 时产生
 - `ignore` — 可选的忽略模式，与 `-i` 合并（改后重启生效）
+- `heat.txt` — 监听分级快照，收到 `SIGUSR1` 时写出（仅服务端）
 
 ## 开发
 
