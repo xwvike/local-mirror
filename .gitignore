@@ -20,3 +20,7 @@ test/
 **/.DS_Store
 Thumbs.db
 **/Thumbs.db
+
+# go build 默认输出
+/local-mirror
+/local-mirror.exe
