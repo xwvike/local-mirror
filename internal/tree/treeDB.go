@@ -7,6 +7,7 @@ import (
 	"local-mirror/config"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -196,6 +197,35 @@ func AddNodes(nodes []*Node) error {
 					var old Node
 					if err := json.Unmarshal(oldData, &old); err == nil && old.ParentID != "" {
 						node.ParentID = old.ParentID
+					}
+				}
+				// 父链接核验修复：节点可能是历史缺陷留下的孤儿——存在于
+				// nodes/path_index、却不在任何 children 列表里，目录列表永远
+				// 看不到它；若不在此修复，重启校准也只会走进这个更新分支，
+				// 孤儿便永不自愈（投产环境实锤：24 个产物文件重启数次仍不可见）。
+				// 以父目录路径解析权威 ParentID，并确保其 children 列表包含本节点
+				if node.Path != "." {
+					if pid := pathIndexBucket.Get([]byte(filepath.Dir(node.Path))); pid != nil {
+						node.ParentID = string(pid)
+						var ch Children
+						if cd := childrenBucket.Get(pid); cd != nil {
+							if err := json.Unmarshal(cd, &ch); err != nil {
+								return err
+							}
+						} else {
+							ch = Children{ParentID: string(pid), ChildIDs: []string{}}
+						}
+						if !slices.Contains(ch.ChildIDs, node.ID) {
+							ch.ChildIDs = append(ch.ChildIDs, node.ID)
+							cd, err := json.Marshal(ch)
+							if err != nil {
+								return err
+							}
+							if err := childrenBucket.Put(pid, cd); err != nil {
+								return err
+							}
+							log.Warnf("修复孤儿节点的父链接: %s", node.Path)
+						}
 					}
 				}
 				nodeData, err := json.Marshal(*node)
