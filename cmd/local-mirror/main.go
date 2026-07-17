@@ -130,6 +130,9 @@ func main() {
 	restoreConsole := enableConsoleUTF8()
 	defer restoreConsole()
 
+	// SIGUSR1 → 目录热度快照落盘（观察用，见 sigdump_unix.go）
+	installHeatDumpSignal()
+
 	flag.Parse()
 
 	// 用户主动请求帮助：输出到 stdout，退出码 0

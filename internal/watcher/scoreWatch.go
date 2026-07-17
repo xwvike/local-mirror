@@ -222,6 +222,10 @@ func (sw *ScoreWatch) performScan() {
 
 	dirs := make([]*HeatScore, 0, len(sw.heatMap))
 	for _, heat := range sw.heatMap {
+		// 周期性衰减：与 recordEvent 的事件加分配对——活跃目录分数上浮
+		// 进 tier1，沉寂后每轮 10 分钟衰减 5%，自然回落让位。
+		// 没有衰减，一次性的历史热度会永久霸占实时 watch 名额
+		heat.Score = math.Max(heat.Score*0.95, 1)
 		dirs = append(dirs, heat)
 	}
 
@@ -424,6 +428,23 @@ func (sw *ScoreWatch) addHeat(path string, node *tree.Node) {
 
 	if err := sw.Watcher.Add(filepath.Join(config.StartPath, path)); err != nil {
 		log.Warnf("Failed to watch new directory %s: %v", path, err)
+	}
+}
+
+// recordEvent 把一次文件系统事件反馈进所属目录的热度：事件计数递增、
+// 分数加成（封顶 100）。没有这条反馈，热度就只是启动时刻的静态快照——
+// EventCount 恒为 0，后来变活跃的冷目录永远升不了 tier1，只能吃 tier2
+// 轮询的分钟级延迟。加分与 performScan 的周期性衰减配对，活跃时上浮、
+// 沉寂后回落
+func (sw *ScoreWatch) recordEvent(dirPath string) {
+	if sw == nil {
+		return
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if heat, ok := sw.heatMap[dirPath]; ok {
+		heat.EventCount++
+		heat.Score = math.Min(heat.Score+2, 100)
 	}
 }
 
