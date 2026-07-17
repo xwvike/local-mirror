@@ -302,7 +302,10 @@ func renderWordmark(word string) []string {
 			continue
 		}
 		for r := range bitmap {
-			if i > 0 {
+			// 连字符收紧左侧字距（side bearing）：字母统一 1 像素间距，
+			// 但 '-' 笔画少且悬在中排，两侧都空一列会把词拆散；贴住左邻
+			//（其右列中排本为空，不会粘笔画）、右侧保留 1 列呼吸
+			if i > 0 && ch != '-' {
 				bitmap[r] += "0"
 			}
 			bitmap[r] += g[r]
