@@ -1,5 +1,7 @@
 # local-mirror
 
+<p align="center"><img src="assets/icon-512.png" width="128" alt="local-mirror logo"></p>
+
 [English](README.md) | 简体中文
 
 基于 TCP 的单向目录镜像。一台机器共享目录（`reality` 模式），其他机器保持

@@ -1,5 +1,7 @@
 # local-mirror
 
+<p align="center"><img src="assets/icon-512.png" width="128" alt="local-mirror logo"></p>
+
 English | [简体中文](README.zh-CN.md)
 
 One-way directory mirroring over TCP. One machine serves a directory (the

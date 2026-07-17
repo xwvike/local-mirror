@@ -292,6 +292,31 @@ func printBanner() {
 	modeDescMap := map[string]string{"reality": "server", "mirror": "client", "relay": "relay"}
 	modeDesc := modeDescMap[*config.Mode]
 
+	// ASCII 版项目 logo（assets/icon.png 的字符演绎）：实心文件夹 + 三条
+	// 渐隐倒影，倒影的透明度用字符浓度（▓▒░）表达。字符全部来自 CP437
+	// 时代的块元素，Windows 控制台同样可靠
+	logoArt := []string{
+		"█████▄▄▄▄▄▄▄▄▄▄▄▄▄▄",
+		"███████████████████",
+		"███████████████████",
+		"███████████████████",
+		"▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+		"▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓",
+		" ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒",
+		"   ░░░░░░░░░░░░░",
+	}
+	logoIndent := strings.Repeat(" ", (width-len([]rune(logoArt[0])))/2)
+	fmt.Println()
+	fmt.Printf("%s%s▄▄▄▄▄%s\n", logoIndent, p.Cyan, p.Reset) // 文件夹标签页
+	for i, l := range logoArt {
+		tint := p.Cyan
+		if i >= 5 {
+			tint = p.Cyan + p.Dim // 倒影整体再压暗一档
+		}
+		fmt.Printf("%s%s%s%s\n", logoIndent, tint, l, p.Reset)
+	}
+	fmt.Println()
+
 	fmt.Println(line)
 	fmt.Printf("  %s%sLocal Mirror%s %s  ·  %s%s%s (%s)\n",
 		p.Bold, p.Cyan, p.Reset, version, p.Bold, *config.Mode, p.Reset, modeDesc)
