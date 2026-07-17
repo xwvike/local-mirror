@@ -103,7 +103,25 @@ func eventFilter(event fsnotify.Event) {
 		flushCreateEvents() // 变更日志由 flush 在落库后记录
 		scanNewDirContents(event.Name)
 	case event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename):
-		// Rename 事件表示旧路径消失，等同删除；若产生了新路径会另收到 Create 事件
+		// Rename 事件表示旧路径消失，等同删除；若产生了新路径会另收到 Create 事件。
+		//
+		// 但先做磁盘核验：路径仍存在则不是真删除。原子替换（写临时文件后
+		// rename 覆盖同名旧文件——vite/electron 等构建工具的产物写法，本
+		// 工具自身落盘也如此）在 kqueue 的事件合并批次里可能只留下旧 inode
+		// 的 Remove 而没有同名 Create，按删除处理会把磁盘上明明存在的文件
+		// 从树里静默删掉（投产首日实锤：24 个跨构建同名产物全部丢树）。
+		// 存在即转为内容变更处理
+		if linfo, statErr := os.Lstat(event.Name); statErr == nil {
+			if linfo.Mode()&os.ModeSymlink != 0 {
+				return
+			}
+			if linfo.IsDir() {
+				scanNewDirContents(event.Name)
+			} else {
+				scheduleFileChange(event.Name)
+			}
+			return
+		}
 		// 若该文件还有未触发的哈希防抖，一并取消
 		pendingMu.Lock()
 		if t, ok := pendingHashes[event.Name]; ok {
@@ -335,6 +353,27 @@ func flushDeleteEvents() {
 	deleteTimerActive = false
 	eventMu.Unlock()
 
+	if len(batch) == 0 {
+		return
+	}
+	// 落库前的最后一道磁盘核验：合并窗口内路径可能已重新出现（原子替换
+	// 的陈旧 Remove、删后快速重建），仍存在的路径不删，转为重哈希/重扫。
+	// 与事件时的核验互为冗余——两次检查之间的竞态窗口由此关闭
+	kept := batch[:0]
+	for _, p := range batch {
+		abs := filepath.Join(config.StartPath, p)
+		linfo, err := os.Lstat(abs)
+		if err != nil || linfo.Mode()&os.ModeSymlink != 0 {
+			kept = append(kept, p) // 确实没了（或是不追踪的符号链接残留节点），照删
+			continue
+		}
+		if linfo.IsDir() {
+			scanNewDirContents(abs)
+		} else {
+			scheduleFileChange(abs)
+		}
+	}
+	batch = kept
 	if len(batch) == 0 {
 		return
 	}
