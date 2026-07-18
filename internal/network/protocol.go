@@ -11,37 +11,49 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// 线格式路径约定：协议中所有文件/目录路径一律以 "/" 为分隔符传输。
-// 各端进程内部（目录树库、变更日志、fsnotify、SafeJoin）始终使用本机
-// filepath.Separator，转换只发生在编解码边界——encode 时 ToSlash，decode
-// 时 FromSlash（Unix 上两者都是恒等变换，线格式与历史版本逐字节相同）。
-// 若不统一，Windows 端发出的 `wnested\deep` 会被 Unix 端当成单个文件名
-// （字面反斜杠），Windows 中继进程内部的树节点与变更日志也会各持一种
-// 分隔符而互相查不到（2026-07-15 真机测试的两处实锤）。
+// ============================ 线格式约定 ============================
+//
+// 版本与协商（v3 起）：握手双方各自携带 [MinVersion, Version] 支持区间与
+// FeatureBits 能力位，会话版本取两区间交集的最高值，交集为空则拒绝
+// （服务端拒绝前回一条 ErrCodeVersionMismatch 错误，让对端日志里有人话）。
+// 当前两端区间均为 [3,3]，行为与严格相等一致；该结构的意义在于未来版本
+// 可以引入真正的跨版本协商而无需再次 flag-day。FeatureBits 当前恒为 0，
+// 非零位留给未来能力声明（压缩、增量传输、PSK 拉伸参数等）。
+//
+// 同版本演进（正式机制）：解码器只读取已知字段、静默忽略消息体尾部的
+// 多余字节。因此**在消息体尾部追加新字段是同版本内的兼容演进方式**：
+// 新端写、旧端忽略；新字段必须自带存在性语义（长度前缀或哨兵值），
+// 不得改变既有字段的顺序与宽度。改动既有字段仍需 bump 版本。
+//
+// 路径：协议中所有文件/目录路径一律以 "/" 为分隔符传输。各端进程内部
+// （目录树库、变更日志、fsnotify、SafeJoin）始终使用本机
+// filepath.Separator，转换只发生在编解码边界——encode 时 ToSlash，
+// decode 时 FromSlash（Unix 上两者都是恒等变换）。
 // 已知边缘：Unix 文件名中的字面反斜杠经线格式到达 Windows 端会被当作
 // 分隔符展开成子目录——该名字本就无法在 Windows 文件系统表示，可接受。
+//
+// 交互模型：严格同步请求-响应，单连接单飞行请求（客户端串行化一切）。
+// 该不变量是冻结面的一部分：协议没有请求 ID，无法在一条连接上并发。
+// ===================================================================
 
 // 协议常量定义
 const (
 	// 魔术字
 	MagicNumber uint32 = 0xFBE322A8 // 协议标识符
 
-	// 消息类型
+	// 消息类型。v3 删除了 5 个死类型（HeartbeatPing/Pong 0x0A/0x0B、
+	// RecentChange 之外的 Reverify/ReverifyResponse 0x0E/0x0F、
+	// Acknowledge 0x07），编号留空洞不复用，避免旧包被误解码
 	MsgTypeHandshake            uint16 = 0x0001 // 握手请求/响应
 	MsgTypeFileRequest          uint16 = 0x0002 // 文件传输请求
 	MsgTypeFileResponse         uint16 = 0x0003 // 文件传输响应
 	MsgTypeFileData             uint16 = 0x0004 // 文件数据
 	MsgTypeFileComplete         uint16 = 0x0005 // 文件传输完成
-	MsgTypeError                uint16 = 0x0006 // 错误消息
-	MsgTypeAcknowledge          uint16 = 0x0007 // 确认消息
+	MsgTypeError                uint16 = 0x0006 // 错误消息（结构化，见 ErrorMessage）
 	MsgTypeTreeRequest          uint16 = 0x0008 // 目录树请求
 	MsgTypeTreeResponse         uint16 = 0x0009 // 目录树响应
-	MsgTypeHeartbeatPing        uint16 = 0x000A // 心跳请求
-	MsgTypeHeartbeatPong        uint16 = 0x000B // 心跳响应
 	MsgTypeRecentChangeRequest  uint16 = 0x000C // 最近变更请求
 	MsgTypeRecentChangeResponse uint16 = 0x000D // 最近变更响应
-	MsgTypeReverify             uint16 = 0x000E // 重新验证请求
-	MsgTypeReverifyResponse     uint16 = 0x000F // 重新验证响应
 
 	// 头部大小
 	HeaderSize = 12 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节）
@@ -49,6 +61,24 @@ const (
 	// 单条消息体长度上限，防止损坏/恶意的头部导致超大内存分配
 	MaxBodyLength = 64 * 1024 * 1024
 )
+
+// 错误码（ErrorMessage.Code）。客户端据此区分可重试/永久失败，
+// 服务端 handler 用 wireError 构造；未归类的错误一律 ErrCodeInternal
+const (
+	ErrCodeInternal         uint16 = 0 // 未归类错误，语义等同 v2 的裸字符串
+	ErrCodeNotFound         uint16 = 1 // 文件/目录不存在（永久，重试无意义）
+	ErrCodePermissionDenied uint16 = 2 // 权限拒绝（永久，上游修复前跳过）
+	ErrCodeOutOfRoot        uint16 = 3 // 路径越界/符号链接等策略拒绝（永久）
+	ErrCodeTooLarge         uint16 = 4 // 响应超出协议上限（永久）
+	ErrCodeVersionMismatch  uint16 = 5 // 协议版本区间无交集（升级前永久）
+)
+
+// negotiateVersion 计算会话版本：两端 [min, ver] 区间交集的最高值。
+// ok=false 表示交集为空（版本不兼容）
+func negotiateVersion(localVer, localMin, peerVer, peerMin uint16) (uint16, bool) {
+	agreed := min(localVer, peerVer)
+	return agreed, agreed >= localMin && agreed >= peerMin
+}
 
 // 消息头定义
 type MessageHeader struct {
@@ -58,18 +88,19 @@ type MessageHeader struct {
 	ReservedWord uint16 // 保留字段
 }
 
-// 握手消息
+// 握手消息（v3：区间协商 + 能力位）
 type HandshakeMessage struct {
-	Version uint16 // 协议版本
-	UUID    uint32 // 标识
-	Role    uint8  // 角色
+	Version     uint16 // 支持的最高协议版本
+	MinVersion  uint16 // 支持的最低协议版本
+	UUID        uint32 // 实例标识
+	Role        uint8  // 角色
+	FeatureBits uint64 // 能力位（当前恒 0，非零位留给未来能力协商）
 }
 
 // 文件请求消息
 type FileRequestMessage struct {
-	PathLength uint16 // 文件路径长度
-	FilePath   string // 文件路径
-	Offset     uint64 // 起始偏移（断点续传用）
+	FilePath string // 文件路径
+	Offset   uint64 // 起始偏移（断点续传用）
 }
 
 // 文件响应消息
@@ -79,10 +110,10 @@ type FileResponseMessage struct {
 	FileHash  [32]byte // 文件哈希值
 }
 
-// 文件数据消息
+// 文件数据消息。数据按流序追加，无逐块偏移（v3 删除了从未被消费的
+// Offset 字段）；续传起点由 FileRequest.Offset 一次性确定
 type FileDataMessage struct {
 	SessionID  [16]byte // 会话ID
-	Offset     uint64   // 数据偏移
 	DataLength uint32   // 数据长度
 	Data       []byte   // 数据内容
 }
@@ -93,62 +124,72 @@ type FileCompleteMessage struct {
 	FileHash  [32]byte // 文件哈希值
 }
 
-// 错误消息
+// ErrorMessage 结构化错误（v3）：错误码 + 关联路径 + 人读消息。
+// Path 走线格式路径约定（"/" 分隔），无关联路径时为空
 type ErrorMessage struct {
-	MessageLen   uint16 // 消息长度
-	ErrorMessage string // 错误消息
+	Code    uint16
+	Path    string
+	Message string
 }
 
-// 确认消息
-type AcknowledgeMessage struct {
-	SessionID [16]byte // 会话ID
-	Offset    uint64   // 确认偏移
+// wireError 服务端 handler 用于携带错误码的 error 实现。
+// handleConnection 经 errors.As 提取并编码为 ErrorMessage 下发；
+// 未包装的普通 error 落到 ErrCodeInternal
+type wireError struct {
+	Code    uint16
+	Path    string
+	Message string
+}
+
+func (e *wireError) Error() string {
+	if e.Path != "" {
+		return fmt.Sprintf("%s: %s", e.Path, e.Message)
+	}
+	return e.Message
+}
+
+// RealityError 客户端收到的服务端错误（结构化）。实现 error，
+// 调用方可 errors.As 取 Code 做重试决策（如 PermissionDenied 直接跳过）
+type RealityError struct {
+	Code    uint16
+	Path    string
+	Message string
+}
+
+func (e *RealityError) Error() string {
+	if e.Path != "" {
+		return fmt.Sprintf("reality error (code %d) %s: %s", e.Code, e.Path, e.Message)
+	}
+	return fmt.Sprintf("reality error (code %d): %s", e.Code, e.Message)
 }
 
 // 树形结构请求消息
 type TreeRequestMessage struct {
-	PathLength uint16 // 路径长度
-	RootPath   string // 请求获取的目录树的路径
+	RootPath     string // 请求获取的目录树的路径
+	ContinueFrom string // 续页游标：上一页最后一个条目的路径；空 = 第一页
 }
 
-// 树形结构响应消息
+// 树形结构响应消息。单页最多 treePageMaxEntries 条，
+// ContinueFrom 非空表示还有后续页（客户端携带它再次请求）
 type TreeResponseMessage struct {
-	RootPath   string // 目录树的根路径
-	DataLength uint32 // 数据长度
-	Data       []byte // 请求数据
+	ContinueFrom string // 非空 = 有下一页，值为本页最后条目路径
+	DataLength   uint32 // 数据长度
+	Data         []byte // 本页条目的 JSON（[]tree.Node）
 }
 
-// 最近变更请求消息
+// 最近变更请求消息。查询区间上界由服务端时钟决定，请求不携带
+// （v3 删除了从未被消费的 endTime 字段）
 type RecentChangeRequestMessage struct {
 	ClientID  uint32 // 客户端标识
-	startTime int64  // 开始时间（秒）
-	endTime   int64  // 结束时间（秒）
+	StartTime int64  // 开始时间（秒，服务端时钟系；0=全查窗口）
 }
 
 // 最近变更响应消息
 type RecentChangeResponseMessage struct {
-	Changes      []string // 最近变更的目录列表
 	ServerID     uint32   // 服务端标识
 	CoveredUntil int64    // 本次响应已覆盖到的服务端时刻（秒），客户端据此推进游标
-}
-
-// 心跳请求消息
-type HeartbeatPingMessage struct {
-	Version   uint16 // 协议版本
-	Timestamp int64  // 时间戳（秒）
-	ClientID  uint32 // 客户端标识
-}
-
-// 心跳响应消息
-type HeartbeatPongMessage struct {
-	Version   uint16 // 协议版本
-	Timestamp int64  // 时间戳（秒）
-	ServerID  uint32 // 服务端标识
-}
-
-type ReverifyResponse struct {
-	Version  uint16 // 协议版本
-	ServerID uint32 // 客户端标识
+	FullResync   bool     // 变更数超过阈值：列表省略，客户端应全量对账后把游标推进到 CoveredUntil
+	Changes      []string // 最近变更的目录列表（FullResync 时为空）
 }
 
 // encode 系列函数写入 bytes.Buffer，其 Write 方法在内存不足时 panic 而非返回 error，
@@ -186,8 +227,10 @@ func decodeHeader(data []byte) (MessageHeader, error) {
 func encodeHandshake(msg HandshakeMessage) []byte {
 	buf := new(bytes.Buffer)
 	_ = binary.Write(buf, binary.BigEndian, msg.Version)
+	_ = binary.Write(buf, binary.BigEndian, msg.MinVersion)
 	_ = binary.Write(buf, binary.BigEndian, msg.UUID)
 	_ = binary.Write(buf, binary.BigEndian, msg.Role)
+	_ = binary.Write(buf, binary.BigEndian, msg.FeatureBits)
 	return buf.Bytes()
 }
 
@@ -197,20 +240,44 @@ func decodeHandshake(data []byte) (HandshakeMessage, error) {
 	if err := binary.Read(buf, binary.BigEndian, &msg.Version); err != nil {
 		return msg, err
 	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.MinVersion); err != nil {
+		return msg, err
+	}
 	if err := binary.Read(buf, binary.BigEndian, &msg.UUID); err != nil {
 		return msg, err
 	}
 	if err := binary.Read(buf, binary.BigEndian, &msg.Role); err != nil {
 		return msg, err
 	}
+	if err := binary.Read(buf, binary.BigEndian, &msg.FeatureBits); err != nil {
+		return msg, err
+	}
 	return msg, nil
+}
+
+// writeWirePath 写入 2 字节长度前缀的路径字符串（先转线格式 "/" 分隔）
+func writeWirePath(buf *bytes.Buffer, p string) {
+	b := []byte(filepath.ToSlash(p))
+	_ = binary.Write(buf, binary.BigEndian, uint16(len(b)))
+	buf.Write(b)
+}
+
+// readWirePath 读取 2 字节长度前缀的字符串并转回本机路径格式
+func readWirePath(buf *bytes.Reader) (string, error) {
+	var n uint16
+	if err := binary.Read(buf, binary.BigEndian, &n); err != nil {
+		return "", err
+	}
+	b := make([]byte, n)
+	if _, err := io.ReadFull(buf, b); err != nil {
+		return "", err
+	}
+	return filepath.FromSlash(string(b)), nil
 }
 
 func encodeFileRequest(msg FileRequestMessage) []byte {
 	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.BigEndian, msg.PathLength)
-	// ToSlash 逐字节等长替换，调用方按原始路径算好的 PathLength 仍然成立
-	buf.Write([]byte(filepath.ToSlash(msg.FilePath)))
+	writeWirePath(buf, msg.FilePath)
 	_ = binary.Write(buf, binary.BigEndian, msg.Offset)
 	return buf.Bytes()
 }
@@ -218,23 +285,17 @@ func encodeFileRequest(msg FileRequestMessage) []byte {
 func decodeFileRequest(data []byte) (FileRequestMessage, error) {
 	var msg FileRequestMessage
 	buf := bytes.NewReader(data)
-	if err := binary.Read(buf, binary.BigEndian, &msg.PathLength); err != nil {
-		log.Error("Error decoding file request message:", err)
+	p, err := readWirePath(buf)
+	if err != nil {
+		log.Error("Error decoding file request path:", err)
 		return msg, err
 	}
-	filePathBytes := make([]byte, msg.PathLength)
-	if _, err := io.ReadFull(buf, filePathBytes); err != nil {
-		log.Error("Error reading file name:", err)
-		return msg, err
-	}
-	msg.FilePath = filepath.FromSlash(string(filePathBytes))
-
+	msg.FilePath = p
 	if err := binary.Read(buf, binary.BigEndian, &msg.Offset); err != nil {
 		log.Error("Error decoding file offset:", err)
 		return msg, err
 	}
 	return msg, nil
-
 }
 
 func encodeFileResponse(msg FileResponseMessage) []byte {
@@ -270,7 +331,6 @@ func decodeFileResponse(data []byte) (FileResponseMessage, error) {
 func encodeFileData(msg FileDataMessage) []byte {
 	buf := new(bytes.Buffer)
 	buf.Write(msg.SessionID[:])
-	_ = binary.Write(buf, binary.BigEndian, msg.Offset)
 	_ = binary.Write(buf, binary.BigEndian, msg.DataLength)
 	buf.Write(msg.Data)
 	return buf.Bytes()
@@ -282,11 +342,6 @@ func decodeFileData(data []byte) (FileDataMessage, error) {
 
 	if _, err := io.ReadFull(buf, msg.SessionID[:]); err != nil {
 		log.Error("Error reading file data session ID:", err)
-		return msg, err
-	}
-
-	if err := binary.Read(buf, binary.BigEndian, &msg.Offset); err != nil {
-		log.Error("Error decoding file data offset:", err)
 		return msg, err
 	}
 
@@ -304,27 +359,6 @@ func decodeFileData(data []byte) (FileDataMessage, error) {
 	if _, err := io.ReadFull(buf, msg.Data); err != nil {
 		log.Error("Error reading file data:", err)
 		return msg, err
-	}
-	return msg, nil
-}
-
-func encodeAcknowlege(msg AcknowledgeMessage) []byte {
-	buf := new(bytes.Buffer)
-	buf.Write(msg.SessionID[:])
-	_ = binary.Write(buf, binary.BigEndian, msg.Offset)
-	return buf.Bytes()
-}
-
-func decodeAcknowledge(data []byte) (AcknowledgeMessage, error) {
-	var msg AcknowledgeMessage
-	buf := bytes.NewReader(data)
-
-	if _, err := io.ReadFull(buf, msg.SessionID[:]); err != nil {
-		return msg, fmt.Errorf("error reading acknowledge session ID: %w", err)
-	}
-
-	if err := binary.Read(buf, binary.BigEndian, &msg.Offset); err != nil {
-		return msg, fmt.Errorf("error decoding acknowledge offset: %w", err)
 	}
 	return msg, nil
 }
@@ -351,8 +385,11 @@ func decodeFileComplete(data []byte) (FileCompleteMessage, error) {
 
 func encodeErrorMessage(msg ErrorMessage) []byte {
 	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.BigEndian, msg.MessageLen)
-	buf.Write([]byte(msg.ErrorMessage))
+	_ = binary.Write(buf, binary.BigEndian, msg.Code)
+	writeWirePath(buf, msg.Path)
+	m := []byte(msg.Message)
+	_ = binary.Write(buf, binary.BigEndian, uint16(len(m)))
+	buf.Write(m)
 	return buf.Bytes()
 }
 
@@ -360,16 +397,27 @@ func decodeErrorMessage(data []byte) (ErrorMessage, error) {
 	var msg ErrorMessage
 	buf := bytes.NewReader(data)
 
-	if err := binary.Read(buf, binary.BigEndian, &msg.MessageLen); err != nil {
+	if err := binary.Read(buf, binary.BigEndian, &msg.Code); err != nil {
+		log.Error("Error decoding error code:", err)
+		return msg, err
+	}
+	p, err := readWirePath(buf)
+	if err != nil {
+		log.Error("Error decoding error path:", err)
+		return msg, err
+	}
+	msg.Path = p
+	var n uint16
+	if err := binary.Read(buf, binary.BigEndian, &n); err != nil {
 		log.Error("Error decoding error message length:", err)
 		return msg, err
 	}
-	errorMessageBytes := make([]byte, msg.MessageLen)
-	if _, err := io.ReadFull(buf, errorMessageBytes); err != nil {
+	m := make([]byte, n)
+	if _, err := io.ReadFull(buf, m); err != nil {
 		log.Error("Error reading error message:", err)
 		return msg, err
 	}
-	msg.ErrorMessage = string(errorMessageBytes)
+	msg.Message = string(m)
 	return msg, nil
 }
 
@@ -424,8 +472,8 @@ func receiveMessage(conn net.Conn) (uint16, []byte, error) {
 
 func encodeTreeRequest(msg TreeRequestMessage) []byte {
 	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.BigEndian, msg.PathLength)
-	buf.Write([]byte(filepath.ToSlash(msg.RootPath)))
+	writeWirePath(buf, msg.RootPath)
+	writeWirePath(buf, msg.ContinueFrom)
 	return buf.Bytes()
 }
 
@@ -433,24 +481,24 @@ func decodeTreeRequest(data []byte) (TreeRequestMessage, error) {
 	var msg TreeRequestMessage
 	buf := bytes.NewReader(data)
 
-	if err := binary.Read(buf, binary.BigEndian, &msg.PathLength); err != nil {
-		log.Error("Error decoding tree request path length:", err)
+	p, err := readWirePath(buf)
+	if err != nil {
+		log.Error("Error decoding tree request path:", err)
 		return msg, err
 	}
-	pathBytes := make([]byte, msg.PathLength)
-	if _, err := io.ReadFull(buf, pathBytes); err != nil {
-		log.Error("Error reading tree request path:", err)
+	msg.RootPath = p
+	c, err := readWirePath(buf)
+	if err != nil {
+		log.Error("Error decoding tree request cursor:", err)
 		return msg, err
 	}
-	msg.RootPath = filepath.FromSlash(string(pathBytes))
+	msg.ContinueFrom = c
 	return msg, nil
 }
 
 func encodeTreeResponse(msg TreeResponseMessage) []byte {
 	buf := new(bytes.Buffer)
-	pathBytes := []byte(filepath.ToSlash(msg.RootPath))
-	_ = binary.Write(buf, binary.BigEndian, uint16(len(pathBytes)))
-	buf.Write(pathBytes)
+	writeWirePath(buf, msg.ContinueFrom)
 	_ = binary.Write(buf, binary.BigEndian, msg.DataLength)
 	buf.Write(msg.Data)
 	return buf.Bytes()
@@ -460,18 +508,12 @@ func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 	var msg TreeResponseMessage
 	buf := bytes.NewReader(data)
 
-	var pathLength uint16
-	if err := binary.Read(buf, binary.BigEndian, &pathLength); err != nil {
-		log.Error("Error decoding tree response path length:", err)
+	c, err := readWirePath(buf)
+	if err != nil {
+		log.Error("Error decoding tree response cursor:", err)
 		return msg, err
 	}
-
-	pathBytes := make([]byte, pathLength)
-	if _, err := io.ReadFull(buf, pathBytes); err != nil {
-		log.Error("Error reading tree response path:", err)
-		return msg, err
-	}
-	msg.RootPath = filepath.FromSlash(string(pathBytes))
+	msg.ContinueFrom = c
 
 	if err := binary.Read(buf, binary.BigEndian, &msg.DataLength); err != nil {
 		log.Error("Error decoding tree response data length:", err)
@@ -490,87 +532,10 @@ func decodeTreeResponse(data []byte) (TreeResponseMessage, error) {
 	return msg, nil
 }
 
-func encodeHeartbeatPing(msg HeartbeatPingMessage) []byte {
-	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.BigEndian, msg.Version)
-	_ = binary.Write(buf, binary.BigEndian, msg.Timestamp)
-	_ = binary.Write(buf, binary.BigEndian, msg.ClientID)
-	return buf.Bytes()
-}
-
-func decodeHeartbeatPing(data []byte) (HeartbeatPingMessage, error) {
-	var msg HeartbeatPingMessage
-	buf := bytes.NewReader(data)
-
-	if err := binary.Read(buf, binary.BigEndian, &msg.Version); err != nil {
-		log.Error("Error decoding heartbeat ping version:", err)
-		return msg, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.Timestamp); err != nil {
-		log.Error("Error decoding heartbeat ping second:", err)
-		return msg, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.ClientID); err != nil {
-		log.Error("Error decoding heartbeat ping client ID:", err)
-		return msg, err
-	}
-	return msg, nil
-}
-
-func encodeHeartbeatPong(msg HeartbeatPongMessage) []byte {
-	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.BigEndian, msg.Version)
-	_ = binary.Write(buf, binary.BigEndian, msg.Timestamp)
-	_ = binary.Write(buf, binary.BigEndian, msg.ServerID)
-	return buf.Bytes()
-}
-
-func decodeHeartbeatPong(data []byte) (HeartbeatPongMessage, error) {
-	var msg HeartbeatPongMessage
-	buf := bytes.NewReader(data)
-
-	if err := binary.Read(buf, binary.BigEndian, &msg.Version); err != nil {
-		log.Error("Error decoding heartbeat pong version:", err)
-		return msg, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.Timestamp); err != nil {
-		log.Error("Error decoding heartbeat pong second:", err)
-		return msg, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.ServerID); err != nil {
-		log.Error("Error decoding heartbeat pong server ID:", err)
-		return msg, err
-	}
-	return msg, nil
-}
-
-func encodeReverifyResponse(msg ReverifyResponse) []byte {
-	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.BigEndian, msg.Version)
-	_ = binary.Write(buf, binary.BigEndian, msg.ServerID)
-	return buf.Bytes()
-}
-
-func decodeReverifyResponse(data []byte) (ReverifyResponse, error) {
-	var msg ReverifyResponse
-	buf := bytes.NewReader(data)
-
-	if err := binary.Read(buf, binary.BigEndian, &msg.Version); err != nil {
-		log.Error("Error decoding reverify response version:", err)
-		return msg, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.ServerID); err != nil {
-		log.Error("Error decoding reverify response server ID:", err)
-		return msg, err
-	}
-	return msg, nil
-}
-
 func encodeRecentChangeRequest(msg RecentChangeRequestMessage) []byte {
 	buf := new(bytes.Buffer)
 	_ = binary.Write(buf, binary.BigEndian, msg.ClientID)
-	_ = binary.Write(buf, binary.BigEndian, msg.startTime)
-	_ = binary.Write(buf, binary.BigEndian, msg.endTime)
+	_ = binary.Write(buf, binary.BigEndian, msg.StartTime)
 	return buf.Bytes()
 }
 
@@ -582,12 +547,8 @@ func decodeRecentChangeRequest(data []byte) (RecentChangeRequestMessage, error) 
 		log.Error("Error decoding recent change request client ID:", err)
 		return msg, err
 	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.startTime); err != nil {
+	if err := binary.Read(buf, binary.BigEndian, &msg.StartTime); err != nil {
 		log.Error("Error decoding recent change request startTime:", err)
-		return msg, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &msg.endTime); err != nil {
-		log.Error("Error decoding recent change request endTime:", err)
 		return msg, err
 	}
 	return msg, nil
@@ -597,6 +558,11 @@ func encodeRecentChangeResponse(msg RecentChangeResponseMessage) []byte {
 	buf := new(bytes.Buffer)
 	_ = binary.Write(buf, binary.BigEndian, msg.ServerID)
 	_ = binary.Write(buf, binary.BigEndian, msg.CoveredUntil)
+	var fr uint8
+	if msg.FullResync {
+		fr = 1
+	}
+	_ = binary.Write(buf, binary.BigEndian, fr)
 
 	changeCount := len(msg.Changes)
 	_ = binary.Write(buf, binary.BigEndian, uint32(changeCount))
@@ -621,6 +587,12 @@ func decodeRecentChangeResponse(data []byte) (RecentChangeResponseMessage, error
 		log.Error("Error decoding recent change response covered-until:", err)
 		return msg, err
 	}
+	var fr uint8
+	if err := binary.Read(buf, binary.BigEndian, &fr); err != nil {
+		log.Error("Error decoding recent change response full-resync flag:", err)
+		return msg, err
+	}
+	msg.FullResync = fr != 0
 
 	var changeCount uint32
 	if err := binary.Read(buf, binary.BigEndian, &changeCount); err != nil {

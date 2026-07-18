@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,17 @@ const ClientIdleTimeout = 90 * time.Second
 // 达上限后新连接直接拒绝（关闭），已有连接不受影响。局域网多客户端
 // 场景 256 足够宽裕
 const maxConcurrentConnections = 256
+
+// treePageMaxEntries 目录树响应单页条目上限。每条目 JSON 约 250 字节，
+// 两万条约 5 MB，远低于消息体上限（64 MB）；超出的条目经 ContinueFrom
+// 续页游标分多次请求，消除超大目录的确定性失败
+const treePageMaxEntries = 20000
+
+// changeFullResyncThreshold 变更响应降级阈值。单次区间查询命中的变更目录
+// 超过此数时不再下发列表，改为 FullResync 信号让客户端全量对账——
+// 既避免响应逼近消息体上限（此前是确定性失败 + 最长 1 小时的重连活锁），
+// 也因为处理上万条目录 diff 本就比一次全量扫描更慢
+const changeFullResyncThreshold = 8192
 
 type fileServer struct {
 	listener  net.Listener
@@ -218,87 +230,18 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 			client.Version = clientBase.Version
 			client.Connected = true
 			s.clientMap.Store(clientBase.UUID, client)
-		case MsgTypeReverify:
-			// 重连后的新连接尚未握手，clientMap 中没有记录，直接在当前连接上应答
-			if err := s.handleReverify(conn); err != nil {
-				log.Error(err)
+		case MsgTypeRecentChangeRequest:
+			if closed := s.dispatchError(conn, client, s.handleRecentChangeRequest(client.ID, bodyBytes)); closed {
 				return
 			}
-		case MsgTypeHeartbeatPing:
-			if err := s.handlePingRequest(client.ID, bodyBytes); err != nil {
-				log.Error(err)
-				if errors.Is(err, appError.ErrConnection) {
-					conn.Close()
-					s.removeClientIfCurrent(client.ID, client)
-					log.Warnf("Connection closed for %s due to error: %v", clientAddr, err)
-					return
-				} else {
-					errorMsg := ErrorMessage{
-						MessageLen:   uint16(len(err.Error())),
-						ErrorMessage: err.Error(),
-					}
-					errorBytes := encodeErrorMessage(errorMsg)
-					sendMessage(conn, MsgTypeError, errorBytes)
-				}
-
-			}
-		case MsgTypeRecentChangeRequest:
-			s.handleRecentChangeRequest(client.ID, bodyBytes)
 		case MsgTypeTreeRequest:
-			if err := s.handleTreeRequest(client.ID, bodyBytes); err != nil {
-				log.Error(err)
-				if errors.Is(err, appError.ErrConnection) {
-					conn.Close()
-					s.removeClientIfCurrent(client.ID, client)
-					log.Warnf("Connection closed for %s due to error: %v", clientAddr, err)
-					return
-				} else {
-					errorMsg := ErrorMessage{
-						MessageLen:   uint16(len(err.Error())),
-						ErrorMessage: err.Error(),
-					}
-					errorBytes := encodeErrorMessage(errorMsg)
-					sendMessage(conn, MsgTypeError, errorBytes)
-				}
+			if closed := s.dispatchError(conn, client, s.handleTreeRequest(client.ID, bodyBytes)); closed {
+				return
 			}
 		case MsgTypeFileRequest:
-			if err := s.handleFileRequest(client.ID, bodyBytes); err != nil {
-				log.Error(err)
-				if errors.Is(err, appError.ErrConnection) {
-					conn.Close()
-					s.removeClientIfCurrent(client.ID, client)
-					log.Warnf("Connection closed for %s due to error: %v", clientAddr, err)
-					return
-				} else {
-					errorMsg := ErrorMessage{
-						MessageLen:   uint16(len(err.Error())),
-						ErrorMessage: err.Error(),
-					}
-					errorBytes := encodeErrorMessage(errorMsg)
-					sendMessage(conn, MsgTypeError, errorBytes)
-				}
-			}
-		case MsgTypeAcknowledge:
-			ackMsg, err := decodeAcknowledge(bodyBytes)
-			if err != nil {
-				conn.Close()
-				s.removeClientIfCurrent(client.ID, client)
-				log.Warn("acknowledge message:", err)
-				//todo: 给客户端发送回复
+			if closed := s.dispatchError(conn, client, s.handleFileRequest(client.ID, bodyBytes)); closed {
 				return
 			}
-			log.Infof("Received acknowledge message: session ID: %s, offset: %d", ackMsg.SessionID, ackMsg.Offset)
-		case MsgTypeFileComplete:
-			completeMsg, err := decodeFileComplete(bodyBytes)
-			if err != nil {
-				conn.Close()
-				s.removeClientIfCurrent(client.ID, client)
-				log.Warn("Error decoding file complete message:", err)
-				//todo: 给客户端发送回复
-				return
-			}
-			log.Infof("Received file complete message: session ID: %s", completeMsg.SessionID)
-			client.SessionMap.Delete(completeMsg.SessionID)
 		default:
 			log.Errorf("Unknown message type: %d", msgType)
 		}
@@ -306,31 +249,46 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 	}
 }
 
-// handlePingRequest 处理客户端心跳。注意：当前客户端不再主动发送心跳
-// （存活性由长轮询往返节奏 + TCP keepalive 覆盖，见 README），此路径已成
-// 死代码，与 MsgTypeReverify 一并留待未来协议清理时移除。
-func (s *fileServer) handlePingRequest(ID uint32, bodyBytes []byte) error {
-	_client, ok := s.clientMap.Load(ID)
-	if !ok {
-		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
+// dispatchError 统一处理 handler 返回的错误：连接类错误关闭连接并注销
+// 客户端（返回 true 告知调用方退出读循环）；业务类错误编码为结构化
+// Error 消息下发（wireError 携带的码原样透传，未归类错误落 ErrCodeInternal）
+func (s *fileServer) dispatchError(conn net.Conn, c *client, err error) (closed bool) {
+	if err == nil {
+		return false
 	}
-	conn := _client.(*client).Conn
-	pingRequest, err := decodeHeartbeatPing(bodyBytes)
-	if err != nil {
-		return fmt.Errorf("%w, error decoding ping request message: %v", appError.ErrConnection, err)
+	log.Error(err)
+	if errors.Is(err, appError.ErrConnection) {
+		conn.Close()
+		s.removeClientIfCurrent(c.ID, c)
+		log.Warnf("Connection closed for %s due to error: %v", c.Addr, err)
+		return true
 	}
-	log.Infof("Received ping request from %s, client ID: %d", conn.RemoteAddr().String(), pingRequest.ClientID)
-	pongMessage := HeartbeatPongMessage{
-		Version:   config.ProtocolVersion,
-		Timestamp: time.Now().Unix(),
-		ServerID:  config.InstanceID,
+	msg := ErrorMessage{Code: ErrCodeInternal, Message: err.Error()}
+	var we *wireError
+	if errors.As(err, &we) {
+		msg = ErrorMessage{Code: we.Code, Path: we.Path, Message: we.Message}
 	}
-	pongBytes := encodeHeartbeatPong(pongMessage)
-	if err := sendMessage(conn, MsgTypeHeartbeatPong, pongBytes); err != nil {
-		return fmt.Errorf("%w, error sending pong message: %v", appError.ErrConnection, err)
+	if serr := sendMessage(conn, MsgTypeError, encodeErrorMessage(msg)); serr != nil {
+		log.Error("Error sending error response:", serr)
 	}
-	log.Infof("Sent pong response to %s, server ID: %d", conn.RemoteAddr().String(), config.InstanceID)
-	return nil
+	return false
+}
+
+// pageTreeEntries 对目录条目按路径排序后取一页。continueFrom 为空取首页，
+// 否则从严格大于 continueFrom 的条目开始；next 非空表示还有后续页。
+// 页间目录内容可能变化（条目增删导致个别条目漏过一页），由变更推送与
+// 全量扫描安全网兜底，与 diff 引擎的既有容错一致
+func pageTreeEntries(entries []tree.Node, continueFrom string, limit int) (page []tree.Node, next string) {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	start := 0
+	if continueFrom != "" {
+		start = sort.Search(len(entries), func(i int) bool { return entries[i].Path > continueFrom })
+	}
+	end := start + limit
+	if end >= len(entries) {
+		return entries[start:], ""
+	}
+	return entries[start:end], entries[end-1].Path
 }
 
 func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
@@ -344,33 +302,35 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 		return fmt.Errorf("%w, error decoding tree request: %v", appError.ErrConnection, err)
 	}
 	clientAddr := conn.RemoteAddr().String()
-	log.Infof("Received tree request from %s for path: %s", clientAddr, treeRequest.RootPath)
+	log.Infof("Received tree request from %s for path: %s (cursor %q)", clientAddr, treeRequest.RootPath, treeRequest.ContinueFrom)
 	treeLeaf, err := tree.GetDirContents(treeRequest.RootPath)
 	if err != nil {
-		return fmt.Errorf("error getting tree contents for path %s: %v", treeRequest.RootPath, err)
-	} else {
-		for i := range treeLeaf {
-			treeLeaf[i].ID = ""
-			treeLeaf[i].ParentID = ""
-			// 节点路径随 JSON 进入线格式，统一转为 "/"（见 protocol.go 线格式约定）
-			treeLeaf[i].Path = filepath.ToSlash(treeLeaf[i].Path)
-		}
-		treeData, err := json.Marshal(treeLeaf)
-		if err != nil {
-			return fmt.Errorf("error marshalling tree leaf for path %s: %v", treeRequest.RootPath, err)
-		}
-		treeResponse := TreeResponseMessage{
-			RootPath:   treeRequest.RootPath,
-			DataLength: uint32(len(treeData)),
-			Data:       []byte(treeData),
-		}
-		responseBytes := encodeTreeResponse(treeResponse)
-		if err := sendMessage(conn, MsgTypeTreeResponse, responseBytes); err != nil {
-			return fmt.Errorf("%w, error sending tree response for path %s: %v", appError.ErrConnection, treeRequest.RootPath, err)
-		}
-		log.Infof("Sent tree response to %s for path: %s, data length: %d bytes", clientAddr, treeRequest.RootPath, len(treeData))
-		return nil
+		return &wireError{Code: ErrCodeNotFound, Path: treeRequest.RootPath,
+			Message: fmt.Sprintf("error getting tree contents: %v", err)}
 	}
+	page, next := pageTreeEntries(treeLeaf, treeRequest.ContinueFrom, treePageMaxEntries)
+	for i := range page {
+		page[i].ID = ""
+		page[i].ParentID = ""
+		// 节点路径随 JSON 进入线格式，统一转为 "/"（见 protocol.go 线格式约定）
+		page[i].Path = filepath.ToSlash(page[i].Path)
+	}
+	treeData, err := json.Marshal(page)
+	if err != nil {
+		return fmt.Errorf("error marshalling tree leaf for path %s: %v", treeRequest.RootPath, err)
+	}
+	treeResponse := TreeResponseMessage{
+		ContinueFrom: next,
+		DataLength:   uint32(len(treeData)),
+		Data:         treeData,
+	}
+	responseBytes := encodeTreeResponse(treeResponse)
+	if err := sendMessage(conn, MsgTypeTreeResponse, responseBytes); err != nil {
+		return fmt.Errorf("%w, error sending tree response for path %s: %v", appError.ErrConnection, treeRequest.RootPath, err)
+	}
+	log.Infof("Sent tree response to %s for path: %s, %d entries, %d bytes, more=%v",
+		clientAddr, treeRequest.RootPath, len(page), len(treeData), next != "")
+	return nil
 }
 
 func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
@@ -387,32 +347,41 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 	fullPath := filepath.Join(config.StartPath, fileRequest.FilePath)
 	// 防止路径穿越：请求路径解析后必须仍位于同步根目录内
 	if rel, err := filepath.Rel(config.StartPath, fullPath); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("illegal file path: %s", fileRequest.FilePath)
+		return &wireError{Code: ErrCodeOutOfRoot, Path: fileRequest.FilePath, Message: "illegal file path (escapes sync root)"}
 	}
 	// 纵深防御：即使目录树里不该出现符号链接，也拒绝对符号链接的请求，
 	// 杜绝解引用读取同步根目录之外的文件（Lstat 不追踪链接本身）
 	if linfo, lerr := os.Lstat(fullPath); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to serve symlink: %s", fileRequest.FilePath)
+		return &wireError{Code: ErrCodeOutOfRoot, Path: fileRequest.FilePath, Message: "refusing to serve symlink"}
 	}
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("file not found: %s", fileRequest.FilePath)
+			return &wireError{Code: ErrCodeNotFound, Path: fileRequest.FilePath, Message: "file not found"}
 		}
-		return fmt.Errorf("Error getting file info: %s :%v", fileRequest.FilePath, err)
+		return fmt.Errorf("error getting file info: %s :%v", fileRequest.FilePath, err)
 
 	} else {
-		// 错误带上系统级原因（如 permission denied），它会原样进错误应答
-		// 发给客户端——对端日志里能直接看到失败根因，不用两头对日志。
+		// 错误带上系统级原因（如 permission denied），它会随结构化错误应答
+		// 发给客户端——对端日志里能直接看到失败根因，不用两头对日志；
+		// 权限类失败带 ErrCodePermissionDenied，客户端据此跳过而非反复重试。
 		// 读取失败同时登记进不可读列表，恢复可读后由 watcher 恢复循环补哈希
 		fileHash, err := utils.CalcBlake3(fullPath)
 		if err != nil {
 			tree.MarkUnreadable(fullPath)
+			if os.IsPermission(err) {
+				return &wireError{Code: ErrCodePermissionDenied, Path: fileRequest.FilePath,
+					Message: fmt.Sprintf("error calculating file hash: %v", err)}
+			}
 			return fmt.Errorf("error calculating file hash for %s: %v", fileRequest.FilePath, err)
 		}
 
 		file, err := os.Open(fullPath)
 		if err != nil {
+			if os.IsPermission(err) {
+				return &wireError{Code: ErrCodePermissionDenied, Path: fileRequest.FilePath,
+					Message: fmt.Sprintf("error opening file: %v", err)}
+			}
 			return fmt.Errorf("error opening file %s: %v", fileRequest.FilePath, err)
 		}
 		defer file.Close()
@@ -450,14 +419,14 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 			return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
 		}
 		log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
-		if err := s.sendFileData(ID, session, fileRequest.Offset); err != nil {
+		if err := s.sendFileData(ID, session); err != nil {
 			return err
 		}
 		return nil
 	}
 }
 
-func (s *fileServer) sendFileData(ID uint32, session *session, offset uint64) error {
+func (s *fileServer) sendFileData(ID uint32, session *session) error {
 	_client, ok := s.clientMap.Load(ID)
 	if !ok {
 		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
@@ -472,15 +441,12 @@ func (s *fileServer) sendFileData(ID uint32, session *session, offset uint64) er
 		if n > 0 {
 			dataMsg := FileDataMessage{
 				SessionID:  session.ID,
-				Offset:     offset,
 				DataLength: uint32(n),
 				Data:       fileBuf[:n],
 			}
 			if err := sendMessage(conn, MsgTypeFileData, encodeFileData(dataMsg)); err != nil {
 				return fmt.Errorf("%w, error sending file data for %s", appError.ErrConnection, strings.Replace(session.FilePath, config.StartPath, ".", 1))
 			}
-
-			offset += uint64(n)
 		}
 		if err != nil {
 			if err == io.EOF {
@@ -503,23 +469,40 @@ func (s *fileServer) sendFileData(ID uint32, session *session, offset uint64) er
 }
 
 func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*HandshakeMessage, error) {
+	// 版本拒绝前先回一条结构化错误再断连：对端（v3+）能在自己的日志里
+	// 看到人话，而不是一个原因不明的 EOF。解码失败多半是旧版（v2 及更早，
+	// 消息体更短）或非本协议流量，同样按版本不符应答——旧端不认识结构化
+	// 错误也无妨，服务端日志里有完整记录
+	rejectVersion := func(detail string) {
+		msg := ErrorMessage{Code: ErrCodeVersionMismatch,
+			Message: fmt.Sprintf("server %08x requires protocol [%d,%d]; %s",
+				config.InstanceID, config.MinProtocolVersion, config.ProtocolVersion, detail)}
+		_ = sendMessage(conn, MsgTypeError, encodeErrorMessage(msg))
+	}
+
 	handshakeMsg, err := decodeHandshake(bodyBytes)
 	if err != nil {
+		rejectVersion("handshake undecodable (peer probably runs protocol v2 or older)")
 		return nil, fmt.Errorf("%w, failed to decode handshake: %w", appError.ErrConnection, err)
 	}
-	// 协议版本必须一致：v2 起变更查询为长轮询语义，混用新旧端会导致
-	// 一侧空转或解码错位，握手阶段直接拒绝
-	if handshakeMsg.Version != config.ProtocolVersion {
-		return nil, fmt.Errorf("%w, protocol version mismatch: server=%d, client=%d",
-			appError.ErrConnection, config.ProtocolVersion, handshakeMsg.Version)
+	// 会话版本 = 两端 [Min, Version] 区间交集的最高值；交集为空即拒绝。
+	// 当前两端区间都是 [3,3]，行为与严格相等一致（见 protocol.go 线格式约定）
+	agreed, ok := negotiateVersion(config.ProtocolVersion, config.MinProtocolVersion,
+		handshakeMsg.Version, handshakeMsg.MinVersion)
+	if !ok {
+		rejectVersion(fmt.Sprintf("client offered [%d,%d]", handshakeMsg.MinVersion, handshakeMsg.Version))
+		return nil, fmt.Errorf("%w, protocol version mismatch: server=[%d,%d], client=[%d,%d]",
+			appError.ErrConnection, config.MinProtocolVersion, config.ProtocolVersion,
+			handshakeMsg.MinVersion, handshakeMsg.Version)
 	}
-	log.Infof("Received handshake message: version: %d, clientID: %d",
-		handshakeMsg.Version,
-		handshakeMsg.UUID)
+	log.Infof("Received handshake message: version: %d (agreed %d), clientID: %d",
+		handshakeMsg.Version, agreed, handshakeMsg.UUID)
 	receiveHandshake := HandshakeMessage{
-		Version: config.ProtocolVersion,
-		UUID:    config.InstanceID,
-		Role:    config.ModeMap[*config.Mode],
+		Version:     config.ProtocolVersion,
+		MinVersion:  config.MinProtocolVersion,
+		UUID:        config.InstanceID,
+		Role:        config.ModeMap[*config.Mode],
+		FeatureBits: 0,
 	}
 	handshakeBytes := encodeHandshake(receiveHandshake)
 	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
@@ -528,37 +511,43 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*Handshak
 	return &handshakeMsg, nil
 }
 
-func (s *fileServer) handleReverify(conn net.Conn) error {
-	reverifyResponse := ReverifyResponse{
-		Version:  config.ProtocolVersion,
-		ServerID: config.InstanceID,
+// buildRecentChangeResponse 组装变更响应：数量超过阈值时降级为 FullResync
+// 信号（列表省略）。纯函数，便于单元测试
+func buildRecentChangeResponse(changes []string, now int64) RecentChangeResponseMessage {
+	unique := utils.UniqueStrings(changes)
+	if len(unique) > changeFullResyncThreshold {
+		return RecentChangeResponseMessage{
+			ServerID:     config.InstanceID,
+			CoveredUntil: now,
+			FullResync:   true,
+		}
 	}
-	responseBytes := encodeReverifyResponse(reverifyResponse)
-	if err := sendMessage(conn, MsgTypeReverifyResponse, responseBytes); err != nil {
-		return fmt.Errorf("%w, error sending reverify response: %v", appError.ErrConnection, err)
+	return RecentChangeResponseMessage{
+		ServerID:     config.InstanceID,
+		CoveredUntil: now,
+		Changes:      unique,
 	}
-	return nil
 }
 
-func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) {
+func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) error {
 	_client, ok := s.clientMap.Load(ID)
 	if !ok {
-		log.Errorf("Client not found for ID: %d", ID)
-		return
+		// 与其余 handler 一致：未握手/已注销的连接按连接错误关闭，
+		// 而不是静默不应答让对端干等读超时
+		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
 	}
 	conn := _client.(*client).Conn
 	recentChangeRequest, err := decodeRecentChangeRequest(bodyBytes)
 	if err != nil {
-		log.Error("Error decoding recent change request:", err)
-		return
+		return fmt.Errorf("%w, error decoding recent change request: %v", appError.ErrConnection, err)
 	}
 	log.Debugf("Received recent change request from %s, client ID: %d, startTime: %d",
-		conn.RemoteAddr().String(), recentChangeRequest.ClientID, recentChangeRequest.startTime)
+		conn.RemoteAddr().String(), recentChangeRequest.ClientID, recentChangeRequest.StartTime)
 
 	// 长轮询：区间内已有变更立刻回（追赶/重连场景）；无变更则挂起，
 	// 等到变更落库广播或挂满上限后返回。挂起期间不读 socket，
 	// 上限兜底避免死连接常驻。上界用服务端当前时刻，随每次唤醒重新求值。
-	start := recentChangeRequest.startTime
+	start := recentChangeRequest.StartTime
 	holdDeadline := time.Now().Add(LongPollHold)
 	for {
 		// 先取信号再查询：若广播发生在查询之后、select 之前，
@@ -572,16 +561,13 @@ func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) {
 		}
 
 		if len(recentChanges) > 0 || err != nil || !time.Now().Before(holdDeadline) {
-			responseMsg := RecentChangeResponseMessage{
-				Changes:      utils.UniqueStrings(recentChanges),
-				ServerID:     config.InstanceID,
-				CoveredUntil: now,
-			}
+			responseMsg := buildRecentChangeResponse(recentChanges, now)
 			if serr := sendMessage(conn, MsgTypeRecentChangeResponse, encodeRecentChangeResponse(responseMsg)); serr != nil {
-				log.Error("Error sending recent change response:", serr)
+				return fmt.Errorf("%w, error sending recent change response: %v", appError.ErrConnection, serr)
 			}
-			log.Debugf("Sent recent change response to %s, changes count: %d", conn.RemoteAddr().String(), len(recentChanges))
-			return
+			log.Debugf("Sent recent change response to %s, changes count: %d, fullResync=%v",
+				conn.RemoteAddr().String(), len(responseMsg.Changes), responseMsg.FullResync)
+			return nil
 		}
 
 		select {

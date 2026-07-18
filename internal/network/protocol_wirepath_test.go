@@ -19,11 +19,7 @@ func wireHasNativeSeparator(raw []byte) bool {
 
 func TestFileRequestWirePath(t *testing.T) {
 	native := filepath.Join("deep", "sub", "f.txt")
-	msg := FileRequestMessage{
-		PathLength: uint16(len(native)),
-		FilePath:   native,
-		Offset:     42,
-	}
+	msg := FileRequestMessage{FilePath: native, Offset: 42}
 	raw := encodeFileRequest(msg)
 	if wireHasNativeSeparator(raw) {
 		t.Errorf("编码结果泄漏了本机分隔符: %q", raw)
@@ -46,7 +42,8 @@ func TestFileRequestWirePath(t *testing.T) {
 
 func TestTreeRequestWirePath(t *testing.T) {
 	native := filepath.Join("wnested", "deep")
-	msg := TreeRequestMessage{PathLength: uint16(len(native)), RootPath: native}
+	cursor := filepath.Join("wnested", "deep", "m.txt")
+	msg := TreeRequestMessage{RootPath: native, ContinueFrom: cursor}
 	raw := encodeTreeRequest(msg)
 	if wireHasNativeSeparator(raw) {
 		t.Errorf("编码结果泄漏了本机分隔符: %q", raw)
@@ -59,22 +56,29 @@ func TestTreeRequestWirePath(t *testing.T) {
 	if decoded.RootPath != native {
 		t.Errorf("解码路径 = %q, 应为本机形式 %q", decoded.RootPath, native)
 	}
+	if decoded.ContinueFrom != cursor {
+		t.Errorf("解码游标 = %q, 应为本机形式 %q", decoded.ContinueFrom, cursor)
+	}
 }
 
 func TestTreeResponseWirePath(t *testing.T) {
-	native := filepath.Join("a", "b")
+	cursor := filepath.Join("a", "b")
 	payload := []byte(`[{"path":"x"}]`) // Data 是不透明负载，路径转换不碰它
 	msg := TreeResponseMessage{
-		RootPath:   native,
-		DataLength: uint32(len(payload)),
-		Data:       payload,
+		ContinueFrom: cursor,
+		DataLength:   uint32(len(payload)),
+		Data:         payload,
 	}
-	decoded, err := decodeTreeResponse(encodeTreeResponse(msg))
+	raw := encodeTreeResponse(msg)
+	if wireHasNativeSeparator(raw) {
+		t.Errorf("编码结果泄漏了本机分隔符: %q", raw)
+	}
+	decoded, err := decodeTreeResponse(raw)
 	if err != nil {
 		t.Fatalf("decodeTreeResponse: %v", err)
 	}
-	if decoded.RootPath != native {
-		t.Errorf("解码路径 = %q, 应为本机形式 %q", decoded.RootPath, native)
+	if decoded.ContinueFrom != cursor {
+		t.Errorf("解码游标 = %q, 应为本机形式 %q", decoded.ContinueFrom, cursor)
 	}
 	if string(decoded.Data) != string(payload) {
 		t.Errorf("Data 负载被改动: %q", decoded.Data)
@@ -105,18 +109,38 @@ func TestRecentChangeResponseWirePath(t *testing.T) {
 			t.Errorf("Changes[%d] = %q, 应为本机形式 %q", i, decoded.Changes[i], want)
 		}
 	}
+	if decoded.FullResync {
+		t.Error("FullResync 应为 false")
+	}
 }
 
 // TestWirePathFromUnixPeer 模拟收到 Unix 对端（线格式即 "/"）的路径：
 // 解码结果必须是本机分隔符形式，Windows 上即完成 / → \ 的转换
 func TestWirePathFromUnixPeer(t *testing.T) {
 	slash := "deep/sub/f.txt"
-	msg := FileRequestMessage{PathLength: uint16(len(slash)), FilePath: slash}
+	msg := FileRequestMessage{FilePath: slash}
 	decoded, err := decodeFileRequest(encodeFileRequest(msg))
 	if err != nil {
 		t.Fatalf("decodeFileRequest: %v", err)
 	}
 	if want := filepath.FromSlash(slash); decoded.FilePath != want {
 		t.Errorf("解码路径 = %q, 应为本机形式 %q", decoded.FilePath, want)
+	}
+}
+
+// TestErrorMessageWirePath 结构化错误的 Path 字段同样走线格式路径约定
+func TestErrorMessageWirePath(t *testing.T) {
+	native := filepath.Join("deep", "sub", "f.txt")
+	msg := ErrorMessage{Code: ErrCodePermissionDenied, Path: native, Message: "permission denied"}
+	raw := encodeErrorMessage(msg)
+	if wireHasNativeSeparator(raw) {
+		t.Errorf("编码结果泄漏了本机分隔符: %q", raw)
+	}
+	decoded, err := decodeErrorMessage(raw)
+	if err != nil {
+		t.Fatalf("decodeErrorMessage: %v", err)
+	}
+	if decoded.Code != ErrCodePermissionDenied || decoded.Path != native || decoded.Message != "permission denied" {
+		t.Errorf("往返结果不符: %+v", decoded)
 	}
 }

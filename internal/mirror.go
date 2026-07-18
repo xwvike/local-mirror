@@ -199,6 +199,14 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 			fileClient.ConnectionClose()
 			return err
 		}
+		// 权限拒绝是永久失败（上游修好前重试恒败）：按"上游不可读"处理，
+		// 每路径提示一次后本轮直接跳过，不再反复请求刷日志。
+		// 上游恢复可读后由 watcher 补哈希、变更推送自动恢复同步
+		var re *network.RealityError
+		if errors.As(err, &re) && re.Code == network.ErrCodePermissionDenied {
+			warnUnreadableOnce(v.Path)
+			return nil
+		}
 		log.Errorf("Error downloading file %s: %v", v.Path, err)
 		return err
 	}
@@ -264,14 +272,11 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 		log.Debugf("skipping ignored directory: %s", path)
 		return nil
 	}
-	treejson, err := fileClient.GetRealityTree(path)
+	// 树响应按页下发并在客户端内聚合（超大目录不再撞消息体上限），
+	// 返回的节点路径已是本机分隔符格式
+	realityNodes, err := fileClient.GetRealityTree(path)
 	if err != nil {
 		return handleConnectionError(err, fileClient)
-	}
-
-	realityNodes, err := UnmarshalRealityTree(treejson)
-	if err != nil {
-		return fmt.Errorf("error parsing tree for path %s: %w", path, err)
 	}
 
 	diffs, err := Diff(realityNodes, path)
@@ -607,9 +612,22 @@ func fullScan(fileClient *network.FileClient) error {
 }
 
 func TrackingChanges(fileClient *network.FileClient) error {
-	change, coveredUntil, err := fileClient.GetTreeChange(lastChangeCursor)
+	change, coveredUntil, fullResync, err := fileClient.GetTreeChange(lastChangeCursor)
 	if err != nil {
 		return handleConnectionError(err, fileClient)
+	}
+
+	if fullResync {
+		// 服务端本区间变更数超阈值，列表被省略：全量对账一次。
+		// 注意 fullScan 会把游标归 0——若沿用，下一轮又会查到同一批超限
+		// 变更再触发全量，活锁到日志窗口滑过为止。这里覆盖为本次响应的
+		// CoveredUntil：全量扫描发生在响应之后，该时刻前的状态已被扫描覆盖
+		log.Warnf("server reports too many changed directories in the window, falling back to a full reconciliation")
+		if err := fullScan(fileClient); err != nil {
+			return err
+		}
+		lastChangeCursor = coveredUntil
+		return nil
 	}
 
 	if len(change) == 0 {

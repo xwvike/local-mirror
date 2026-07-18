@@ -57,9 +57,16 @@ var (
 	Version         *bool
 	ActualPort      int    = 0          // 服务端实际监听的端口（启动时探测确定）
 	StartPath       string = ""         // 同步根目录（-p 指定，默认为当前工作目录）
-	InstanceID      uint32 = 0x00000000 // Instance ID
-	ProtocolVersion uint16 = 0x0002     // Protocol version（v2：变更查询改为长轮询推送）
-	StartTime       int64  = 0          // Start time
+	InstanceID uint32 = 0x00000000 // Instance ID
+	// ProtocolVersion 本端支持的最高协议版本。
+	// v2：变更查询改为长轮询推送；v3：握手可协商化（区间+能力位）、
+	// 结构化错误、树响应分页、变更超限降级、清理死消息类型
+	ProtocolVersion uint16 = 0x0003
+	// MinProtocolVersion 本端支持的最低协议版本。两端在
+	// [Min, Version] 区间交集内取最高值为会话版本（见 network 协议约定）；
+	// 交集为空则握手拒绝。当前两值相等，行为与严格相等一致
+	MinProtocolVersion uint16 = 0x0003
+	StartTime          int64  = 0 // Start time
 
 	// AliasName 解析后的最终实例别名（--alias → 主机名 → "local-mirror"），
 	// 服务端在 UDP 发现应答中广播，供客户端选择列表展示

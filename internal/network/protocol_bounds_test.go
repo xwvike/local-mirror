@@ -11,7 +11,6 @@ import (
 func TestDecodeFileDataBounds(t *testing.T) {
 	buf := new(bytes.Buffer)
 	buf.Write(make([]byte, 16))                                 // SessionID
-	_ = binary.Write(buf, binary.BigEndian, uint64(0))          // Offset
 	_ = binary.Write(buf, binary.BigEndian, uint32(0xFFFFFFFF)) // DataLength 谎报 4GB
 	// 实际后面没有数据
 	if _, err := decodeFileData(buf.Bytes()); err == nil {
@@ -22,9 +21,8 @@ func TestDecodeFileDataBounds(t *testing.T) {
 // TestDecodeTreeResponseBounds 同上，针对树响应
 func TestDecodeTreeResponseBounds(t *testing.T) {
 	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.BigEndian, uint16(1)) // pathLen
-	buf.WriteByte('.')                                 // path
-	_ = binary.Write(buf, binary.BigEndian, uint32(0xFFFFFFFF))
+	_ = binary.Write(buf, binary.BigEndian, uint16(0))          // ContinueFrom 空
+	_ = binary.Write(buf, binary.BigEndian, uint32(0xFFFFFFFF)) // DataLength 谎报 4GB
 	if _, err := decodeTreeResponse(buf.Bytes()); err == nil {
 		t.Error("超大 tree DataLength 未被拒绝")
 	}
@@ -35,6 +33,7 @@ func TestDecodeRecentChangeResponseBounds(t *testing.T) {
 	buf := new(bytes.Buffer)
 	_ = binary.Write(buf, binary.BigEndian, uint32(0))          // ServerID
 	_ = binary.Write(buf, binary.BigEndian, int64(0))           // CoveredUntil
+	_ = binary.Write(buf, binary.BigEndian, uint8(0))           // FullResync
 	_ = binary.Write(buf, binary.BigEndian, uint32(0xFFFFFFFF)) // changeCount 谎报 40 亿
 	if _, err := decodeRecentChangeResponse(buf.Bytes()); err == nil {
 		t.Error("超大 changeCount 未被拒绝")
@@ -57,7 +56,7 @@ func TestDecodeRoundTripStillWorks(t *testing.T) {
 		t.Errorf("往返结果不符: %+v", got)
 	}
 
-	fd := FileDataMessage{Offset: 5, DataLength: 4, Data: []byte("data")}
+	fd := FileDataMessage{DataLength: 4, Data: []byte("data")}
 	gotFD, err := decodeFileData(encodeFileData(fd))
 	if err != nil || string(gotFD.Data) != "data" {
 		t.Errorf("FileData 往返失败: %v %q", err, gotFD.Data)
