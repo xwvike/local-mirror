@@ -160,6 +160,11 @@ handshake immediately. On anything but a trusted LAN, use `-k` together
 with an explicit `-r` — LAN discovery is plaintext by design and meant for
 trusted networks only.
 
+Use a long random string for `-k` (e.g. `openssl rand -base64 24`), not a
+human-memorable password: the key is derived from the passphrase without
+stretching, so a captured handshake can be brute-forced offline against
+weak passphrases.
+
 ## Multiple tasks (YAML)
 
 One machine sharing several directories, or serving one and backing up

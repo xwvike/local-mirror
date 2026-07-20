@@ -6,6 +6,7 @@ import (
 	"local-mirror/config"
 	"local-mirror/internal/appError"
 	"local-mirror/internal/safety"
+	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"net"
 	"os"
@@ -15,6 +16,27 @@ import (
 
 	log "github.com/sirupsen/logrus"
 )
+
+// localHandshake 构造本端握手消息（客户端首次握手与重连重验证共用）
+func localHandshake() HandshakeMessage {
+	return HandshakeMessage{
+		Version:     config.ProtocolVersion,
+		MinVersion:  config.MinProtocolVersion,
+		UUID:        config.InstanceID,
+		Role:        config.ModeMap[*config.Mode],
+		FeatureBits: 0,
+	}
+}
+
+// realityErrorFrom 把服务端的结构化错误应答转为 RealityError。
+// 解码失败时退化为携带原始字节长度的占位错误（不 panic、不丢上下文）
+func realityErrorFrom(bodyBytes []byte) error {
+	em, err := decodeErrorMessage(bodyBytes)
+	if err != nil {
+		return fmt.Errorf("reality error (undecodable, %d bytes): %v", len(bodyBytes), err)
+	}
+	return &RealityError{Code: em.Code, Path: em.Path, Message: em.Message}
+}
 
 // ConnectionState 描述客户端连接的生命周期状态。
 // 使用自定义类型而非 uint8，让编译器在类型赋值时提供保护。
@@ -191,17 +213,15 @@ func (c *FileClient) Reverify() error {
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	defer conn.SetDeadline(time.Time{})
 
-	handshakeMsg := HandshakeMessage{
-		Version: config.ProtocolVersion,
-		UUID:    config.InstanceID,
-		Role:    config.ModeMap[*config.Mode],
-	}
-	if err := sendMessage(conn, MsgTypeHandshake, encodeHandshake(handshakeMsg)); err != nil {
+	if err := sendMessage(conn, MsgTypeHandshake, encodeHandshake(localHandshake())); err != nil {
 		return fmt.Errorf("failed to send reverify handshake: %w", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
 		return fmt.Errorf("failed to receive reverify response: %w", err)
+	}
+	if msgType == MsgTypeError {
+		return fmt.Errorf("server rejected reverify: %w", realityErrorFrom(bodyBytes))
 	}
 	if msgType != MsgTypeHandshake {
 		return fmt.Errorf("invalid reverify response message type, got %d", msgType)
@@ -228,14 +248,7 @@ func (c *FileClient) Handshake() error {
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	defer conn.SetDeadline(time.Time{})
 
-	handshakeMsg := HandshakeMessage{
-		Version: config.ProtocolVersion,
-		UUID:    config.InstanceID,
-		Role:    config.ModeMap[*config.Mode],
-	}
-	handshakeBytes := encodeHandshake(handshakeMsg)
-
-	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
+	if err := sendMessage(conn, MsgTypeHandshake, encodeHandshake(localHandshake())); err != nil {
 		return fmt.Errorf("failed to send handshake message: %w", err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
@@ -243,6 +256,11 @@ func (c *FileClient) Handshake() error {
 		return fmt.Errorf("failed to receive message: %w", err)
 	}
 
+	// 服务端拒绝（典型为版本区间无交集）会先回结构化错误再断连，
+	// 把原因原样带给用户，而不是一个不明所以的 EOF
+	if msgType == MsgTypeError {
+		return fmt.Errorf("server rejected handshake: %w", realityErrorFrom(bodyBytes))
+	}
 	if msgType != MsgTypeHandshake {
 		return fmt.Errorf("invalid handshake response message type, got %d", msgType)
 	}
@@ -255,64 +273,89 @@ func (c *FileClient) Handshake() error {
 	if handshakeResponse.UUID == config.InstanceID {
 		return fmt.Errorf("connected to self (instance %08x), skipping", config.InstanceID)
 	}
-	// 协议版本必须一致（v2 起变更查询为长轮询语义）
-	if handshakeResponse.Version != config.ProtocolVersion {
-		return fmt.Errorf("protocol version mismatch: local=%d, server=%d",
-			config.ProtocolVersion, handshakeResponse.Version)
+	// 会话版本 = 两端 [Min, Version] 区间交集的最高值（当前恒 [3,3]，
+	// 行为与严格相等一致）。服务端已做同样判定，这里再验一次防不对称实现
+	agreed, ok := negotiateVersion(config.ProtocolVersion, config.MinProtocolVersion,
+		handshakeResponse.Version, handshakeResponse.MinVersion)
+	if !ok {
+		return fmt.Errorf("protocol version mismatch: local=[%d,%d], server=[%d,%d]",
+			config.MinProtocolVersion, config.ProtocolVersion,
+			handshakeResponse.MinVersion, handshakeResponse.Version)
 	}
 	c.realityVersion = handshakeResponse.Version
 	c.realityID = handshakeResponse.UUID
 	c.State = Online
-	log.Infof("Received handshake response: version: %d, realityID: %d",
-		handshakeResponse.Version,
-		handshakeResponse.UUID)
+	log.Infof("Received handshake response: version: %d (agreed %d), realityID: %d",
+		handshakeResponse.Version, agreed, handshakeResponse.UUID)
 	return nil
 }
 
-func (c *FileClient) GetRealityTree(rootPath string) ([]byte, error) {
+// unmarshalTreePage 解析一页目录条目 JSON，路径转回本机分隔符
+// （线格式为 "/"，见 protocol.go 约定）
+func unmarshalTreePage(data []byte) ([]tree.Node, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var nodes []tree.Node
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal reality tree: %w", err)
+	}
+	for i := range nodes {
+		nodes[i].Path = filepath.FromSlash(nodes[i].Path)
+	}
+	return nodes, nil
+}
+
+// GetRealityTree 拉取服务端某目录的全部条目。响应按页下发
+// （超大目录不再逼近消息体上限），本函数循环携带 ContinueFrom
+// 续页游标直至取完，调用方拿到的始终是完整列表
+func (c *FileClient) GetRealityTree(rootPath string) ([]tree.Node, error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
 	}
-	request := TreeRequestMessage{
-		PathLength: uint16(len(rootPath)),
-		RootPath:   rootPath,
-	}
-	requestBytes := encodeTreeRequest(request)
 	realityAddr := conn.RemoteAddr().String()
-	if err := sendMessage(conn, MsgTypeTreeRequest, requestBytes); err != nil {
-		return nil, fmt.Errorf("%w: failed to send tree request: %v", appError.ErrConnection, err)
-	}
-	log.Debugf("Sent tree request to %s for path: %s", realityAddr, rootPath)
-	msgType, bodyBytes, err := receiveMessage(conn)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
-	}
-	if msgType == MsgTypeError {
-		errorMsg, err := decodeErrorMessage(bodyBytes)
-		if err != nil {
-			return nil, fmt.Errorf("%w: failed to decode error message: %v", appError.ErrConnection, err)
+
+	var nodes []tree.Node
+	continueFrom := ""
+	for page := 1; ; page++ {
+		request := TreeRequestMessage{RootPath: rootPath, ContinueFrom: continueFrom}
+		if err := sendMessage(conn, MsgTypeTreeRequest, encodeTreeRequest(request)); err != nil {
+			return nil, fmt.Errorf("%w: failed to send tree request: %v", appError.ErrConnection, err)
 		}
-
-		return nil, fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
+		log.Debugf("Sent tree request to %s for path: %s (page %d)", realityAddr, rootPath, page)
+		msgType, bodyBytes, err := receiveMessage(conn)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
+		}
+		if msgType == MsgTypeError {
+			return nil, realityErrorFrom(bodyBytes)
+		}
+		if msgType != MsgTypeTreeResponse {
+			return nil, fmt.Errorf("invalid tree response message type, got %d", msgType)
+		}
+		treeResponse, err := decodeTreeResponse(bodyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to decode tree response: %v", appError.ErrConnection, err)
+		}
+		pageNodes, err := unmarshalTreePage(treeResponse.Data)
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, pageNodes...)
+		log.Debugf("Received tree response page %d from %s: %d entries, more=%v",
+			page, realityAddr, len(pageNodes), treeResponse.ContinueFrom != "")
+		if treeResponse.ContinueFrom == "" {
+			break
+		}
+		continueFrom = treeResponse.ContinueFrom
 	}
-	if msgType != MsgTypeTreeResponse {
-		return nil, fmt.Errorf("invalid tree response message type, got %d", msgType)
+	if len(nodes) == 0 {
+		log.Debugf("Received empty tree response from %s, path: %s", realityAddr, rootPath)
+	} else {
+		log.Infof("Received tree from %s for %s: %d entries", realityAddr, rootPath, len(nodes))
 	}
-	treeResponse, err := decodeTreeResponse(bodyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to decode tree response: %v", appError.ErrConnection, err)
-	}
-
-	if len(treeResponse.Data) == 0 {
-		log.Warnf("Received empty tree response from %s, path: %s", realityAddr, rootPath)
-		return []byte{}, nil
-	}
-	log.Infof("Received tree response from %s, data length: %d bytes",
-		realityAddr,
-		len(treeResponse.Data))
-	log.Debugf("Received tree response: %s", treeResponse.Data)
-	return treeResponse.Data, nil
+	return nodes, nil
 }
 
 // partialMeta 记录分片对应的服务端文件指纹。
@@ -394,9 +437,8 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	offset, prevMeta := loadPartialState(partialPath, metaPath)
 
 	requestFile := FileRequestMessage{
-		PathLength: uint16(len(filePath)),
-		FilePath:   filePath,
-		Offset:     offset,
+		FilePath: filePath,
+		Offset:   offset,
 	}
 	requestBytes := encodeFileRequest(requestFile)
 	if err := sendMessage(conn, MsgTypeFileRequest, requestBytes); err != nil {
@@ -409,13 +451,9 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	}
 
 	if msgType == MsgTypeError {
-		errorMsg, err := decodeErrorMessage(bodyBytes)
-		if err != nil {
-			return "", fmt.Errorf("%w: failed to decode error message: %v", appError.ErrConnection, err)
-		}
 		// 服务端已无法提供该文件（如已被删除），分片不再有保留价值
 		discardPartial(partialPath, metaPath)
-		return "", fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
+		return "", realityErrorFrom(bodyBytes)
 	}
 
 	if msgType != MsgTypeFileResponse {
@@ -546,11 +584,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				transferSpeed/1024/1024)
 			return fmt.Sprintf("%x", fileHash), nil
 		case MsgTypeError:
-			errorMsg, err := decodeErrorMessage(bodyBytes)
-			if err != nil {
-				return "", fmt.Errorf("error decoding error message: %w", err)
-			}
-			return "", fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
+			return "", realityErrorFrom(bodyBytes)
 		default:
 			return "", fmt.Errorf("invalid file data message type, got %d", msgType)
 		}
@@ -565,10 +599,12 @@ const LongPollReadTimeout = 60 * time.Second
 // GetTreeChange 发起一次变更长轮询：请求自 startTime 起的变更，
 // 服务端有变更立即返回、否则挂起至保活上限。返回变更目录列表与
 // coveredUntil（服务端已覆盖到的时刻，调用方据此推进游标，杜绝重叠/遗漏）。
-func (c *FileClient) GetTreeChange(startTime int64) (changes []string, coveredUntil int64, err error) {
+// fullResync 为真表示变更数超过服务端阈值、列表被省略：调用方应做一次
+// 全量对账，然后把游标推进到 coveredUntil。
+func (c *FileClient) GetTreeChange(startTime int64) (changes []string, coveredUntil int64, fullResync bool, err error) {
 	conn, err := c.connectionManage.GetConnection()
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
+		return nil, 0, false, fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err)
 	}
 	// 读超时必须覆盖服务端挂起上限，挂起本身不算连接异常
 	conn.SetReadDeadline(time.Now().Add(LongPollReadTimeout))
@@ -576,39 +612,34 @@ func (c *FileClient) GetTreeChange(startTime int64) (changes []string, coveredUn
 
 	request := RecentChangeRequestMessage{
 		ClientID:  config.InstanceID,
-		startTime: startTime,
-		endTime:   time.Now().Unix(), // 服务端以自身时刻为上界，此字段仅作参考
+		StartTime: startTime,
 	}
 	requestBytes := encodeRecentChangeRequest(request)
 	if err := sendMessage(conn, MsgTypeRecentChangeRequest, requestBytes); err != nil {
-		return nil, 0, fmt.Errorf("%w: failed to send recent change request: %v", appError.ErrConnection, err)
+		return nil, 0, false, fmt.Errorf("%w: failed to send recent change request: %v", appError.ErrConnection, err)
 	}
 	msgType, bodyBytes, err := receiveMessage(conn)
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
+		return nil, 0, false, fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err)
 	}
 	if msgType == MsgTypeError {
-		errorMsg, derr := decodeErrorMessage(bodyBytes)
-		if derr != nil {
-			return nil, 0, fmt.Errorf("%w: failed to decode error message: %v", appError.ErrConnection, derr)
-		}
-		return nil, 0, fmt.Errorf("reality error: %s", errorMsg.ErrorMessage)
+		return nil, 0, false, realityErrorFrom(bodyBytes)
 	}
 	if msgType != MsgTypeRecentChangeResponse {
-		return nil, 0, fmt.Errorf("invalid recent change response message type, got %d", msgType)
+		return nil, 0, false, fmt.Errorf("invalid recent change response message type, got %d", msgType)
 	}
 	resp, err := decodeRecentChangeResponse(bodyBytes)
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: failed to decode recent change response: %v", appError.ErrConnection, err)
+		return nil, 0, false, fmt.Errorf("%w: failed to decode recent change response: %v", appError.ErrConnection, err)
 	}
 	// 服务端实例变化（悄悄重启）→ 本地缓存树不可信，按连接错误触发会话重建
 	if resp.ServerID != c.realityID {
-		return nil, 0, fmt.Errorf("%w: server instance changed, expected %08x, got %08x",
+		return nil, 0, false, fmt.Errorf("%w: server instance changed, expected %08x, got %08x",
 			appError.ErrConnection, c.realityID, resp.ServerID)
 	}
 	if len(resp.Changes) > 0 {
 		log.Infof("Received %d changed dirs from %s", len(resp.Changes), c.RealityAddr)
 		log.Debugf("Changed dirs: %v", resp.Changes)
 	}
-	return resp.Changes, resp.CoveredUntil, nil
+	return resp.Changes, resp.CoveredUntil, resp.FullResync, nil
 }
