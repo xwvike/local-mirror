@@ -41,23 +41,23 @@ var (
 )
 
 var (
-	Mode            *string
-	LogLevel        *string
-	CoolDown        *int64
-	FileBufferSize  *uint64
-	RealityIP       *string
-	Secret          *string
-	Path            *string
-	Alias           *string
-	Ignore          *string
-	ConfigFile      *string
-	AllowDelete     *bool
-	AllowCritical   *bool
-	Help            *bool
-	Version         *bool
-	ActualPort      int    = 0          // 服务端实际监听的端口（启动时探测确定）
-	StartPath       string = ""         // 同步根目录（-p 指定，默认为当前工作目录）
-	InstanceID uint32 = 0x00000000 // Instance ID
+	Mode           *string
+	LogLevel       *string
+	CoolDown       *int64
+	FileBufferSize *uint64
+	RealityIP      *string
+	Secret         *string
+	Path           *string
+	Alias          *string
+	Ignore         *string
+	ConfigFile     *string
+	AllowDelete    *bool
+	AllowCritical  *bool
+	Help           *bool
+	Version        *bool
+	ActualPort     int    = 0          // 服务端实际监听的端口（启动时探测确定）
+	StartPath      string = ""         // 同步根目录（-p 指定，默认为当前工作目录）
+	InstanceID     uint32 = 0x00000000 // Instance ID
 	// ProtocolVersion 本端支持的最高协议版本。
 	// v2：变更查询改为长轮询推送；v3：握手可协商化（区间+能力位）、
 	// 结构化错误、树响应分页、变更超限降级、清理死消息类型

@@ -9,11 +9,11 @@ import (
 // TestNegotiateVersion 覆盖协商矩阵：相等、区间重叠、区间不相交
 func TestNegotiateVersion(t *testing.T) {
 	cases := []struct {
-		name                             string
-		localVer, localMin               uint16
-		peerVer, peerMin                 uint16
-		wantAgreed                       uint16
-		wantOK                           bool
+		name               string
+		localVer, localMin uint16
+		peerVer, peerMin   uint16
+		wantAgreed         uint16
+		wantOK             bool
 	}{
 		{"两端相等", 3, 3, 3, 3, 3, true},
 		{"对端更新且向下兼容", 3, 3, 4, 3, 3, true},

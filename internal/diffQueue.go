@@ -82,4 +82,3 @@ func Diff(realityNodes []tree.Node, path string) ([]DiffResult, error) {
 	}
 	return FindDifferences(realityNodes, localTree), nil
 }
-
