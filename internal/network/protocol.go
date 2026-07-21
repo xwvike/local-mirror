@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -421,6 +422,11 @@ func decodeErrorMessage(data []byte) (ErrorMessage, error) {
 	return msg, nil
 }
 
+// sendMessageWriteTimeout 单条消息的写入超时。停止读取的对端会让 Write 挂在
+// 塞满的发送缓冲上，若无上限就得等 TCP keepalive 分钟级兜底、期间占住连接槽。
+// 这是"一次写入无进展"的上限，不是整段传输的上限——正常传输持续推进即不断刷新
+const sendMessageWriteTimeout = 60 * time.Second
+
 func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
 	header := MessageHeader{
 		Magic:        MagicNumber,
@@ -429,11 +435,16 @@ func sendMessage(conn net.Conn, msgType uint16, body []byte) error {
 		ReservedWord: 0,
 	}
 
+	// 头与体拼成一个缓冲一次写出：加密层下小消息从此只付一个 Noise 帧
+	// （原本头一帧、体一帧），也少一次系统调用。接收侧按 io.ReadFull 重组，
+	// 与发送端如何分块无关
 	headerBytes := encodeHeader(header)
-	if _, err := conn.Write(headerBytes); err != nil {
-		return err
-	}
-	if _, err := conn.Write(body); err != nil {
+	packet := make([]byte, 0, len(headerBytes)+len(body))
+	packet = append(packet, headerBytes...)
+	packet = append(packet, body...)
+
+	_ = conn.SetWriteDeadline(time.Now().Add(sendMessageWriteTimeout))
+	if _, err := conn.Write(packet); err != nil {
 		return err
 	}
 	log.Debugf("Sent message with type: %d, body length: %d bytes", msgType, len(body))
