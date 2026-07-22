@@ -19,7 +19,6 @@ import (
 var (
 	recentChangedDirs    []string
 	mu                   sync.Mutex
-	addChangeTimer       *time.Timer
 	addChangeTimerActive bool
 )
 
@@ -60,7 +59,7 @@ func AddRecentChangedDir(dirPath string) {
 	if addChangeTimerActive {
 		return
 	}
-	addChangeTimer = time.AfterFunc(2*time.Second, func() {
+	time.AfterFunc(2*time.Second, func() {
 		// 回调运行在独立 goroutine，取快照后再落库，避免与并发的 Add 竞争
 		mu.Lock()
 		batch := recentChangedDirs
@@ -146,9 +145,7 @@ func BuildFileTree(path string) error {
 	// 启动工作池：并发计算文件哈希后再收集。
 	// 哈希是 diff 比对的依据；校准模式下未变化的文件已带哈希，跳过重算
 	for range workerCount {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for node := range nodeChan {
 				if !node.IsDir && node.Hash == "" {
 					if hash, err := utils.CalcBlake3(filepath.Join(path, node.Path)); err != nil {
@@ -168,7 +165,7 @@ func BuildFileTree(path string) error {
 				allNodes = append(allNodes, node)
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 
 	// 先添加根节点

@@ -25,10 +25,7 @@ import (
 // NextLevel 存放待下钻的目录，由 drainNextLevel 消费
 var NextLevel = stack.NewStack[DiffResult]()
 
-var (
-	taskMutex    sync.Mutex // 确保任务串行执行
-	isTaskActive bool       // 标识当前是否有任务在执行
-)
+var taskMutex sync.Mutex // 确保任务串行执行
 
 // lastChangeCursor 记录变更查询已覆盖到的服务端时刻（unix 秒）。
 // 该值始终由服务端返回的 CoveredUntil 推进，绝不使用客户端本地时钟，
@@ -82,9 +79,6 @@ func executeTaskWithClient(taskName string, fileClient *network.FileClient, task
 
 	taskMutex.Lock()
 	defer taskMutex.Unlock()
-
-	isTaskActive = true
-	defer func() { isTaskActive = false }()
 
 	log.Infof("task started: %s", taskName)
 	startTime := time.Now()
