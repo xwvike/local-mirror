@@ -7,6 +7,7 @@ import (
 	"io"
 	"local-mirror/config"
 	"local-mirror/internal/appError"
+	"local-mirror/internal/status"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"net"
@@ -360,11 +361,17 @@ func (s *fileServer) serveConn(conn net.Conn, first *prereadMessage) {
 		SessionMap:     sync.Map{},
 	}
 
+	// sessionCounted 确保这条连接在 status 里最多计一次 up/down：握手成功才
+	// 算一个活跃 peer（未握手的裸 TCP 连接不计），退出时对偶归还
+	sessionCounted := false
 	defer func() {
 		if err := conn.Close(); err != nil {
 			log.Error(err)
 		}
 		s.removeClientIfCurrent(client.ID, client)
+		if sessionCounted {
+			status.SessionDown()
+		}
 	}()
 
 	for {
@@ -410,6 +417,10 @@ func (s *fileServer) serveConn(conn net.Conn, first *prereadMessage) {
 			client.Version = clientBase.Version
 			client.Connected = true
 			s.clientMap.Store(clientBase.UUID, client)
+			if !sessionCounted {
+				sessionCounted = true
+				status.SessionUp(fmt.Sprintf("serving %s", clientAddr))
+			}
 		case MsgTypeRecentChangeRequest:
 			if closed := s.dispatchError(conn, client, s.handleRecentChangeRequest(client.ID, bodyBytes)); closed {
 				return
@@ -440,6 +451,7 @@ func (s *fileServer) dispatchError(conn net.Conn, c *client, err error) (closed 
 	if errors.Is(err, appError.ErrConnection) {
 		conn.Close()
 		s.removeClientIfCurrent(c.ID, c)
+		status.RecordError()
 		log.Warnf("Connection closed for %s due to error: %v", c.Addr, err)
 		return true
 	}
@@ -644,6 +656,7 @@ func (s *fileServer) sendFileData(ID uint32, session *session) error {
 	if err := sendMessage(conn, MsgTypeFileComplete, completeBytes); err != nil {
 		return fmt.Errorf("%w, error sending file complete for %s", appError.ErrConnection, strings.Replace(session.FilePath, config.StartPath, ".", 1))
 	}
+	status.RecordFile(strings.Replace(session.FilePath, config.StartPath, ".", 1), session.FileSize)
 	log.Infof("Sent file complete message: file path: %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
 	return nil
 }

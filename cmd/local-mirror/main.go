@@ -9,6 +9,7 @@ import (
 	"local-mirror/internal/logger"
 	"local-mirror/internal/network"
 	"local-mirror/internal/safety"
+	"local-mirror/internal/status"
 	"local-mirror/internal/tree"
 	"local-mirror/internal/tui"
 	"local-mirror/pkg/termstyle"
@@ -387,6 +388,13 @@ func main() {
 	}
 	config.StartPath = root
 
+	// --status：只读常驻进程写下的快照并渲染后退出。必须早于 InitDB——
+	// 常驻进程持有目录锁，观测进程绝不能去抢锁
+	if *config.Status {
+		printStatus(root)
+		os.Exit(0)
+	}
+
 	// 密钥自管理：解析出本次生效的口令（或处理 --gen-key/--show-key 后退出）。
 	// 必须在发现流程、端口绑定、横幅之前——它们都消费 *config.Secret
 	if err := resolveSecret(); err != nil {
@@ -470,7 +478,53 @@ func main() {
 	printBanner()
 	log.Infof("startup: version=%s mode=%s instance=%08x root=%s", version, *config.Mode, config.InstanceID, config.StartPath)
 
+	// 运维快照：定型 identity 段并启动后台落盘循环，供 --status 读取。
+	// 落进 .local-mirror/status.json（可弃状态，删了下次自建）
+	status.Init(config.StartPath, version, fmt.Sprintf("%08x", config.InstanceID),
+		directionLabel(), transportLabel(), peerLabel(), *config.Secret != "", config.StartTime)
+	stopStatus := make(chan struct{})
+	go status.Run(stopStatus)
+
 	app.App()
+	close(stopStatus) // 收到退出信号后停止落盘（App 返回即已收到 SIGINT/SIGTERM）
+}
+
+// directionLabel/transportLabel/peerLabel 供 status 与人读展示：把内部 mode +
+// 四象限状态翻译成方向优先的词汇
+func directionLabel() string {
+	switch *config.Mode {
+	case "reality":
+		return "send · source"
+	case "mirror":
+		return "receive · sink"
+	case "relay":
+		return "relay"
+	}
+	return *config.Mode
+}
+
+func transportLabel() string {
+	if config.TransportListens() {
+		return "listen"
+	}
+	return "dial"
+}
+
+func peerLabel() string {
+	if config.TransportListens() {
+		return "inbound"
+	}
+	if config.DiscoveredAddr != "" {
+		return config.DiscoveredAddr
+	}
+	host, port := network.SplitPeer(*config.RealityIP)
+	if host == "" {
+		return "(LAN discovery)"
+	}
+	if port == 0 {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 // printBanner 向 stdout 输出启动状态。
@@ -528,6 +582,131 @@ func renderWordmark(word string) []string {
 		out = append(out, b.String())
 	}
 	return out
+}
+
+// humanBytes 与 humanDuration 供 --status 展示
+func humanStatusBytes(b uint64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
+func humanSince(t time.Time) string {
+	if t.IsZero() || t.Unix() == 0 {
+		return "never"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh%dm ago", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		return fmt.Sprintf("%dd%dh ago", int(d.Hours())/24, int(d.Hours())%24)
+	}
+}
+
+func humanUptime(started int64) string {
+	if started == 0 {
+		return "?"
+	}
+	d := time.Since(time.Unix(started, 0))
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+	}
+}
+
+// printStatus 读取并渲染常驻进程的运行时快照（--status 子命令）。
+// 无快照文件 = 没有实例在此根跑过；快照陈旧 = 进程可能已停
+func printStatus(root string) {
+	p := termstyle.NewPalette(os.Stdout)
+	snap, err := status.Load(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "local-mirror: cannot read status: %v\n", err)
+		os.Exit(1)
+	}
+	if snap == nil {
+		fmt.Printf("%sno status for%s %s\n", p.Dim, p.Reset, root)
+		fmt.Printf("%s(no instance has run here, or .local-mirror/status.json was removed)%s\n", p.Dim, p.Reset)
+		os.Exit(0)
+	}
+
+	const width = 48
+	const labelWidth = 11
+	line := p.Dim + strings.Repeat("─", width) + p.Reset
+	row := func(label, value string) {
+		pad := strings.Repeat(" ", max(1, labelWidth-termstyle.DisplayWidth(label)))
+		fmt.Printf("  %s%s%s%s%s\n", p.Dim, label, p.Reset, pad, value)
+	}
+
+	// 存活判据：陈旧快照说明落盘循环停了（进程多半已退），醒目标出——
+	// 这正是替代 ps/journalctl 的那一眼
+	live := !snap.Stale()
+	fmt.Println()
+	fmt.Println(line)
+	if live {
+		fmt.Printf("  %s%sStatus%s  %s%s● running%s  %s(pid %d)%s\n",
+			p.Bold, p.Cyan, p.Reset, p.Bold, p.Green, p.Reset, p.Dim, snap.PID, p.Reset)
+	} else {
+		fmt.Printf("  %s%sStatus%s  %s○ stale%s %s(last update %s — pid %d may be dead)%s\n",
+			p.Bold, p.Cyan, p.Reset, p.Yellow, p.Reset, p.Dim, humanSince(time.Unix(snap.UpdatedUnix, 0)), snap.PID, p.Reset)
+	}
+	fmt.Println(line)
+
+	row("Direction", fmt.Sprintf("%s %s(%s)%s", snap.Direction, p.Dim, snap.Transport, p.Reset))
+	row("Sync root", snap.Root)
+	row("Peer", snap.Peer)
+	switch {
+	case !live && snap.Connected:
+		// 进程已停：连接字段是死前的最后已知态，别用绿色误导成"此刻在连"
+		row("Link", fmt.Sprintf("%s○ %s (last known)%s", p.Dim, snap.Detail, p.Reset))
+	case snap.Connected:
+		row("Link", fmt.Sprintf("%s● %s%s", p.Green, snap.Detail, p.Reset))
+	default:
+		detail := "idle (no active connection)"
+		if snap.Detail != "" {
+			detail = snap.Detail
+		}
+		row("Link", fmt.Sprintf("%s○ %s%s", p.Dim, detail, p.Reset))
+	}
+	enc := "off (plaintext)"
+	if snap.Encrypted {
+		enc = "on (Noise NNpsk0)"
+	}
+	row("Encryption", enc)
+	row("Transferred", fmt.Sprintf("%s / %d files", humanStatusBytes(snap.Bytes), snap.Files))
+	row("Last sync", humanSince(time.Unix(snap.LastSyncUnix, 0))+fileSuffix(snap.LastFile, p))
+	if snap.Errors > 0 {
+		row("Errors", fmt.Sprintf("%s%d%s", p.Yellow, snap.Errors, p.Reset))
+	} else {
+		row("Errors", "0")
+	}
+	row("Uptime", humanUptime(snap.StartedUnix))
+	row("Snapshot", fmt.Sprintf("%s%s (age %s)%s", p.Dim, snap.Version, humanSince(time.Unix(snap.UpdatedUnix, 0)), p.Reset))
+	fmt.Println(line)
+}
+
+func fileSuffix(name string, p termstyle.Palette) string {
+	if name == "" {
+		return ""
+	}
+	return fmt.Sprintf("  %s(%s)%s", p.Dim, name, p.Reset)
 }
 
 func printBanner() {

@@ -7,6 +7,7 @@ import (
 	"local-mirror/internal/appError"
 	"local-mirror/internal/network"
 	"local-mirror/internal/safety"
+	"local-mirror/internal/status"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/stack"
 	"local-mirror/pkg/utils"
@@ -208,6 +209,7 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 			warnUnreadableOnce(v.Path)
 			return nil
 		}
+		status.RecordError()
 		log.Errorf("Error downloading file %s: %v", v.Path, err)
 		return err
 	}
@@ -221,6 +223,7 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 	if err := tree.AddNodes([]*tree.Node{fileNode}); err != nil {
 		return err
 	}
+	status.RecordFile(v.Path, v.Size)
 	log.Infof("File downloaded successfully: %s", v.Path)
 	return nil
 }
@@ -535,7 +538,11 @@ func Mirror() {
 			continue
 		}
 		currentDelay = baseDelay
-		if err := runMirrorTasks(fileClient); err != nil {
+		status.SessionUp(fmt.Sprintf("connected to %s", fileClient.RealityAddr))
+		err = runMirrorTasks(fileClient)
+		status.SessionDown()
+		if err != nil {
+			status.RecordError()
 			log.Errorf("Error running mirror tasks: %v", err)
 			fileClient.ConnectionClose()
 			time.Sleep(5 * time.Second)
@@ -577,9 +584,12 @@ func MirrorListen() {
 			continue
 		}
 		log.Infof("Source dialed in from %s, mirror session starting", conn.RemoteAddr())
+		status.SessionUp(fmt.Sprintf("source dialed in from %s", conn.RemoteAddr()))
 		if err := runMirrorTasks(fileClient); err != nil {
+			status.RecordError()
 			log.Errorf("Mirror session over inbound transport ended: %v", err)
 		}
+		status.SessionDown()
 		fileClient.ConnectionClose()
 	}
 }

@@ -9,7 +9,7 @@ import (
 
 // Palette ANSI 颜色码集合。零值即"无色"，所有字段为空串，可直接拼接
 type Palette struct {
-	Bold, Dim, Cyan, Green, Reset string
+	Bold, Dim, Cyan, Green, Yellow, Reset string
 }
 
 // NewPalette 根据目标文件是否为终端决定是否启用颜色。
@@ -21,11 +21,12 @@ func NewPalette(f *os.File) Palette {
 		return Palette{}
 	}
 	return Palette{
-		Bold:  "\033[1m",
-		Dim:   "\033[2m",
-		Cyan:  "\033[36m",
-		Green: "\033[32m",
-		Reset: "\033[0m",
+		Bold:   "\033[1m",
+		Dim:    "\033[2m",
+		Cyan:   "\033[36m",
+		Green:  "\033[32m",
+		Yellow: "\033[33m",
+		Reset:  "\033[0m",
 	}
 }
 

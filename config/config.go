@@ -63,6 +63,7 @@ var (
 	ShowKey        *bool
 	NoEncrypt      *bool
 	Force          *bool
+	Status         *bool
 	SendFlag       *bool
 	ReceiveFlag    *bool
 	ConnectTo      *string
@@ -258,6 +259,7 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               print it to the terminal, then exit; add run flags (e.g. -m)\n")
 	fmt.Fprintf(w, "                               to generate and start in one go. Refuses to overwrite an\n")
 	fmt.Fprintf(w, "                               existing key (--force to regenerate)\n")
+	fmt.Fprintf(w, "      --status                 print the running instance's live status and exit\n")
 	fmt.Fprintf(w, "      --show-key               print the key file to the terminal and exit\n")
 	fmt.Fprintf(w, "      --no-encrypt             force plaintext even when a key file exists\n")
 	fmt.Fprintf(w, "      --force                  with --gen-key: overwrite the existing key file\n")
@@ -271,6 +273,7 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  .local-mirror/key              transport key (600; auto-loaded when -k is omitted,\n")
 	fmt.Fprintf(w, "                                 never synced). Do not delete on the listening side:\n")
 	fmt.Fprintf(w, "                                 regenerating disconnects every dialer\n")
+	fmt.Fprintf(w, "  .local-mirror/status.json      live runtime status (read by --status; discardable)\n")
 	fmt.Fprintf(w, "  .local-mirror/cache.db         directory tree cache (reused across restarts)\n")
 	fmt.Fprintf(w, "  .local-mirror/logs/error.log   runtime log (errors also go to the terminal)\n")
 	fmt.Fprintf(w, "  .local-mirror/ignore           ignore patterns (one per line, # comments; merged with -i)\n\n")
@@ -344,6 +347,9 @@ func init() {
 	ShowKey = flag.Bool("show-key", false, "print the existing key file to the terminal and exit")
 	NoEncrypt = flag.Bool("no-encrypt", false, "force plaintext even when a key file exists")
 	Force = flag.Bool("force", false, "with --gen-key: overwrite an existing key file")
+
+	// 运维观测：读取常驻进程写下的 .local-mirror/status.json 并渲染后退出
+	Status = flag.Bool("status", false, "print the running instance's status (from .local-mirror/status.json) and exit")
 
 	Help = flag.Bool("help", false, "show help")
 	flag.BoolVar(Help, "h", false, "alias of --help")
