@@ -505,7 +505,11 @@ func printBanner() {
 		}
 	}
 	if config.ServesDownstream() {
-		row("Listen", fmt.Sprintf("%s0.0.0.0:%d%s", p.Green, config.ActualPort, p.Reset))
+		if network.ListenedDualStack {
+			row("Listen", fmt.Sprintf("%s:%d%s %s(IPv4 + IPv6)%s", p.Green, config.ActualPort, p.Reset, p.Dim, p.Reset))
+		} else {
+			row("Listen", fmt.Sprintf("%s0.0.0.0:%d%s %s(IPv4 only; host has no IPv6)%s", p.Green, config.ActualPort, p.Reset, p.Dim, p.Reset))
+		}
 	}
 	switch {
 	case *config.Secret != "" && config.SecretFromKeyFile:
