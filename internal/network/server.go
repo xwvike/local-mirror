@@ -229,6 +229,64 @@ func NewFileServer(listener net.Listener) *fileServer {
 	}
 }
 
+// NewFileServerDial 源拨出格（--send --connect）的文件服务器：无监听器，
+// 连接由 StartDial 主动建立
+func NewFileServerDial() *fileServer {
+	return &fileServer{
+		clientMap: sync.Map{},
+		connSlots: make(chan struct{}, maxConcurrentConnections),
+	}
+}
+
+// dialFirstMessageTimeout 源拨出后限时等汇的首条消息。健康的汇 accept 后
+// 立即发握手，等不到就多半是两端都配了 --send（都在等对方先说话）或
+// 拨错了对象——把静默死等变成有诊断的快速失败
+const dialFirstMessageTimeout = 15 * time.Second
+
+// StartDial 源端拨出（四象限的「源拨 → 汇听」格）：向监听中的汇拨号，
+// 连接就绪后在同一套源端消息循环（serveConn）上服务。协议报文与谁拨号
+// 无关——汇在连接建立后仍先说话；Noise initiator 自动跟拨号方（dialConn）。
+// 重连与退避归拨号方，本函数阻塞不返回
+func (s *fileServer) StartDial(addr string) {
+	const baseDelay, maxDelay = 3 * time.Second, 60 * time.Second
+	delay := baseDelay
+	for {
+		conn, err := dialConn(addr)
+		if err != nil {
+			log.Warnf("dial sink %s failed: %v (retrying in %v)", addr, err, delay)
+			time.Sleep(delay)
+			delay = min(delay*2, maxDelay)
+			continue
+		}
+
+		// 限时等汇先说话（keepalive 已在 dialConn 内开启），
+		// 等到的首条消息带进消息循环
+		if derr := conn.SetReadDeadline(time.Now().Add(dialFirstMessageTimeout)); derr != nil {
+			conn.Close()
+			continue
+		}
+		msgType, body, err := receiveMessage(conn)
+		if err != nil {
+			log.Warnf("sink %s did not speak within %v (a healthy sink handshakes immediately; "+
+				"are both ends configured --send, or is this the wrong peer?): %v",
+				addr, dialFirstMessageTimeout, err)
+			conn.Close()
+			time.Sleep(delay)
+			delay = min(delay*2, maxDelay)
+			continue
+		}
+		if derr := conn.SetReadDeadline(time.Time{}); derr != nil {
+			conn.Close()
+			continue
+		}
+
+		delay = baseDelay
+		log.Infof("Connected out to sink %s, serving", addr)
+		s.serveConn(conn, &prereadMessage{msgType: msgType, body: body})
+		log.Warnf("connection to sink %s ended, redialing", addr)
+	}
+}
+
 func (s *fileServer) Start() error {
 	log.Infof("File server started on %s", s.listener.Addr())
 	defer s.listener.Close()
@@ -274,6 +332,22 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 		}
 		conn = secured
 	}
+	s.serveConn(conn, nil)
+}
+
+// prereadMessage 已经从连接上读出、待交给消息循环处理的首条消息
+// （源拨出格在进入循环前限时等汇先说话，读到的那条从这里带入）
+type prereadMessage struct {
+	msgType uint16
+	body    []byte
+}
+
+// serveConn 在一条已就绪（必要时已加密）的连接上跑源端消息循环，
+// 连接断开或对端失联时返回。与连接的建立方式无关：accept 到的连接
+// （handleConnection）与拨出的连接（StartDial）都架在这同一个循环上。
+// first 非 nil 时先处理这条已读出的消息再进入常规收发
+func (s *fileServer) serveConn(conn net.Conn, first *prereadMessage) {
+	clientAddr := conn.RemoteAddr().String()
 	client := &client{
 		ID:             0,
 		Alias:          "",
@@ -294,13 +368,21 @@ func (s *fileServer) handleConnection(conn net.Conn) {
 	}()
 
 	for {
-		// 每轮收消息前重置读超时：超过空闲阈值没有任何消息（包括心跳）
-		// 即认为客户端失联，关闭连接释放资源
-		if err := conn.SetReadDeadline(time.Now().Add(ClientIdleTimeout)); err != nil {
-			log.Errorf("Failed to set read deadline for %s: %v", clientAddr, err)
-			return
+		var msgType uint16
+		var bodyBytes []byte
+		var err error
+		if first != nil {
+			msgType, bodyBytes = first.msgType, first.body
+			first = nil
+		} else {
+			// 每轮收消息前重置读超时：超过空闲阈值没有任何消息（包括心跳）
+			// 即认为客户端失联，关闭连接释放资源
+			if derr := conn.SetReadDeadline(time.Now().Add(ClientIdleTimeout)); derr != nil {
+				log.Errorf("Failed to set read deadline for %s: %v", clientAddr, derr)
+				return
+			}
+			msgType, bodyBytes, err = receiveMessage(conn)
 		}
-		msgType, bodyBytes, err := receiveMessage(conn)
 		if err != nil {
 			switch {
 			case errors.Is(err, os.ErrDeadlineExceeded):
@@ -593,13 +675,26 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*Handshak
 			appError.ErrConnection, config.MinProtocolVersion, config.ProtocolVersion,
 			handshakeMsg.MinVersion, handshakeMsg.Version)
 	}
+	// 方向互补校验（四象限）：本端是送数据的源，对端申报的 Role 必须不是
+	// send。老值平滑映射（mirror 一直发 2 = receive），旧 relay 的遗留值 3
+	// 放行（它拨上游的这条连接确实在收）。结构化错误让对端日志里有人话
+	if handshakeMsg.Role == config.RoleSend {
+		msg := ErrorMessage{Code: ErrCodeDirectionConflict,
+			Message: fmt.Sprintf("direction conflict: this end sends (source), peer %08x also declares send — exactly one end must be --receive",
+				handshakeMsg.UUID)}
+		_ = sendMessage(conn, MsgTypeError, encodeErrorMessage(msg))
+		return nil, fmt.Errorf("%w, direction conflict: both ends declare send (peer %08x)",
+			appError.ErrConnection, handshakeMsg.UUID)
+	}
 	log.Infof("Received handshake message: version: %d (agreed %d), clientID: %d",
 		handshakeMsg.Version, agreed, handshakeMsg.UUID)
+	// Role 承载本连接端点的数据方向：源引擎恒申报 send（relay 的下游侧
+	// 也是送）。老 reality 值恰为 1 = send，对旧客户端零变化
 	receiveHandshake := HandshakeMessage{
 		Version:     config.ProtocolVersion,
 		MinVersion:  config.MinProtocolVersion,
 		UUID:        config.InstanceID,
-		Role:        config.ModeMap[*config.Mode],
+		Role:        config.RoleSend,
 		FeatureBits: 0,
 	}
 	handshakeBytes := encodeHandshake(receiveHandshake)

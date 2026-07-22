@@ -13,9 +13,11 @@ import (
 	"local-mirror/internal/tui"
 	"local-mirror/pkg/termstyle"
 	"local-mirror/pkg/utils"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +68,79 @@ func cliFlagsSet() map[string]bool {
 	return set
 }
 
+// resolveDirection 落实方向优先 CLI（公网化支柱 A，docs/PUBLIC_EXPOSURE.md §A.5）。
+// 两个正交轴：数据方向 --send/--receive × 传输 --connect/--listen；位置糖
+// `local-mirror ./dir @peer`（推）/ `local-mirror @peer ./dir`（拉）覆盖拨号常态。
+// 解析结果落进既有内部状态（Mode/RealityIP）+ 两个新格（SourceDials/SinkListens）；
+// -m/-r 保留为废弃别名原样生效，但不与新词汇混用（避免语义含糊）。
+// 传输轴缺省即经典象限：--send 默认监听、--receive 默认拨出（含局域网发现）
+func resolveDirection() error {
+	set := cliFlagsSet()
+	modeGiven := set["m"] || set["mode"]
+	upstreamGiven := set["r"] || set["realityip"]
+	dirVocab := set["send"] || set["receive"] || set["connect"] || set["listen"]
+
+	if flag.NArg() > 0 {
+		if modeGiven || upstreamGiven || dirVocab || set["p"] || set["path"] {
+			return fmt.Errorf("positional SRC DST form cannot be mixed with -m/-r/-p or direction flags")
+		}
+		if flag.NArg() != 2 {
+			return fmt.Errorf("unknown arguments: %v\npositional form: local-mirror ./dir @host[:port] (push) or local-mirror @host[:port] ./dir (pull)", flag.Args())
+		}
+		a, b := flag.Arg(0), flag.Arg(1)
+		aRemote, bRemote := strings.HasPrefix(a, "@"), strings.HasPrefix(b, "@")
+		switch {
+		case aRemote == bRemote:
+			return fmt.Errorf("positional form needs exactly one @peer and one local dir, got %q %q", a, b)
+		case bRemote: // 本地在前 = 推：本端是源，拨向监听中的汇
+			*config.SendFlag = true
+			*config.ConnectTo = strings.TrimPrefix(b, "@")
+			*config.Path = a
+		default: // @ 在前 = 拉：本端是汇，拨向监听中的源（经典 mirror）
+			*config.ReceiveFlag = true
+			*config.ConnectTo = strings.TrimPrefix(a, "@")
+			*config.Path = b
+		}
+		dirVocab = true
+	}
+
+	if !dirVocab {
+		return nil // 老词汇：-m/-r 原样生效
+	}
+	if modeGiven || upstreamGiven {
+		return fmt.Errorf("direction flags (--send/--receive/--connect/--listen) cannot be mixed with -m/-r: pick one vocabulary")
+	}
+	if !*config.SendFlag && !*config.ReceiveFlag {
+		return fmt.Errorf("--connect/--listen need a direction: add --send (this dir is the source) or --receive (this dir is the sink)")
+	}
+	if *config.ConnectTo != "" && *config.ListenFlag {
+		return fmt.Errorf("--connect and --listen are mutually exclusive on one link")
+	}
+
+	switch {
+	case *config.SendFlag && *config.ReceiveFlag:
+		// relay = 「向上 receive+connect ＋ 向下 send+listen」的组合，不是第三种模式
+		*config.Mode = "relay"
+		*config.RealityIP = *config.ConnectTo // 空则上游走局域网发现
+	case *config.SendFlag:
+		*config.Mode = "reality"
+		if *config.ConnectTo != "" {
+			// 新格「源拨出 → 汇监听」：本地维护、推向公网 VPS
+			config.SourceDials = true
+			*config.RealityIP = *config.ConnectTo
+		}
+	default:
+		*config.Mode = "mirror"
+		if *config.ListenFlag {
+			// 新格「汇监听 ← 源拨入」
+			config.SinkListens = true
+		} else {
+			*config.RealityIP = *config.ConnectTo // 空则局域网发现
+		}
+	}
+	return nil
+}
+
 // resolveSecret 落实密钥自管理（公网化支柱 C，docs/PUBLIC_EXPOSURE.md）。
 // 解析优先级：显式 -k（含 env LOCAL_MIRROR_SECRET）＞ 密钥文件 ＞ 明文；
 // --no-encrypt 强制明文（逃生门）。--show-key / --gen-key 是子命令式旗子：
@@ -114,7 +189,7 @@ func resolveSecret() error {
 		if isTTY {
 			fmt.Printf("key:                %s\n\n", key)
 			fmt.Printf("on the dialing end (fill in this machine's address):\n")
-			fmt.Printf("  local-mirror -m mirror -r <host> -p <dir> -k '%s'\n", key)
+			fmt.Printf("  local-mirror --receive --connect <host> -p <dir> -k '%s'\n", key)
 		} else {
 			fmt.Printf("(key not shown: stdout is not a terminal; run --show-key in one)\n")
 		}
@@ -289,9 +364,10 @@ func main() {
 		return
 	}
 
-	// 用法错误：信息到 stderr，退出码 2（与 flag 包解析失败时的约定一致）
-	if flag.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "local-mirror: unknown arguments: %v\nsee --help for usage\n", flag.Args())
+	// 方向优先 CLI（公网化支柱 A）：位置糖与 --send/--receive × --connect/--listen
+	// 两轴解析为内部状态；-m/-r 老词汇原样照跑。用法错误退出码 2
+	if err := resolveDirection(); err != nil {
+		fmt.Fprintf(os.Stderr, "local-mirror: %v\nsee --help for usage\n", err)
 		os.Exit(2)
 	}
 	if _, ok := config.ModeMap[*config.Mode]; !ok {
@@ -362,17 +438,18 @@ func main() {
 		}
 	}
 
-	// -r 留空的同步方（mirror/relay）先自动发现上游再继续启动。
+	// 地址留空的拨出汇（mirror/relay 上游侧）先自动发现上游再继续启动。
 	// 必须在 InitDB（单实例锁）之后：否则用户选完服务器才因目录被占退出。
-	// 中继此刻自己的发现应答器尚未启动，结构上不会扫到自己
-	if config.SyncsFromUpstream() && *config.RealityIP == "" {
+	// 中继此刻自己的发现应答器尚未启动，结构上不会扫到自己。
+	// 汇监听格不拨出、源拨出格必带地址（resolveDirection 已校验），都不发现
+	if config.SyncsFromUpstream() && !config.SinkListens && *config.RealityIP == "" {
 		runDiscovery()
 	}
 
-	// 对下游提供服务的模式（reality/relay）在打印横幅前先绑定端口
-	// （从 DefaultPort 起自动探测），横幅里展示的才是真实监听端口；
-	// accept 循环稍后由 Reality 启动
-	if config.ServesDownstream() {
+	// 监听的一方（源监听 = 经典 reality/relay 下游，或汇监听格）在打印横幅前
+	// 先绑定端口（从 DefaultPort 起自动探测），横幅里展示的才是真实监听端口；
+	// accept 循环稍后由 Reality / MirrorListen 启动
+	if config.TransportListens() {
 		listener, port, err := network.ListenAvailable(config.DefaultPort, config.PortScanRange)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
@@ -381,9 +458,12 @@ func main() {
 		app.ServerListener = listener
 		config.ActualPort = port
 
-		// UDP 发现应答器：失败不致命（客户端仍可 -r 直连）
-		if _, err := network.StartDiscoveryResponder(port, config.AliasName, config.StartPath, *config.Secret); err != nil {
-			log.Warnf("UDP discovery responder failed to start (clients can still use -r): %v", err)
+		// UDP 发现应答器只属于监听中的源（局域网 mirror 找 reality 的机制）；
+		// 监听中的汇不是源，不应答发现。失败不致命（客户端仍可 -r 直连）
+		if config.ServesDownstream() {
+			if _, err := network.StartDiscoveryResponder(port, config.AliasName, config.StartPath, *config.Secret); err != nil {
+				log.Warnf("UDP discovery responder failed to start (clients can still use -r): %v", err)
+			}
 		}
 	}
 
@@ -461,7 +541,8 @@ func printBanner() {
 		fmt.Printf("  %s%s%s%s%s\n", p.Dim, label, p.Reset, pad, value)
 	}
 
-	modeDescMap := map[string]string{"reality": "server", "mirror": "client", "relay": "relay"}
+	// 方向优先：横幅用 send/receive 说话，-m 老词汇只是别名
+	modeDescMap := map[string]string{"reality": "send · source", "mirror": "receive · sink", "relay": "relay"}
 	modeDesc := modeDescMap[*config.Mode]
 
 	// 字标横幅：单行 "LOCAL-MIRROR"，实与虚用亮度表达——LOCAL 亮青、
@@ -490,21 +571,40 @@ func printBanner() {
 		ignoreShown = ignoreShown[:4]
 	}
 	row("Ignores", strings.Join(ignoreShown, ", ")+suffix)
-	if config.SyncsFromUpstream() {
+	if config.SyncsFromUpstream() && !config.SinkListens {
 		switch {
 		case config.DiscoveredAddr != "":
 			row("Upstream", fmt.Sprintf("%s%s%s %s(discovered: %s)%s",
 				p.Green, config.DiscoveredAddr, p.Reset, p.Dim, config.DiscoveredAlias, p.Reset))
 		default:
-			ip := *config.RealityIP
-			if ip == "" {
-				ip = "127.0.0.1"
+			host, port := network.SplitPeer(*config.RealityIP)
+			if host == "" {
+				host = "127.0.0.1"
 			}
-			row("Upstream", fmt.Sprintf("%s%s%s %s(port scan %d-%d)%s",
-				p.Green, ip, p.Reset, p.Dim, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, p.Reset))
+			if port != 0 {
+				row("Upstream", fmt.Sprintf("%s%s%s %s(pinned port)%s",
+					p.Green, net.JoinHostPort(host, strconv.Itoa(port)), p.Reset, p.Dim, p.Reset))
+			} else {
+				row("Upstream", fmt.Sprintf("%s%s%s %s(port scan %d-%d)%s",
+					p.Green, host, p.Reset, p.Dim, config.DefaultPort, config.DefaultPort+config.PortScanRange-1, p.Reset))
+			}
 		}
 	}
-	if config.ServesDownstream() {
+	// 汇监听格：上游没有地址可显，等源拨入
+	if config.SinkListens {
+		row("Source", fmt.Sprintf("inbound %s(waiting for the source to dial us)%s", p.Dim, p.Reset))
+	}
+	// 源拨出格：对端是监听中的汇
+	if config.SourceDials {
+		host, port := network.SplitPeer(*config.RealityIP)
+		if port == 0 {
+			port = config.DefaultPort
+		}
+		row("Sink", fmt.Sprintf("%s%s%s %s(dialing out; the sink listens)%s",
+			p.Green, net.JoinHostPort(host, strconv.Itoa(port)), p.Reset, p.Dim, p.Reset))
+	}
+	// 监听行属于任何监听的一方：经典源、relay 下游、以及汇监听格
+	if config.TransportListens() {
 		if network.ListenedDualStack {
 			row("Listen", fmt.Sprintf("%s:%d%s %s(IPv4 + IPv6)%s", p.Green, config.ActualPort, p.Reset, p.Dim, p.Reset))
 		} else {

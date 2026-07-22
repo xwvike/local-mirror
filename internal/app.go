@@ -32,9 +32,18 @@ func App() {
 		if err := watcher.InitWatcher(_watcher); err != nil {
 			log.Fatalf("failed to init watcher: %v", err)
 		}
-		go Reality()
+		// 四象限：数据方向相同（本端是源），传输方向二选一
+		if config.SourceDials {
+			go RealityDial()
+		} else {
+			go Reality()
+		}
 	case "mirror":
-		go Mirror()
+		if config.SinkListens {
+			go MirrorListen()
+		} else {
+			go Mirror()
+		}
 	case "relay":
 		// 中继 = mirror 引擎 + reality 服务端，共享同一目录与数据库。
 		// 不启动 fsnotify 监视器：中继目录的变更全部来自 mirror 引擎，

@@ -11,19 +11,24 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
-// localHandshake 构造本端握手消息（客户端首次握手与重连重验证共用）
+// localHandshake 构造本端握手消息（客户端首次握手与重连重验证共用）。
+// Role 承载的是本连接端点的数据方向而非进程模式：汇引擎恒申报 receive
+// （relay 的上游连接也是收）。老 reality/mirror 值恰与 send/receive 同值，
+// 平滑映射；旧 relay 发的 3 由对端按合法遗留值放行
 func localHandshake() HandshakeMessage {
 	return HandshakeMessage{
 		Version:     config.ProtocolVersion,
 		MinVersion:  config.MinProtocolVersion,
 		UUID:        config.InstanceID,
-		Role:        config.ModeMap[*config.Mode],
+		Role:        config.RoleReceive,
 		FeatureBits: 0,
 	}
 }
@@ -55,6 +60,45 @@ type ConnectionManager struct {
 	connectAddr string
 	maxRetries  int
 	retryDelay  time.Duration
+}
+
+// SplitPeer 解析 host[:port] 形式的对端地址：带合法端口则拆开返回，
+// 否则整串视为 host（v6 字面量的方括号剥掉，由 JoinHostPort 按需重加）。
+// 端口缺省的语义由调用方定：汇拨源走端口段扫描，源拨汇用 DefaultPort
+func SplitPeer(addr string) (host string, port int) {
+	if h, p, err := net.SplitHostPort(addr); err == nil {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n < 65536 {
+			return h, n
+		}
+	}
+	return strings.Trim(addr, "[]"), 0
+}
+
+// PrepareInboundConn 监听端收到入站连接后的传输就绪化：
+// keepalive +（配置口令时）Noise responder 握手。失败时连接已关闭
+func PrepareInboundConn(conn net.Conn) (net.Conn, error) {
+	enableKeepAlive(conn)
+	if *config.Secret != "" {
+		secured, err := SecureConn(conn, *config.Secret, false)
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return secured, nil
+	}
+	return conn, nil
+}
+
+// NewFileClientFromConn 把一条已就绪（必要时已加密）的入站连接包装成
+// FileClient（四象限的「汇监听 ← 源拨入」格）。协议报文与谁拨号无关：
+// 汇在连接建立后仍先说话（Handshake 由调用方随后发起）
+func NewFileClientFromConn(conn net.Conn) *FileClient {
+	return &FileClient{
+		RealityAddr:      conn.RemoteAddr().String(),
+		Alias:            "inbound",
+		connectionManage: &ConnectionManager{conn: conn, connectAddr: ""},
+		State:            Waiting,
+	}
 }
 
 // dialConn 建立到服务端的连接；配置了口令时在 TCP 之上完成 Noise 加密握手
@@ -110,6 +154,12 @@ func (cm *ConnectionManager) Reconnect() error {
 	if cm.conn != nil {
 		cm.conn.Close()
 		cm.conn = nil
+	}
+
+	// 入站传输（汇监听格）不可重拨：重连的主动权在拨号的源端，
+	// 立即失败让汇引擎回到 accept 循环等对端重新拨入
+	if cm.connectAddr == "" {
+		return fmt.Errorf("inbound transport: cannot redial, waiting for the source to reconnect")
 	}
 
 	var err error
@@ -281,6 +331,14 @@ func (c *FileClient) Handshake() error {
 		return fmt.Errorf("protocol version mismatch: local=[%d,%d], server=[%d,%d]",
 			config.MinProtocolVersion, config.ProtocolVersion,
 			handshakeResponse.MinVersion, handshakeResponse.Version)
+	}
+	// 方向互补校验（四象限）：对端必须是送数据的一方。命中的典型场景是
+	// 「汇监听」格被另一个拨出的汇连上（双方都先发握手、都把对方的请求
+	// 当响应收到），秒拒并说清原因，而不是各自等到超时。
+	// 旧 relay 的遗留值 3 放行（其服务端确实在送数据）
+	if handshakeResponse.Role == config.RoleReceive {
+		return fmt.Errorf("direction conflict: this end receives (sink), but peer %08x also declares receive — exactly one end must be the source (--send)",
+			handshakeResponse.UUID)
 	}
 	c.realityVersion = handshakeResponse.Version
 	c.realityID = handshakeResponse.UUID

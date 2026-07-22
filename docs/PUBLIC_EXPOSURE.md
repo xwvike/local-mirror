@@ -1,8 +1,12 @@
 # 公网化设计 · v2.0.0 蜕变
 
-> 状态：设计定稿。**C（密钥自管理）已实现**（`--gen-key`/`--show-key`/`--no-encrypt` +
-> 密钥文件解析链，见 internal/keyfile）；A、B 待实现。目标是**摘掉对 WireGuard 的
-> 强依赖，让镜像链路能安全、优雅地跨公网直接跑**。三大支柱合并为一次大版本蜕变 **v2.0.0**。
+> 状态：**三支柱代码均已实现**（分支 feat/v2-public-exposure）——
+> C：`--gen-key`/`--show-key`/`--no-encrypt` + 密钥文件解析链（internal/keyfile）；
+> B：双栈监听（multiListener）+ JoinHostPort + host[:port]；
+> A：四象限（serveConn 剥离 / StartDial / MirrorListen / Role 方向校验）+
+> 方向优先 CLI（--send/--receive × --connect/--listen + 位置糖，-m 降级为别名）。
+> 未竟：README/YAML 任务的四象限词汇、v2.0.0 发版（见 §D）。
+> 目标是**摘掉对 WireGuard 的强依赖，让镜像链路能安全、优雅地跨公网直接跑**。
 
 ## 0. 三大支柱与顺序
 

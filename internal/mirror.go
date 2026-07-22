@@ -10,6 +10,7 @@ import (
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/stack"
 	"local-mirror/pkg/utils"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -540,6 +541,46 @@ func Mirror() {
 			time.Sleep(5 * time.Second)
 			continue
 		}
+	}
+}
+
+// MirrorListen 汇监听格（--receive --listen，四象限）：不拨出，在
+// ServerListener 上等源端拨入，每条入站连接跑一轮完整镜像会话。
+// 协议报文与谁拨号无关——汇仍先说话（accept 后立即发握手）。
+// 单上游串行服务：会话期间不 accept，多余拨入留在内核 backlog，
+// 当前会话结束后自然轮到（拨号方有自己的重试退避）。
+// 入站连接断开后不可重拨（主动权在源端），回到 accept 等下一条
+func MirrorListen() {
+	log.Debug("step 3 >> start sink listener")
+	if ServerListener == nil {
+		log.Fatal("server listener not initialized")
+	}
+	log.Infof("Sink listening on %s, waiting for the source to dial in", ServerListener.Addr())
+	for {
+		conn, err := ServerListener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			log.Error("Error accepting inbound source:", err)
+			continue
+		}
+		prepared, err := network.PrepareInboundConn(conn)
+		if err != nil {
+			log.Warnf("Rejecting inbound %s: %v", conn.RemoteAddr(), err)
+			continue
+		}
+		fileClient := network.NewFileClientFromConn(prepared)
+		if err := fileClient.Handshake(); err != nil {
+			log.Warnf("Inbound source %s handshake failed: %v", conn.RemoteAddr(), err)
+			fileClient.ConnectionClose()
+			continue
+		}
+		log.Infof("Source dialed in from %s, mirror session starting", conn.RemoteAddr())
+		if err := runMirrorTasks(fileClient); err != nil {
+			log.Errorf("Mirror session over inbound transport ended: %v", err)
+		}
+		fileClient.ConnectionClose()
 	}
 }
 

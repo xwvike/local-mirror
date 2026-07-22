@@ -7,7 +7,6 @@ import (
 	"local-mirror/internal/network"
 	"net"
 	"strconv"
-	"strings"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -17,10 +16,10 @@ import (
 // 用握手确认对端确实是 local-mirror 服务端，避免误连到恰好占用端口的其他程序。
 // 单轮探测失败直接返回错误，重试交给 Mirror 主循环的退避逻辑。
 func InitConn() (*network.FileClient, error) {
-	// -r 收 host：IPv4 / IPv6 字面量 / 域名。v6 字面量用户可能带方括号粘贴，
-	// 统一剥掉由 JoinHostPort 重加。域名交给 Dial 每次重新解析（DDNS 友好，
-	// 不缓存 IP——见 docs/PUBLIC_EXPOSURE.md §B.3）
-	ip := strings.Trim(*config.RealityIP, "[]")
+	// -r/--connect 收 host[:port]：IPv4 / IPv6 字面量 / 域名，端口可选。
+	// 域名交给 Dial 每次重新解析（DDNS 友好，不缓存 IP——见
+	// docs/PUBLIC_EXPOSURE.md §B.3）
+	ip, exactPort := network.SplitPeer(*config.RealityIP)
 	exactAddr := ""
 	if ip == "" {
 		if config.DiscoveredAddr != "" {
@@ -41,11 +40,17 @@ func InitConn() (*network.FileClient, error) {
 	if exactAddr != "" {
 		candidates = append(candidates, exactAddr)
 	}
-	for port := config.DefaultPort; port < config.DefaultPort+config.PortScanRange; port++ {
-		// JoinHostPort 而非 Sprintf：v6 字面量需要方括号（[::1]:52345）
-		addr := net.JoinHostPort(ip, strconv.Itoa(port))
-		if addr != exactAddr {
-			candidates = append(candidates, addr)
+	if exactPort != 0 {
+		// 显式给了端口（--connect host:port）：钉死单端口，不做端口段扫描
+		//（公网部署常态；扫描是局域网发现时代的特性）
+		candidates = append(candidates, net.JoinHostPort(ip, strconv.Itoa(exactPort)))
+	} else {
+		for port := config.DefaultPort; port < config.DefaultPort+config.PortScanRange; port++ {
+			// JoinHostPort 而非 Sprintf：v6 字面量需要方括号（[::1]:52345）
+			addr := net.JoinHostPort(ip, strconv.Itoa(port))
+			if addr != exactAddr {
+				candidates = append(candidates, addr)
+			}
 		}
 	}
 

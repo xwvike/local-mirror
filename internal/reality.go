@@ -1,8 +1,10 @@
 package app
 
 import (
+	"local-mirror/config"
 	"local-mirror/internal/network"
 	"net"
+	"strconv"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -21,4 +23,18 @@ func Reality() {
 	if err := fileServer.Start(); err != nil {
 		log.Fatal("Error starting file server:", err)
 	}
+}
+
+// RealityDial 源拨出格（--send --connect，四象限）：不监听，主动拨向
+// 监听中的汇并在拨出的连接上服务。端口缺省用 DefaultPort——公网部署
+// 钉死单端口，不做端口段扫描（那是局域网发现时代的特性）
+func RealityDial() {
+	log.Debug("step 3 >> start file server (dial-out)")
+	host, port := network.SplitPeer(*config.RealityIP)
+	if port == 0 {
+		port = config.DefaultPort
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	// StartDial 阻塞：拨号、服务、断开重拨（退避归拨号方）
+	network.NewFileServerDial().StartDial(addr)
 }

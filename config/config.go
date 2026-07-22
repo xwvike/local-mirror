@@ -10,10 +10,16 @@ import (
 )
 
 const (
-	// 运行模式
+	// 运行模式（v2 起 CLI 层溶解为「方向」，此处保留为内部状态与老值映射）
 	RealityMode = 0x0001
 	MirrorMode  = 0x0002
 	RelayMode   = 0x0003
+
+	// 握手 Role 字段承载的数据方向（公网化支柱 A）：老值平滑映射——
+	// reality 一直发 1、mirror 一直发 2，语义由「模式」重释为「方向」；
+	// RelayMode(3) 是旧 relay 两个方向都发的遗留值，握手校验里视为合法
+	RoleSend    uint8 = RealityMode // 本端是源（数据流出）
+	RoleReceive uint8 = MirrorMode  // 本端是汇（数据流入）
 
 	// DefaultPort 端口探测的起始 TCP 端口。
 	// 服务端从这里开始寻找第一个可用端口监听；
@@ -57,11 +63,23 @@ var (
 	ShowKey        *bool
 	NoEncrypt      *bool
 	Force          *bool
+	SendFlag       *bool
+	ReceiveFlag    *bool
+	ConnectTo      *string
+	ListenFlag     *bool
 	Help           *bool
 	Version        *bool
-	ActualPort     int    = 0          // 服务端实际监听的端口（启动时探测确定）
-	StartPath      string = ""         // 同步根目录（-p 指定，默认为当前工作目录）
-	InstanceID     uint32 = 0x00000000 // Instance ID
+
+	// 四象限（公网化支柱 A）：数据方向（send/receive，内部沿用 Mode 表达）
+	// 与连接方向（listen/dial）解耦后的两个新格。由 main.resolveDirection
+	// 依 --send/--receive × --connect/--listen 推导：
+	// SourceDials = 源端拨出（--send --connect，不监听、拨向监听的汇）；
+	// SinkListens = 汇端监听（--receive --listen，不拨出、等源拨入）
+	SourceDials bool   = false
+	SinkListens bool   = false
+	ActualPort  int    = 0          // 服务端实际监听的端口（启动时探测确定）
+	StartPath   string = ""         // 同步根目录（-p 指定，默认为当前工作目录）
+	InstanceID  uint32 = 0x00000000 // Instance ID
 	// ProtocolVersion 本端支持的最高协议版本。
 	// v2：变更查询改为长轮询推送；v3：握手可协商化（区间+能力位）、
 	// 结构化错误、树响应分页、变更超限降级、清理死消息类型
@@ -135,47 +153,89 @@ func LoadIgnoreList(startPath string) error {
 	return nil
 }
 
-// ServesDownstream 当前模式是否对下游提供同步服务（需要监听端口）
+// ServesDownstream 本进程是否运行源引擎（对外送数据）。
+// 注意这只是数据方向：传输上源可能监听也可能拨出（见 TransportListens）
 func ServesDownstream() bool {
 	return *Mode == "reality" || *Mode == "relay"
 }
 
-// SyncsFromUpstream 当前模式是否从上游同步（作为客户端）
+// SyncsFromUpstream 本进程是否运行汇引擎（收数据）。
+// 同上，汇可能拨出也可能监听
 func SyncsFromUpstream() bool {
 	return *Mode == "mirror" || *Mode == "relay"
+}
+
+// TransportListens 本进程是否需要绑定监听端口：
+// 源默认监听（除非 SourceDials）、汇默认不监听（除非 SinkListens）、
+// relay 下游侧恒监听
+func TransportListens() bool {
+	switch *Mode {
+	case "reality":
+		return !SourceDials
+	case "mirror":
+		return SinkListens
+	case "relay":
+		return true
+	}
+	return false
+}
+
+// TransportDials 本进程是否主动拨出：与 TransportListens 对偶，
+// relay 上游侧恒拨出
+func TransportDials() bool {
+	switch *Mode {
+	case "reality":
+		return SourceDials
+	case "mirror":
+		return !SinkListens
+	case "relay":
+		return true
+	}
+	return false
 }
 
 // PrintUsage 输出用法说明。
 // 用户主动 --help 时应写入 stdout；参数解析出错被动打印时写入 stderr
 func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "Local Mirror - one-way directory mirroring over TCP\n\n")
-	fmt.Fprintf(w, "Mirrors a server-side (reality) directory to clients (mirror) in real\n")
-	fmt.Fprintf(w, "time, optionally through relays. The sync root is set with -p and\n")
-	fmt.Fprintf(w, "defaults to the current working directory.\n\n")
+	fmt.Fprintf(w, "Mirrors a source directory to a sink in real time. Data direction\n")
+	fmt.Fprintf(w, "(--send/--receive) and transport direction (--connect/--listen) are\n")
+	fmt.Fprintf(w, "independent: either end can dial or listen. The sync root is set with -p\n")
+	fmt.Fprintf(w, "and defaults to the current working directory.\n\n")
 
 	fmt.Fprintf(w, "Usage:\n")
-	fmt.Fprintf(w, "  local-mirror [flags]\n\n")
+	fmt.Fprintf(w, "  local-mirror [flags]\n")
+	fmt.Fprintf(w, "  local-mirror ./dir @host[:port]      push ./dir to the listening sink\n")
+	fmt.Fprintf(w, "  local-mirror @host[:port] ./dir      pull into ./dir from the listening source\n\n")
 
-	fmt.Fprintf(w, "Modes (values for -m/--mode):\n")
-	fmt.Fprintf(w, "  reality     server: watches the filesystem and serves sync requests.\n")
-	fmt.Fprintf(w, "              Picks the first free TCP port from %d; the actual port is\n", DefaultPort)
-	fmt.Fprintf(w, "              printed at startup\n")
-	fmt.Fprintf(w, "  mirror      client: connects to a server and mirrors its directory.\n")
-	fmt.Fprintf(w, "              With -r omitted, discovers LAN servers (interactive pick in a\n")
-	fmt.Fprintf(w, "              terminal); probes ports %d-%d when connecting.\n", DefaultPort, DefaultPort+PortScanRange-1)
-	fmt.Fprintf(w, "              Additive by default; pass --allow-delete to delete local extras\n")
-	fmt.Fprintf(w, "  relay       mirrors from an upstream server while serving downstream\n")
-	fmt.Fprintf(w, "              clients, chainable as A -> B -> C. Upstream via -r or discovery\n\n")
+	fmt.Fprintf(w, "Direction (what this end is):\n")
+	fmt.Fprintf(w, "      --send                   this directory is the source: data flows out\n")
+	fmt.Fprintf(w, "      --receive                this directory is the sink: data flows in;\n")
+	fmt.Fprintf(w, "                               additive by default, --allow-delete for a faithful mirror.\n")
+	fmt.Fprintf(w, "                               Give both to relay (receive upstream, serve downstream)\n\n")
+
+	fmt.Fprintf(w, "Transport (who dials whom; independent of direction):\n")
+	fmt.Fprintf(w, "      --connect host[:port]    dial the peer. Port omitted: a dialing sink scans\n")
+	fmt.Fprintf(w, "                               %d-%d, a dialing source uses %d. Domain names are\n", DefaultPort, DefaultPort+PortScanRange-1, DefaultPort)
+	fmt.Fprintf(w, "                               re-resolved on every reconnect (DDNS-friendly)\n")
+	fmt.Fprintf(w, "      --listen                 wait for the peer to dial in; binds the first free\n")
+	fmt.Fprintf(w, "                               port from %d (IPv4+IPv6, printed at startup)\n", DefaultPort)
+	fmt.Fprintf(w, "                               Defaults: --send listens, --receive connects\n")
+	fmt.Fprintf(w, "                               (--receive with no --connect: LAN discovery)\n\n")
+
+	fmt.Fprintf(w, "Deprecated aliases (kept for existing deployments):\n")
+	fmt.Fprintf(w, "  -m reality  =  --send --listen        -m mirror  =  --receive --connect\n")
+	fmt.Fprintf(w, "  -m relay    =  both directions        -r <host>  =  --connect <host>\n\n")
 
 	fmt.Fprintf(w, "Flags:\n")
-	fmt.Fprintf(w, "  -m, --mode string            run mode: reality / mirror / relay (default \"reality\")\n")
+	fmt.Fprintf(w, "  -m, --mode string            deprecated alias, see above (default \"reality\")\n")
 	fmt.Fprintf(w, "  -p, --path string            sync root, defaults to the working directory\n")
 	fmt.Fprintf(w, "  -l, --loglevel string        log level: debug, info, warn, error (default \"error\")\n")
 	fmt.Fprintf(w, "  -c, --cooldown int           full-rescan safety-net interval in seconds, client side;\n")
 	fmt.Fprintf(w, "                               changes are pushed in real time, this is the backstop (default 1800)\n")
 	fmt.Fprintf(w, "  -f, --filebuffersize uint    transfer chunk size in bytes, server side (default 65536)\n")
-	fmt.Fprintf(w, "  -r, --realityip string       upstream server host: domain name (preferred, re-resolved on\n")
-	fmt.Fprintf(w, "                               every reconnect, DDNS-friendly), IPv4 or IPv6 literal.\n")
+	fmt.Fprintf(w, "  -r, --realityip string       deprecated alias of --connect for -m mirror/relay:\n")
+	fmt.Fprintf(w, "                               upstream host as domain name, IPv4 or IPv6 literal.\n")
 	fmt.Fprintf(w, "                               Empty = LAN discovery (UDP multicast/broadcast; use -r across\n")
 	fmt.Fprintf(w, "                               VPNs, subnets or firewalls)\n")
 	fmt.Fprintf(w, "  -a, --alias string           instance name shown in discovery lists; defaults to hostname\n")
@@ -216,31 +276,31 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  .local-mirror/ignore           ignore patterns (one per line, # comments; merged with -i)\n\n")
 
 	fmt.Fprintf(w, "Examples:\n")
-	fmt.Fprintf(w, "  # serve the current directory\n")
-	fmt.Fprintf(w, "  local-mirror -m reality\n\n")
+	fmt.Fprintf(w, "  # classic: serve the current directory, mirror it from another machine\n")
+	fmt.Fprintf(w, "  local-mirror --send\n")
+	fmt.Fprintf(w, "  local-mirror --receive --connect 192.168.1.100 -p /srv/replica\n\n")
 
-	fmt.Fprintf(w, "  # serve a specific directory (suits systemd, no cd needed)\n")
-	fmt.Fprintf(w, "  local-mirror -m reality -p /srv/data\n\n")
+	fmt.Fprintf(w, "  # push to a public VPS: the sink listens there, the source dials out\n")
+	fmt.Fprintf(w, "  # (edit locally, never ssh in; home stays outbound-only, NAT-friendly)\n")
+	fmt.Fprintf(w, "  vps$   local-mirror --receive --listen -p /srv/backup --allow-delete\n")
+	fmt.Fprintf(w, "  home$  local-mirror --send --connect vps.example.net:%d\n\n", DefaultPort)
 
-	fmt.Fprintf(w, "  # mirror from a specific server\n")
-	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -p /srv/replica\n\n")
+	fmt.Fprintf(w, "  # same, rsync-style positional sugar\n")
+	fmt.Fprintf(w, "  local-mirror ./proj @vps.example.net:%d\n\n", DefaultPort)
 
-	fmt.Fprintf(w, "  # mirror with LAN discovery (interactive pick)\n")
-	fmt.Fprintf(w, "  local-mirror -m mirror -p /srv/replica\n\n")
+	fmt.Fprintf(w, "  # receive with LAN discovery (interactive pick)\n")
+	fmt.Fprintf(w, "  local-mirror --receive -p /srv/replica\n\n")
 
-	fmt.Fprintf(w, "  # relay: mirror from 192.168.1.100 while serving downstream\n")
-	fmt.Fprintf(w, "  local-mirror -m relay -r 192.168.1.100 -p /srv/relay\n\n")
+	fmt.Fprintf(w, "  # relay: receive from upstream while serving downstream (A -> B -> C)\n")
+	fmt.Fprintf(w, "  local-mirror --send --receive --connect 192.168.1.100 -p /srv/relay\n\n")
 
-	fmt.Fprintf(w, "  # transport encryption, self-managed key: generate on the server,\n")
-	fmt.Fprintf(w, "  # dial in with it once (the client saves it and -k can then be omitted)\n")
-	fmt.Fprintf(w, "  local-mirror --gen-key -m reality\n")
-	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -k <generated-key>\n\n")
-
-	fmt.Fprintf(w, "  # client: stretch the full-rescan safety net to 1 hour\n")
-	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -c 3600\n\n")
+	fmt.Fprintf(w, "  # transport encryption, self-managed key: generate on the listening end,\n")
+	fmt.Fprintf(w, "  # dial in with it once (the dialer saves it and -k can then be omitted)\n")
+	fmt.Fprintf(w, "  local-mirror --gen-key --send\n")
+	fmt.Fprintf(w, "  local-mirror --receive --connect 192.168.1.100 -k <generated-key>\n\n")
 
 	fmt.Fprintf(w, "  # ignore node_modules and all .log files\n")
-	fmt.Fprintf(w, "  local-mirror -m reality -i \"node_modules,*.log\"\n")
+	fmt.Fprintf(w, "  local-mirror --send -i \"node_modules,*.log\"\n")
 }
 
 func init() {
@@ -295,6 +355,13 @@ func init() {
 	flag.StringVar(Ignore, "i", "", "alias of --ignore")
 
 	ConfigFile = flag.String("config", "", "YAML config running multiple tasks under a supervisor; excludes other flags")
+
+	// 方向优先 CLI（公网化支柱 A）：两个正交轴取代不透明的 mode 词汇，
+	// -m 降级为废弃别名。方向 --send/--receive × 传输 --connect/--listen
+	SendFlag = flag.Bool("send", false, "this directory is the source: data flows out")
+	ReceiveFlag = flag.Bool("receive", false, "this directory is the sink: data flows in")
+	ConnectTo = flag.String("connect", "", "dial the peer at host[:port]; the peer must be listening")
+	ListenFlag = flag.Bool("listen", false, "wait for the peer to dial in")
 
 	Version = flag.Bool("version", false, "show version")
 	flag.BoolVar(Version, "v", false, "alias of --version")
