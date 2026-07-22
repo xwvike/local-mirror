@@ -53,6 +53,10 @@ var (
 	ConfigFile     *string
 	AllowDelete    *bool
 	AllowCritical  *bool
+	GenKey         *bool
+	ShowKey        *bool
+	NoEncrypt      *bool
+	Force          *bool
 	Help           *bool
 	Version        *bool
 	ActualPort     int    = 0          // 服务端实际监听的端口（启动时探测确定）
@@ -79,6 +83,11 @@ var (
 	// SnapshotOverwrites 为真时，客户端覆盖已有文件前先把原文件快照到
 	// .local-mirror/backups（关键路径 + --allow-critical 档位）。启动时置位
 	SnapshotOverwrites bool = false
+
+	// SecretFromKeyFile 生效口令来自 .local-mirror/key 密钥文件而非显式 -k
+	//（横幅展示来源用）。密钥解析优先级见 main.resolveSecret：
+	// 显式 -k（含 env）＞ 密钥文件 ＞ 明文；--no-encrypt 强制明文
+	SecretFromKeyFile bool = false
 )
 
 // LoadIgnoreList 合并生效忽略列表：内置默认 + -i/--ignore 逗号分隔条目 +
@@ -180,8 +189,16 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               which are refused outright by default. The first overwrite\n")
 	fmt.Fprintf(w, "                               backs the original up to .local-mirror/backups; deletion\n")
 	fmt.Fprintf(w, "                               still requires --allow-delete on top\n")
-	fmt.Fprintf(w, "  -k, --secret string          transport encryption passphrase (Noise NNpsk0), must match\n")
-	fmt.Fprintf(w, "                               on both ends; empty = plaintext. Env: LOCAL_MIRROR_SECRET\n")
+	fmt.Fprintf(w, "  -k, --secret string          transport encryption key (Noise NNpsk0), must match on both\n")
+	fmt.Fprintf(w, "                               ends. Env: LOCAL_MIRROR_SECRET. Resolution order:\n")
+	fmt.Fprintf(w, "                               explicit -k > .local-mirror/key file > plaintext\n")
+	fmt.Fprintf(w, "      --gen-key                generate a strong random key into .local-mirror/key (600),\n")
+	fmt.Fprintf(w, "                               print it to the terminal, then exit; add run flags (e.g. -m)\n")
+	fmt.Fprintf(w, "                               to generate and start in one go. Refuses to overwrite an\n")
+	fmt.Fprintf(w, "                               existing key (--force to regenerate)\n")
+	fmt.Fprintf(w, "      --show-key               print the key file to the terminal and exit\n")
+	fmt.Fprintf(w, "      --no-encrypt             force plaintext even when a key file exists\n")
+	fmt.Fprintf(w, "      --force                  with --gen-key: overwrite the existing key file\n")
 	fmt.Fprintf(w, "      --config string          YAML config running multiple tasks under a supervisor\n")
 	fmt.Fprintf(w, "                               (one child process per task, crash backoff restart;\n")
 	fmt.Fprintf(w, "                               see deploy/local-mirror.example.yml)\n")
@@ -189,6 +206,9 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  -v, --version                show version\n\n")
 
 	fmt.Fprintf(w, "Files (under the sync root):\n")
+	fmt.Fprintf(w, "  .local-mirror/key              transport key (600; auto-loaded when -k is omitted,\n")
+	fmt.Fprintf(w, "                                 never synced). Do not delete on the listening side:\n")
+	fmt.Fprintf(w, "                                 regenerating disconnects every dialer\n")
 	fmt.Fprintf(w, "  .local-mirror/cache.db         directory tree cache (reused across restarts)\n")
 	fmt.Fprintf(w, "  .local-mirror/logs/error.log   runtime log (errors also go to the terminal)\n")
 	fmt.Fprintf(w, "  .local-mirror/ignore           ignore patterns (one per line, # comments; merged with -i)\n\n")
@@ -209,9 +229,10 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  # relay: mirror from 192.168.1.100 while serving downstream\n")
 	fmt.Fprintf(w, "  local-mirror -m relay -r 192.168.1.100 -p /srv/relay\n\n")
 
-	fmt.Fprintf(w, "  # transport encryption (same passphrase on both ends)\n")
-	fmt.Fprintf(w, "  local-mirror -m reality -k mypassword\n")
-	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -k mypassword\n\n")
+	fmt.Fprintf(w, "  # transport encryption, self-managed key: generate on the server,\n")
+	fmt.Fprintf(w, "  # dial in with it once (the client saves it and -k can then be omitted)\n")
+	fmt.Fprintf(w, "  local-mirror --gen-key -m reality\n")
+	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -k <generated-key>\n\n")
 
 	fmt.Fprintf(w, "  # client: stretch the full-rescan safety net to 1 hour\n")
 	fmt.Fprintf(w, "  local-mirror -m mirror -r 192.168.1.100 -c 3600\n\n")
@@ -255,6 +276,12 @@ func init() {
 	secretDefault := os.Getenv("LOCAL_MIRROR_SECRET")
 	Secret = flag.String("secret", secretDefault, "transport encryption passphrase, must match on both ends; empty = plaintext")
 	flag.StringVar(Secret, "k", secretDefault, "alias of --secret")
+
+	// 密钥自管理（公网化支柱 C）：监听端生成强随机 key，消灭弱口令
+	GenKey = flag.Bool("gen-key", false, "generate a strong random key into .local-mirror/key, print it to the terminal, then exit")
+	ShowKey = flag.Bool("show-key", false, "print the existing key file to the terminal and exit")
+	NoEncrypt = flag.Bool("no-encrypt", false, "force plaintext even when a key file exists")
+	Force = flag.Bool("force", false, "with --gen-key: overwrite an existing key file")
 
 	Help = flag.Bool("help", false, "show help")
 	flag.BoolVar(Help, "h", false, "alias of --help")

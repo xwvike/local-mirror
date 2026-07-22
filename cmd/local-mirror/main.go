@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"local-mirror/config"
 	app "local-mirror/internal"
+	"local-mirror/internal/keyfile"
 	"local-mirror/internal/logger"
 	"local-mirror/internal/network"
 	"local-mirror/internal/safety"
@@ -57,6 +58,115 @@ func resolveSyncRoot() (string, error) {
 
 // discoveryWindow 单轮 UDP 扫描的收集窗口
 const discoveryWindow = 2 * time.Second
+
+// cliFlagsSet 返回本次命令行显式给出的旗子名集合（不含仅由 env 生效的默认值）
+func cliFlagsSet() map[string]bool {
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	return set
+}
+
+// resolveSecret 落实密钥自管理（公网化支柱 C，docs/PUBLIC_EXPOSURE.md）。
+// 解析优先级：显式 -k（含 env LOCAL_MIRROR_SECRET）＞ 密钥文件 ＞ 明文；
+// --no-encrypt 强制明文（逃生门）。--show-key / --gen-key 是子命令式旗子：
+// 前者打印后退出；后者生成后退出，除非还带了运行旗子（如 -m）才继续启动。
+// key 只对 tty 输出，稳态横幅与日志只显指纹。
+// 返回的错误属用法错误，调用方以退出码 2 处理
+func resolveSecret() error {
+	root := config.StartPath
+	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+
+	if *config.ShowKey {
+		if *config.GenKey {
+			return fmt.Errorf("--show-key conflicts with --gen-key")
+		}
+		key, err := keyfile.Load(root)
+		if err != nil {
+			return err
+		}
+		if key == "" {
+			fmt.Fprintf(os.Stderr, "local-mirror: no key file at %s (generate one with --gen-key)\n", keyfile.Path(root))
+			os.Exit(1)
+		}
+		if !isTTY {
+			return fmt.Errorf("refusing to print the key to a non-terminal (read %s directly if you must)", keyfile.Path(root))
+		}
+		fmt.Printf("key file:    %s\n", keyfile.Path(root))
+		fmt.Printf("fingerprint: %s\n", keyfile.Fingerprint(key))
+		fmt.Printf("key:         %s\n", key)
+		os.Exit(0)
+	}
+
+	if *config.GenKey {
+		// 一次只认一个密钥来源，避免"生成了 A、实际用的却是 B"
+		if *config.Secret != "" {
+			return fmt.Errorf("--gen-key conflicts with -k/--secret (or LOCAL_MIRROR_SECRET): pick one key source")
+		}
+		if *config.NoEncrypt {
+			return fmt.Errorf("--gen-key conflicts with --no-encrypt")
+		}
+		key, err := keyfile.Generate(root, *config.Force)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("generated key file: %s (mode 600)\n", keyfile.Path(root))
+		fmt.Printf("fingerprint:        %s\n", keyfile.Fingerprint(key))
+		if isTTY {
+			fmt.Printf("key:                %s\n\n", key)
+			fmt.Printf("on the dialing end (fill in this machine's address):\n")
+			fmt.Printf("  local-mirror -m mirror -r <host> -p <dir> -k '%s'\n", key)
+		} else {
+			fmt.Printf("(key not shown: stdout is not a terminal; run --show-key in one)\n")
+		}
+		// 仅带 --gen-key（外加 --force / -p）＝ 像 wg genkey 一样生成即退出；
+		// 带其他运行旗子才接着正常启动
+		runFlags := cliFlagsSet()
+		for _, name := range []string{"gen-key", "force", "path", "p"} {
+			delete(runFlags, name)
+		}
+		if len(runFlags) == 0 {
+			os.Exit(0)
+		}
+		*config.Secret = key
+		config.SecretFromKeyFile = true
+		fmt.Println()
+		return nil
+	}
+
+	if *config.NoEncrypt {
+		if *config.Secret != "" {
+			return fmt.Errorf("--no-encrypt conflicts with -k/--secret (or LOCAL_MIRROR_SECRET)")
+		}
+		return nil
+	}
+
+	if *config.Secret != "" {
+		// 显式最高优先（least surprise：文件优先会让 -k newvalue 被静默忽略）。
+		// 拨号端对称持有：把 key 落进自己的密钥文件，下次启动可省 -k；
+		// 内容一致时静默跳过，落盘失败不致命（本次仍按 -k 跑）
+		if config.SyncsFromUpstream() {
+			written, err := keyfile.Save(root, *config.Secret)
+			if err != nil {
+				log.Warnf("failed to save the key file (still running with -k): %v", err)
+			} else if written {
+				fmt.Printf("key saved to %s; -k can be omitted from now on\n", keyfile.Path(root))
+			}
+		}
+		return nil
+	}
+
+	// 未给 -k：找密钥文件。文件在就自动开加密是往安全方向的 fail-safe，
+	// 横幅显指纹可见不黑箱；文件也没有则保持明文（与从前一致）
+	key, err := keyfile.Load(root)
+	if err != nil {
+		return err
+	}
+	if key != "" {
+		*config.Secret = key
+		config.SecretFromKeyFile = true
+	}
+	return nil
+}
 
 // runDiscovery 扫描局域网服务端并确定上游地址，写入
 // config.DiscoveredAddr/DiscoveredAlias 后返回。
@@ -200,6 +310,13 @@ func main() {
 		os.Exit(2)
 	}
 	config.StartPath = root
+
+	// 密钥自管理：解析出本次生效的口令（或处理 --gen-key/--show-key 后退出）。
+	// 必须在发现流程、端口绑定、横幅之前——它们都消费 *config.Secret
+	if err := resolveSecret(); err != nil {
+		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+		os.Exit(2)
+	}
 
 	// 三级安全阶梯（对所有同步方生效，不再只在 --allow-delete 时检查）：
 	// 关键路径（~、/、系统目录，真实路径解引用后判定）默认连"只同步"都拒绝
@@ -390,10 +507,15 @@ func printBanner() {
 	if config.ServesDownstream() {
 		row("Listen", fmt.Sprintf("%s0.0.0.0:%d%s", p.Green, config.ActualPort, p.Reset))
 	}
-	if *config.Secret != "" {
-		row("Encryption", fmt.Sprintf("%son%s (Noise NNpsk0)", p.Green, p.Reset))
-	} else {
-		row("Encryption", fmt.Sprintf("off %s(plaintext; enable with -k)%s", p.Dim, p.Reset))
+	switch {
+	case *config.Secret != "" && config.SecretFromKeyFile:
+		row("Encryption", fmt.Sprintf("%son%s (Noise NNpsk0, key file, fp %s)", p.Green, p.Reset, keyfile.Fingerprint(*config.Secret)))
+	case *config.Secret != "":
+		row("Encryption", fmt.Sprintf("%son%s (Noise NNpsk0, fp %s)", p.Green, p.Reset, keyfile.Fingerprint(*config.Secret)))
+	case *config.NoEncrypt:
+		row("Encryption", fmt.Sprintf("off %s(--no-encrypt: forced plaintext)%s", p.Dim, p.Reset))
+	default:
+		row("Encryption", fmt.Sprintf("off %s(plaintext; enable with -k or --gen-key)%s", p.Dim, p.Reset))
 	}
 	// 仅同步方（mirror/relay）涉及删除，展示当前删除策略
 	if config.SyncsFromUpstream() {
