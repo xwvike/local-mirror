@@ -64,6 +64,7 @@ var (
 	NoEncrypt      *bool
 	Force          *bool
 	Status         *bool
+	All            *bool
 	SendFlag       *bool
 	ReceiveFlag    *bool
 	ConnectTo      *string
@@ -260,8 +261,11 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               to generate and start in one go. Refuses to overwrite an\n")
 	fmt.Fprintf(w, "                               existing key (--force to regenerate)\n")
 	fmt.Fprintf(w, "      --status                 live status dashboard for the running instance (refreshes\n")
-	fmt.Fprintf(w, "                               in a terminal, prints once when piped). With --config,\n")
-	fmt.Fprintf(w, "                               shows a one-row-per-task table for all YAML tasks\n")
+	fmt.Fprintf(w, "                               in a terminal, prints once when piped). Reads the sync\n")
+	fmt.Fprintf(w, "                               root from -p or the current directory; a separate,\n")
+	fmt.Fprintf(w, "                               read-only command that never disturbs the daemon\n")
+	fmt.Fprintf(w, "      --all                    with --status: show every local-mirror running on this\n")
+	fmt.Fprintf(w, "                               host (discovered from the process table, no paths needed)\n")
 	fmt.Fprintf(w, "      --show-key               print the key file to the terminal and exit\n")
 	fmt.Fprintf(w, "      --no-encrypt             force plaintext even when a key file exists\n")
 	fmt.Fprintf(w, "      --force                  with --gen-key: overwrite the existing key file\n")
@@ -352,6 +356,7 @@ func init() {
 
 	// 运维观测：读取常驻进程写下的 .local-mirror/status.json 并渲染后退出
 	Status = flag.Bool("status", false, "print the running instance's status (from .local-mirror/status.json) and exit")
+	All = flag.Bool("all", false, "with --status: discover and show every local-mirror running on this host")
 
 	Help = flag.Bool("help", false, "show help")
 	flag.BoolVar(Help, "h", false, "alias of --help")

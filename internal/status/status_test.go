@@ -168,6 +168,49 @@ func TestResourceSampling(t *testing.T) {
 	}
 }
 
+// TestLooksLikeDaemon 只认二进制名 local-mirror 且无"读完即退"旗子的进程
+func TestLooksLikeDaemon(t *testing.T) {
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"/usr/local/bin/local-mirror", "--send", "-p", "/srv"}, true},
+		{[]string{"local-mirror", "-m", "mirror", "-r", "host"}, true},
+		{[]string{"/usr/local/bin/local-mirror", "--status", "-p", "/srv"}, false}, // 观测进程
+		{[]string{"local-mirror", "--gen-key"}, false},
+		{[]string{"local-mirror", "--version"}, false},
+		{[]string{"/usr/bin/other-tool", "--send"}, false}, // 名字不对
+		{nil, false},
+	}
+	for _, c := range cases {
+		if got := looksLikeDaemon(c.args); got != c.want {
+			t.Errorf("looksLikeDaemon(%v) = %v, want %v", c.args, got, c.want)
+		}
+	}
+}
+
+// TestResolveRoot -p/--path 优先（相对挂 cwd），未指定则用 cwd
+func TestResolveRoot(t *testing.T) {
+	cases := []struct {
+		args []string
+		cwd  string
+		want string
+	}{
+		{[]string{"local-mirror", "-p", "/srv/data"}, "/home/x", "/srv/data"},
+		{[]string{"local-mirror", "--path", "/srv/data"}, "/home/x", "/srv/data"},
+		{[]string{"local-mirror", "-p=/srv/data"}, "/home/x", "/srv/data"},
+		{[]string{"local-mirror", "--path=/srv/data"}, "/home/x", "/srv/data"},
+		{[]string{"local-mirror", "-p", "sub"}, "/home/x", "/home/x/sub"}, // 相对挂 cwd
+		{[]string{"local-mirror", "--send"}, "/home/x", "/home/x"},        // 无 -p → cwd
+		{[]string{"local-mirror", "-p", "sub"}, "", ""},                   // 相对但无 cwd → 无解
+	}
+	for _, c := range cases {
+		if got := resolveRoot(c.args, c.cwd); got != c.want {
+			t.Errorf("resolveRoot(%v, %q) = %q, want %q", c.args, c.cwd, got, c.want)
+		}
+	}
+}
+
 // TestStale 陈旧判据：新写不陈旧，人为回拨 updated_unix 则陈旧
 func TestStale(t *testing.T) {
 	reset()

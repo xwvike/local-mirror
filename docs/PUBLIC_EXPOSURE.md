@@ -273,9 +273,14 @@ Happy Eyeballs 由 `net.DialTimeout("tcp", …)` 自带。
 管道/重定向时打印一次（脚本友好）。展示：进行中的文件 + 进度条 + 滚动速率、累计量、
 连接细节、错误数，以及**常驻进程自采的资源占用**（CPU% 走 getrusage 跨平台；RSS/FD
 在 linux 精确、darwin RSS 用峰值近似 + FD 标未知——生产端 linux 两者精确；外加 Go 堆/
-goroutine）。**多实例**：`--status --config tasks.yml` 聚合展示每个 YAML 任务一行
-（各读各自根下的 status.json），一眼看全「通过 yml 部署的多台」。资源自采放在被观测进程侧
-而非观测进程侧，才能跨平台且不需另一个进程有权读它——观测进程只做渲染。
+goroutine）。**三种观测入口**（`--status` 是独立只读进程，绝不惊动服务；服务启动横幅也会印出
+观测命令）：① `--status -p <根>` 或在同步目录里直接 `--status`（走 cwd）看单个；
+② `--status --config tasks.yml` 聚合 YAML 每个任务一行；③ `--status --all` **全机发现**——
+扫进程表找出所有运行中的 local-mirror（从各进程的 `-p`/cwd 推同步根、读根下的
+status.json、pid 吻合才算），一屏看全,不用记路径。**发现走进程表、不建注册表**：
+「进程表 + 各根的 status.json」本身就是事实来源，贴合「不往别处拉屎」。linux 精确
+（`/proc`），darwin 用 `ps`（只认显式 `-p` 的实例），平台隔离在 discover_*.go。
+资源自采放在被观测进程侧而非观测进程侧，才能跨平台且不需另一个进程有权读它——观测进程只做渲染。
 
 ### D.4 待定的产品姿态
 

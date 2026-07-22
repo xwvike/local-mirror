@@ -378,6 +378,17 @@ func main() {
 		return
 	}
 
+	// --status --all：从进程表发现本机所有运行中的实例并聚合展示，不需要任何
+	// 路径。放在方向/根解析之前——它与同步无关，也不占目录锁
+	if *config.Status && *config.All {
+		runStatusAll()
+		os.Exit(0)
+	}
+	if *config.All && !*config.Status {
+		fmt.Fprintf(os.Stderr, "local-mirror: --all only applies together with --status\n")
+		os.Exit(2)
+	}
+
 	// 方向优先 CLI（公网化支柱 A）：位置糖与 --send/--receive × --connect/--listen
 	// 两轴解析为内部状态；-m/-r 老词汇原样照跑。用法错误退出码 2
 	if err := resolveDirection(); err != nil {
@@ -848,21 +859,37 @@ func dirShort(mode string) string {
 	return mode
 }
 
-// renderAggregate 渲染 YAML 多任务的聚合表：每任务一行，各读各自根下的快照
-func renderAggregate(cfg *config.MultiConfig) {
-	p := termstyle.NewPalette(os.Stdout)
-	fmt.Println()
-	fmt.Printf("  %s%slocal-mirror%s   %s%d tasks%s\n", p.Bold, p.Cyan, p.Reset, p.Dim, len(cfg.Tasks), p.Reset)
-	fmt.Println()
+// dirShortFromSnap 从快照的方向字串（"send · source" 等）取短标签，
+// 供 --all 使用（发现来的实例没有原始 mode，只有已渲染的方向串）
+func dirShortFromSnap(s *status.Snapshot) string {
+	switch {
+	case strings.HasPrefix(s.Direction, "send"):
+		return "send"
+	case strings.HasPrefix(s.Direction, "receive"):
+		return "recv"
+	case strings.HasPrefix(s.Direction, "relay"):
+		return "relay"
+	}
+	return s.Direction
+}
+
+// statusRow 聚合表的一行。Snap 为 nil 表示该行对应的实例未启动
+type statusRow struct {
+	Name string
+	Dir  string
+	Snap *status.Snapshot
+}
+
+// renderStatusTable 渲染聚合表：每实例一行，列对齐（色码不计入列宽，见 padCell）。
+// --config（YAML 多任务）与 --all（进程表发现）共用
+func renderStatusTable(rows []statusRow, p termstyle.Palette) {
 	fmt.Printf("  %s%s %s %s %s %s %s %s %s%s\n", p.Dim,
-		padCell("TASK", 16), padCell("DIR", 6), padCell("LINK", 5),
+		padCell("NAME", 16), padCell("DIR", 6), padCell("LINK", 5),
 		padCell("RATE", 11), padCell("FILES", 7), padCell("LAST", 9),
 		padCell("CPU", 6), padCell("MEM", 10), p.Reset)
 
-	for i := range cfg.Tasks {
-		t := cfg.Tasks[i]
-		snap, _ := status.Load(t.Path)
-
+	for _, r := range rows {
+		snap := r.Snap
 		rate, files, last, cpu, mem := "—", "—", "—", "—", "—"
 		var link string
 		switch {
@@ -895,10 +922,66 @@ func renderAggregate(cfg *config.MultiConfig) {
 			suffix = p.Dim + "  (not started)" + p.Reset
 		}
 		fmt.Printf("  %s %s %s %s %s %s %s %s%s\n",
-			padCell(termstyle.Truncate(t.Name, 16), 16), padCell(dirShort(t.Mode), 6), link,
+			padCell(termstyle.Truncate(r.Name, 16), 16), padCell(r.Dir, 6), link,
 			padCell(rate, 11), padCell(files, 7), padCell(last, 9),
 			padCell(cpu, 6), padCell(mem, 10), suffix)
 	}
+}
+
+// renderAggregate 渲染 YAML 多任务的聚合表：每任务一行，各读各自根下的快照
+func renderAggregate(cfg *config.MultiConfig) {
+	p := termstyle.NewPalette(os.Stdout)
+	fmt.Println()
+	fmt.Printf("  %s%slocal-mirror%s   %s%d tasks%s\n", p.Bold, p.Cyan, p.Reset, p.Dim, len(cfg.Tasks), p.Reset)
+	fmt.Println()
+	rows := make([]statusRow, 0, len(cfg.Tasks))
+	for i := range cfg.Tasks {
+		t := cfg.Tasks[i]
+		snap, _ := status.Load(t.Path)
+		rows = append(rows, statusRow{Name: t.Name, Dir: dirShort(t.Mode), Snap: snap})
+	}
+	renderStatusTable(rows, p)
+}
+
+// runStatusAll 全机发现视图：终端进实时刷新循环，管道则打印一次
+func runStatusAll() {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		liveLoop(renderAll)
+	} else {
+		renderAll()
+	}
+}
+
+// renderAll 从进程表发现本机所有运行中的实例并聚合展示（每帧重新发现）
+func renderAll() {
+	p := termstyle.NewPalette(os.Stdout)
+	instances := status.DiscoverInstances()
+	fmt.Println()
+	fmt.Printf("  %s%slocal-mirror%s   %s%d running on this host%s\n",
+		p.Bold, p.Cyan, p.Reset, p.Dim, len(instances), p.Reset)
+	if len(instances) == 0 {
+		fmt.Printf("\n  %sno running local-mirror instances found%s\n", p.Dim, p.Reset)
+		fmt.Printf("  %s(--all scans the process table for daemons that write .local-mirror/status.json;\n", p.Dim)
+		fmt.Printf("   pre-status builds won't appear)%s\n", p.Reset)
+		return
+	}
+	fmt.Println()
+	rows := make([]statusRow, 0, len(instances))
+	for _, inst := range instances {
+		rows = append(rows, statusRow{Name: shortRoot(inst.Root), Dir: dirShortFromSnap(inst.Snap), Snap: inst.Snap})
+	}
+	renderStatusTable(rows, p)
+}
+
+// shortRoot 取同步根的末两段做行标签（如 proj/src），比单纯 basename 更能
+// 区分"多个根同名 basename"（backup/src 与 proj/src）
+func shortRoot(root string) string {
+	base := filepath.Base(root)
+	parent := filepath.Base(filepath.Dir(root))
+	if parent == "." || parent == "/" || parent == "" {
+		return base
+	}
+	return parent + "/" + base
 }
 
 func printBanner() {
@@ -1009,4 +1092,8 @@ func printBanner() {
 	row("PID", fmt.Sprintf("%d", os.Getpid()))
 	row("Log", fmt.Sprintf("%s %s(level %s)%s", logger.LogPath(), p.Dim, *config.LogLevel, p.Reset))
 	fmt.Println(line)
+	// 提示观测命令：--status 是独立只读进程，不惊动本服务
+	fmt.Printf("  %swatch:  local-mirror --status -p %s   %s(or --status --all)%s\n",
+		p.Dim, config.StartPath, p.Dim, p.Reset)
+	fmt.Println()
 }
