@@ -628,6 +628,8 @@ func (s *fileServer) sendFileData(ID uint32, session *session) error {
 	defer _client.(*client).SessionMap.Delete(session.ID)
 
 	fileBuf := make([]byte, *config.FileBufferSize)
+	rel := strings.Replace(session.FilePath, config.StartPath, ".", 1)
+	var sent uint64
 	for {
 		n, err := session.file.Read(fileBuf)
 		if n > 0 {
@@ -637,8 +639,11 @@ func (s *fileServer) sendFileData(ID uint32, session *session) error {
 				Data:       fileBuf[:n],
 			}
 			if err := sendMessage(conn, MsgTypeFileData, encodeFileData(dataMsg)); err != nil {
-				return fmt.Errorf("%w, error sending file data for %s", appError.ErrConnection, strings.Replace(session.FilePath, config.StartPath, ".", 1))
+				return fmt.Errorf("%w, error sending file data for %s", appError.ErrConnection, rel)
 			}
+			// 进度上报（--status 实时展示）：节流在 status 内部
+			sent += uint64(n)
+			status.RecordProgress(rel, sent, session.FileSize)
 		}
 		if err != nil {
 			if err == io.EOF {

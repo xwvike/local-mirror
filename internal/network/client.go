@@ -6,6 +6,7 @@ import (
 	"local-mirror/config"
 	"local-mirror/internal/appError"
 	"local-mirror/internal/safety"
+	"local-mirror/internal/status"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"net"
@@ -597,6 +598,9 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 			// 大文件的确认消息会填满对端接收缓冲，造成双向阻塞死锁；
 			// 续传依据本地分片大小，不需要确认机制
 			receivedSize += uint64(len(dataMsg.Data))
+			// 进度上报（--status 实时展示当前文件/速率）：节流在 status 内部，
+			// 这里每块调用只更新内存态，不落盘
+			status.RecordProgress(filePath, receivedSize, fileResponse.FileSize)
 		case MsgTypeFileComplete:
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {

@@ -16,10 +16,12 @@ import (
 	"local-mirror/pkg/utils"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -337,6 +339,17 @@ func main() {
 	// 多任务监督模式：--config 与单实例旗子互斥，避免"以为在配置任务
 	// 实际全被忽略"的误会
 	if *config.ConfigFile != "" {
+		// --status --config：聚合展示 YAML 里每个任务的状态（各读各自根下的
+		// status.json），而非启动监督进程。这是"通过 yml 部署了多台"的观测入口
+		if *config.Status {
+			multiCfg, err := config.LoadMultiConfig(*config.ConfigFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+				os.Exit(2)
+			}
+			runStatusAggregate(multiCfg)
+			os.Exit(0)
+		}
 		var extra []string
 		flag.Visit(func(f *flag.Flag) {
 			if f.Name == "config" {
@@ -389,9 +402,10 @@ func main() {
 	config.StartPath = root
 
 	// --status：只读常驻进程写下的快照并渲染后退出。必须早于 InitDB——
-	// 常驻进程持有目录锁，观测进程绝不能去抢锁
+	// 常驻进程持有目录锁，观测进程绝不能去抢锁。终端里进入实时刷新循环，
+	// 管道/重定向时打印一次（脚本友好）
 	if *config.Status {
-		printStatus(root)
+		runStatusSingle(root)
 		os.Exit(0)
 	}
 
@@ -632,45 +646,127 @@ func humanUptime(started int64) string {
 	}
 }
 
-// printStatus 读取并渲染常驻进程的运行时快照（--status 子命令）。
+func humanRate(bps float64) string {
+	switch {
+	case bps >= 1<<20:
+		return fmt.Sprintf("%.1f MB/s", bps/(1<<20))
+	case bps >= 1<<10:
+		return fmt.Sprintf("%.0f KB/s", bps/(1<<10))
+	case bps > 0:
+		return fmt.Sprintf("%.0f B/s", bps)
+	default:
+		return "—"
+	}
+}
+
+// progressBar 渲染定宽进度条 [████░░░░] 66%
+func progressBar(done, total uint64, width int, p termstyle.Palette) string {
+	if total == 0 {
+		return p.Dim + strings.Repeat("░", width) + p.Reset + "   —"
+	}
+	frac := float64(done) / float64(total)
+	if frac > 1 {
+		frac = 1
+	}
+	filled := int(frac * float64(width))
+	return fmt.Sprintf("%s%s%s%s%s %3d%%",
+		p.Green, strings.Repeat("█", filled), p.Dim, strings.Repeat("░", width-filled), p.Reset, int(frac*100))
+}
+
+func fileSuffix(name string, p termstyle.Palette) string {
+	if name == "" {
+		return ""
+	}
+	return fmt.Sprintf("  %s(%s)%s", p.Dim, name, p.Reset)
+}
+
+// padCell 按显示宽度右填充到 w 列（ANSI 色码会破坏 %-Ns 对齐，故先按纯文本
+// 计宽再上色）
+func padCell(text string, w int) string {
+	if dw := termstyle.DisplayWidth(text); dw < w {
+		return text + strings.Repeat(" ", w-dw)
+	}
+	return text
+}
+
+// runStatusSingle 单实例 --status：终端进实时刷新循环，管道则打印一次
+func runStatusSingle(root string) {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		liveLoop(func() { renderSingle(root) })
+	} else {
+		renderSingle(root)
+	}
+}
+
+// runStatusAggregate 多实例 --status --config：聚合 YAML 每个任务的状态
+func runStatusAggregate(cfg *config.MultiConfig) {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		liveLoop(func() { renderAggregate(cfg) })
+	} else {
+		renderAggregate(cfg)
+	}
+}
+
+// liveLoop 实时刷新：备用屏 + 隐藏光标，每秒重绘一帧，Ctrl-C 退出并还原终端。
+// 走 os.Exit 会跳过 defer，故进出终端态都显式做，不依赖 defer
+func liveLoop(frame func()) {
+	p := termstyle.NewPalette(os.Stdout)
+	fmt.Print("\033[?1049h\033[?25l") // 备用屏 + 隐藏光标
+	leave := func() { fmt.Print("\033[?25h\033[?1049l") }
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	t := time.NewTicker(1 * time.Second)
+	for {
+		fmt.Print("\033[H\033[2J") // 光标归位 + 清屏
+		frame()
+		fmt.Printf("\n  %srefresh 1s · Ctrl-C to exit%s\n", p.Dim, p.Reset)
+		select {
+		case <-sig:
+			t.Stop()
+			leave()
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// renderSingle 渲染单个实例的运行时快照（每帧重新读盘）。
 // 无快照文件 = 没有实例在此根跑过；快照陈旧 = 进程可能已停
-func printStatus(root string) {
+func renderSingle(root string) {
 	p := termstyle.NewPalette(os.Stdout)
 	snap, err := status.Load(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "local-mirror: cannot read status: %v\n", err)
-		os.Exit(1)
+		return
 	}
 	if snap == nil {
-		fmt.Printf("%sno status for%s %s\n", p.Dim, p.Reset, root)
-		fmt.Printf("%s(no instance has run here, or .local-mirror/status.json was removed)%s\n", p.Dim, p.Reset)
-		os.Exit(0)
+		fmt.Printf("\n  %sno status for%s %s\n", p.Dim, p.Reset, root)
+		fmt.Printf("  %s(no instance has run here, or .local-mirror/status.json was removed)%s\n", p.Dim, p.Reset)
+		return
 	}
 
-	const width = 48
-	const labelWidth = 11
+	const width = 54
+	const labelWidth = 12
 	line := p.Dim + strings.Repeat("─", width) + p.Reset
 	row := func(label, value string) {
 		pad := strings.Repeat(" ", max(1, labelWidth-termstyle.DisplayWidth(label)))
 		fmt.Printf("  %s%s%s%s%s\n", p.Dim, label, p.Reset, pad, value)
 	}
 
-	// 存活判据：陈旧快照说明落盘循环停了（进程多半已退），醒目标出——
-	// 这正是替代 ps/journalctl 的那一眼
+	// 存活判据：陈旧快照说明落盘循环停了（进程多半已退）——替代 ps 的那一眼
 	live := !snap.Stale()
 	fmt.Println()
 	fmt.Println(line)
 	if live {
-		fmt.Printf("  %s%sStatus%s  %s%s● running%s  %s(pid %d)%s\n",
-			p.Bold, p.Cyan, p.Reset, p.Bold, p.Green, p.Reset, p.Dim, snap.PID, p.Reset)
+		fmt.Printf("  %s%sStatus%s      %s%s● running%s   %spid %d · up %s%s\n",
+			p.Bold, p.Cyan, p.Reset, p.Bold, p.Green, p.Reset, p.Dim, snap.PID, humanUptime(snap.StartedUnix), p.Reset)
 	} else {
-		fmt.Printf("  %s%sStatus%s  %s○ stale%s %s(last update %s — pid %d may be dead)%s\n",
+		fmt.Printf("  %s%sStatus%s      %s○ stale%s   %slast update %s · pid %d may be dead%s\n",
 			p.Bold, p.Cyan, p.Reset, p.Yellow, p.Reset, p.Dim, humanSince(time.Unix(snap.UpdatedUnix, 0)), snap.PID, p.Reset)
 	}
 	fmt.Println(line)
 
-	row("Direction", fmt.Sprintf("%s %s(%s)%s", snap.Direction, p.Dim, snap.Transport, p.Reset))
-	row("Sync root", snap.Root)
+	row("Direction", fmt.Sprintf("%s   %s(%s)%s", snap.Direction, p.Dim, snap.Transport, p.Reset))
 	row("Peer", snap.Peer)
 	switch {
 	case !live && snap.Connected:
@@ -690,23 +786,119 @@ func printStatus(root string) {
 		enc = "on (Noise NNpsk0)"
 	}
 	row("Encryption", enc)
-	row("Transferred", fmt.Sprintf("%s / %d files", humanStatusBytes(snap.Bytes), snap.Files))
-	row("Last sync", humanSince(time.Unix(snap.LastSyncUnix, 0))+fileSuffix(snap.LastFile, p))
+	row("Sync root", snap.Root)
+	fmt.Println(line)
+
+	// 传输段：进行中的文件带进度条 + 速率；空闲则只显速率/idle
+	if live && snap.CurrentFile != "" {
+		row("Transfer", fmt.Sprintf("%s▶%s %s", p.Cyan, p.Reset, snap.CurrentFile))
+		row("", fmt.Sprintf("%s   %s / %s   %s%s%s",
+			progressBar(snap.CurrentDone, snap.CurrentTotal, 20, p),
+			humanStatusBytes(snap.CurrentDone), humanStatusBytes(snap.CurrentTotal),
+			p.Bold, humanRate(snap.RateBps), p.Reset))
+	} else {
+		state := "idle"
+		if live && snap.RateBps > 0 {
+			state = humanRate(snap.RateBps)
+		}
+		row("Transfer", fmt.Sprintf("%s%s%s", p.Dim, state, p.Reset))
+	}
+	row("Totals", fmt.Sprintf("%s / %d files   %s· last %s%s%s",
+		humanStatusBytes(snap.Bytes), snap.Files, p.Dim, humanSince(time.Unix(snap.LastSyncUnix, 0)), fileSuffix(snap.LastFile, p), p.Reset))
 	if snap.Errors > 0 {
 		row("Errors", fmt.Sprintf("%s%d%s", p.Yellow, snap.Errors, p.Reset))
 	} else {
 		row("Errors", "0")
 	}
-	row("Uptime", humanUptime(snap.StartedUnix))
-	row("Snapshot", fmt.Sprintf("%s%s (age %s)%s", p.Dim, snap.Version, humanSince(time.Unix(snap.UpdatedUnix, 0)), p.Reset))
+	fmt.Println(line)
+
+	// 资源段（常驻进程自采）
+	row("CPU", fmt.Sprintf("%.1f%%", snap.CPUPercent))
+	row("Memory", memoryLine(snap))
+	row("FDs", fdLine(snap))
+	row("Goroutines", fmt.Sprintf("%d", snap.Goroutines))
 	fmt.Println(line)
 }
 
-func fileSuffix(name string, p termstyle.Palette) string {
-	if name == "" {
-		return ""
+// memoryLine 组装内存展示：有 OS RSS 就以它为主，附 Go 堆/申请量
+func memoryLine(s *status.Snapshot) string {
+	heap := fmt.Sprintf("%s heap · %s sys", humanStatusBytes(s.HeapBytes), humanStatusBytes(s.SysBytes))
+	if s.HasRSS {
+		return fmt.Sprintf("%s rss   (%s)", humanStatusBytes(s.RSSBytes), heap)
 	}
-	return fmt.Sprintf("  %s(%s)%s", p.Dim, name, p.Reset)
+	return heap
+}
+
+func fdLine(s *status.Snapshot) string {
+	if s.HasFDs {
+		return fmt.Sprintf("%d", s.FDs)
+	}
+	return "— (not available on this platform)"
+}
+
+func dirShort(mode string) string {
+	switch mode {
+	case "reality":
+		return "send"
+	case "mirror":
+		return "recv"
+	case "relay":
+		return "relay"
+	}
+	return mode
+}
+
+// renderAggregate 渲染 YAML 多任务的聚合表：每任务一行，各读各自根下的快照
+func renderAggregate(cfg *config.MultiConfig) {
+	p := termstyle.NewPalette(os.Stdout)
+	fmt.Println()
+	fmt.Printf("  %s%slocal-mirror%s   %s%d tasks%s\n", p.Bold, p.Cyan, p.Reset, p.Dim, len(cfg.Tasks), p.Reset)
+	fmt.Println()
+	fmt.Printf("  %s%s %s %s %s %s %s %s %s%s\n", p.Dim,
+		padCell("TASK", 16), padCell("DIR", 6), padCell("LINK", 5),
+		padCell("RATE", 11), padCell("FILES", 7), padCell("LAST", 9),
+		padCell("CPU", 6), padCell("MEM", 10), p.Reset)
+
+	for i := range cfg.Tasks {
+		t := cfg.Tasks[i]
+		snap, _ := status.Load(t.Path)
+
+		rate, files, last, cpu, mem := "—", "—", "—", "—", "—"
+		var link string
+		switch {
+		case snap == nil:
+			link = p.Dim + padCell("—", 5) + p.Reset
+		case snap.Stale():
+			link = p.Yellow + padCell("○", 5) + p.Reset
+		case snap.Connected:
+			link = p.Green + padCell("●", 5) + p.Reset
+		default:
+			link = p.Dim + padCell("○", 5) + p.Reset
+		}
+		if snap != nil {
+			if snap.RateBps > 0 {
+				rate = humanRate(snap.RateBps)
+			}
+			files = fmt.Sprintf("%d", snap.Files)
+			last = humanSince(time.Unix(snap.LastSyncUnix, 0))
+			cpu = fmt.Sprintf("%.1f%%", snap.CPUPercent)
+			if snap.HasRSS {
+				mem = humanStatusBytes(snap.RSSBytes)
+			} else {
+				mem = humanStatusBytes(snap.HeapBytes)
+			}
+		}
+		suffix := ""
+		if snap != nil && snap.Stale() {
+			suffix = p.Yellow + "  (stale)" + p.Reset
+		} else if snap == nil {
+			suffix = p.Dim + "  (not started)" + p.Reset
+		}
+		fmt.Printf("  %s %s %s %s %s %s %s %s%s\n",
+			padCell(termstyle.Truncate(t.Name, 16), 16), padCell(dirShort(t.Mode), 6), link,
+			padCell(rate, 11), padCell(files, 7), padCell(last, 9),
+			padCell(cpu, 6), padCell(mem, 10), suffix)
+	}
 }
 
 func printBanner() {

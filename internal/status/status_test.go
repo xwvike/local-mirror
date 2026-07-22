@@ -105,6 +105,69 @@ func TestSessionBalance(t *testing.T) {
 	}
 }
 
+// TestProgressAndRate 进行中传输字段落盘、完成后清空、速率非负
+func TestProgressAndRate(t *testing.T) {
+	reset()
+	rateSamples = nil
+	lastSampleAt = time.Time{}
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, ".local-mirror"), 0755)
+	Init(root, "v1", "aa", "receive · sink", "dial", "peer", true, time.Now().Unix())
+
+	// 进行中：current_* 应落盘
+	RecordProgress("big.bin", 500, 1000)
+	write()
+	s, _ := Load(root)
+	if s.CurrentFile != "big.bin" || s.CurrentDone != 500 || s.CurrentTotal != 1000 {
+		t.Fatalf("in-flight fields wrong: %q %d/%d", s.CurrentFile, s.CurrentDone, s.CurrentTotal)
+	}
+
+	// 完成：current_* 清空，累计 +total
+	RecordFile("big.bin", 1000)
+	write()
+	s, _ = Load(root)
+	if s.CurrentFile != "" || s.CurrentDone != 0 {
+		t.Fatalf("completed transfer should clear current: %q %d", s.CurrentFile, s.CurrentDone)
+	}
+	if s.Files != 1 || s.Bytes != 1000 {
+		t.Fatalf("totals after complete: %d files / %d bytes", s.Files, s.Bytes)
+	}
+	if s.RateBps < 0 {
+		t.Fatalf("rate must not be negative: %v", s.RateBps)
+	}
+}
+
+// TestRateWindowDecays 停止上报后，窗口内取样耗尽 → 速率归 0
+func TestRateWindowDecays(t *testing.T) {
+	reset()
+	rateSamples = nil
+	// 人为塞两个都早于窗口的取样，computeRate 修剪后应剩 <2 → 0
+	old := time.Now().Add(-2 * rateWindow)
+	rateSamples = []rateSample{{old, 100}, {old.Add(time.Second), 200}}
+	if r := computeRateLocked(time.Now()); r != 0 {
+		t.Fatalf("stale samples should yield 0 rate, got %v", r)
+	}
+}
+
+// TestResourceSampling 资源采样填入运行时数字（堆/goroutine 必非零）
+func TestResourceSampling(t *testing.T) {
+	reset()
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, ".local-mirror"), 0755)
+	Init(root, "v1", "aa", "send · source", "listen", "inbound", false, time.Now().Unix())
+	write()
+	s, _ := Load(root)
+	if s.HeapBytes == 0 {
+		t.Fatal("heap bytes should be sampled non-zero")
+	}
+	if s.Goroutines <= 0 {
+		t.Fatalf("goroutines should be positive, got %d", s.Goroutines)
+	}
+	if s.Schema != 2 {
+		t.Fatalf("schema should be 2, got %d", s.Schema)
+	}
+}
+
 // TestStale 陈旧判据：新写不陈旧，人为回拨 updated_unix 则陈旧
 func TestStale(t *testing.T) {
 	reset()
