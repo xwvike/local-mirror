@@ -65,6 +65,8 @@ nfpms:
 
 homebrew_casks:
   - name: local-mirror
+    # auto：预发行/快照不推 cask，稳定版用户 brew upgrade 不会被拽到 RC
+    skip_upload: "auto"
     repository:
       owner: xwvike
       name: homebrew-tap
@@ -83,6 +85,8 @@ homebrew_casks:
 
 scoops:
   - name: local-mirror
+    # auto：预发行/快照不推 scoop manifest，稳定版用户不会被拽到 RC
+    skip_upload: "auto"
     repository:
       owner: xwvike
       name: scoop-bucket
@@ -93,3 +97,6 @@ scoops:
 
 release:
   draft: false
+  # 预发行 tag（含 -rc / -beta 等语义化预发行段）在 GitHub 上标记为 Pre-release，
+  # 不覆盖 latest；正式 tag 才是正式发行
+  prerelease: auto
