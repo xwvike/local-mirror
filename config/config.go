@@ -65,6 +65,7 @@ var (
 	Force          *bool
 	Status         *bool
 	All            *bool
+	Heat           *bool
 	SendFlag       *bool
 	ReceiveFlag    *bool
 	ConnectTo      *string
@@ -222,24 +223,20 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               re-resolved on every reconnect (DDNS-friendly)\n")
 	fmt.Fprintf(w, "      --listen                 wait for the peer to dial in; binds the first free\n")
 	fmt.Fprintf(w, "                               port from %d (IPv4+IPv6, printed at startup)\n", DefaultPort)
-	fmt.Fprintf(w, "                               Defaults: --send listens, --receive connects\n")
-	fmt.Fprintf(w, "                               (--receive with no --connect: LAN discovery)\n\n")
+	fmt.Fprintf(w, "                               Defaults: --send listens, --receive connects\n\n")
 
-	fmt.Fprintf(w, "Deprecated aliases (kept for existing deployments):\n")
-	fmt.Fprintf(w, "  -m reality  =  --send --listen        -m mirror  =  --receive --connect\n")
-	fmt.Fprintf(w, "  -m relay    =  both directions        -r <host>  =  --connect <host>\n\n")
+	fmt.Fprintf(w, "LAN discovery:\n")
+	fmt.Fprintf(w, "  A --receive with neither --connect nor --listen scans the local network\n")
+	fmt.Fprintf(w, "  for sources over UDP and, if several answer, lets you pick one. It is the\n")
+	fmt.Fprintf(w, "  zero-config path for two machines on the same LAN. Discovery does not cross\n")
+	fmt.Fprintf(w, "  VPNs, subnets or firewalls: reach those with --connect <host> instead.\n\n")
 
 	fmt.Fprintf(w, "Flags:\n")
-	fmt.Fprintf(w, "  -m, --mode string            deprecated alias, see above (default \"reality\")\n")
 	fmt.Fprintf(w, "  -p, --path string            sync root, defaults to the working directory\n")
 	fmt.Fprintf(w, "  -l, --loglevel string        log level: debug, info, warn, error (default \"error\")\n")
-	fmt.Fprintf(w, "  -c, --cooldown int           full-rescan safety-net interval in seconds, client side;\n")
+	fmt.Fprintf(w, "  -c, --cooldown int           full-rescan safety-net interval in seconds, sink side;\n")
 	fmt.Fprintf(w, "                               changes are pushed in real time, this is the backstop (default 1800)\n")
-	fmt.Fprintf(w, "  -f, --filebuffersize uint    transfer chunk size in bytes, server side (default 65536)\n")
-	fmt.Fprintf(w, "  -r, --realityip string       deprecated alias of --connect for -m mirror/relay:\n")
-	fmt.Fprintf(w, "                               upstream host as domain name, IPv4 or IPv6 literal.\n")
-	fmt.Fprintf(w, "                               Empty = LAN discovery (UDP multicast/broadcast; use -r across\n")
-	fmt.Fprintf(w, "                               VPNs, subnets or firewalls)\n")
+	fmt.Fprintf(w, "  -f, --filebuffersize uint    transfer chunk size in bytes, source side (default 65536)\n")
 	fmt.Fprintf(w, "  -a, --alias string           instance name shown in discovery lists; defaults to hostname\n")
 	fmt.Fprintf(w, "  -i, --ignore string          extra ignore patterns (comma-separated), matched per path\n")
 	fmt.Fprintf(w, "                               segment, * ? [] globs supported. Server: never scanned or\n")
@@ -264,8 +261,11 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               in a terminal, prints once when piped). Reads the sync\n")
 	fmt.Fprintf(w, "                               root from -p or the current directory; a separate,\n")
 	fmt.Fprintf(w, "                               read-only command that never disturbs the daemon\n")
-	fmt.Fprintf(w, "      --all                    with --status: show every local-mirror running on this\n")
-	fmt.Fprintf(w, "                               host (discovered from the process table, no paths needed)\n")
+	fmt.Fprintf(w, "      --all                    with --status or --heat: show every local-mirror running\n")
+	fmt.Fprintf(w, "                               on this host (discovered from the process table)\n")
+	fmt.Fprintf(w, "      --heat                   directory heat table for a running source: which dirs are\n")
+	fmt.Fprintf(w, "                               watched in real time vs lazily polled. Read-only, reads\n")
+	fmt.Fprintf(w, "                               .local-mirror/heat.json (like --status; -p or cwd, or --all)\n")
 	fmt.Fprintf(w, "      --show-key               print the key file to the terminal and exit\n")
 	fmt.Fprintf(w, "      --no-encrypt             force plaintext even when a key file exists\n")
 	fmt.Fprintf(w, "      --force                  with --gen-key: overwrite the existing key file\n")
@@ -280,6 +280,7 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                                 never synced). Do not delete on the listening side:\n")
 	fmt.Fprintf(w, "                                 regenerating disconnects every dialer\n")
 	fmt.Fprintf(w, "  .local-mirror/status.json      live runtime status (read by --status; discardable)\n")
+	fmt.Fprintf(w, "  .local-mirror/heat.json        directory heat table (read by --heat; source side; discardable)\n")
 	fmt.Fprintf(w, "  .local-mirror/cache.db         directory tree cache (reused across restarts)\n")
 	fmt.Fprintf(w, "  .local-mirror/logs/error.log   runtime log (errors also go to the terminal)\n")
 	fmt.Fprintf(w, "  .local-mirror/ignore           ignore patterns (one per line, # comments; merged with -i)\n\n")
@@ -356,7 +357,11 @@ func init() {
 
 	// 运维观测：读取常驻进程写下的 .local-mirror/status.json 并渲染后退出
 	Status = flag.Bool("status", false, "print the running instance's status (from .local-mirror/status.json) and exit")
-	All = flag.Bool("all", false, "with --status: discover and show every local-mirror running on this host")
+	All = flag.Bool("all", false, "with --status or --heat: discover and show every local-mirror running on this host")
+
+	// 目录热度观测：读取源侧常驻进程写下的 .local-mirror/heat.json 并渲染后退出。
+	// 取代旧的 SIGUSR1+heat.txt——只读子命令、跨平台、多进程各读各目录
+	Heat = flag.Bool("heat", false, "print a running source's directory heat table (from .local-mirror/heat.json) and exit")
 
 	Help = flag.Bool("help", false, "show help")
 	flag.BoolVar(Help, "h", false, "alias of --help")

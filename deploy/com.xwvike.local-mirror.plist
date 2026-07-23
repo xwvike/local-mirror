@@ -32,8 +32,7 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/opt/homebrew/bin/local-mirror</string>
-		<string>-m</string>
-		<string>reality</string>
+		<string>--send</string>
 		<string>-p</string>
 		<string>/Users/you/sync</string>
 		<string>-l</string>

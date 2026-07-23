@@ -132,6 +132,7 @@ and log location:
 | `--show-key` | print the existing key file and exit | |
 | `--no-encrypt` | force plaintext even when a key file exists | |
 | `--status` | print a running instance's status and exit (`--all` for every one) | |
+| `--heat` | print a running source's directory heat table and exit | |
 | `-c, --cooldown` | full-rescan interval in seconds, sink side | `1800` |
 | `-f, --filebuffersize` | transfer chunk size in bytes, source side | `65536` |
 | `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
@@ -146,6 +147,18 @@ reachable server, `--send --connect` from behind NAT. `--connect` takes a
 domain name, an IPv4, or an IPv6 literal (`--connect [2001:db8::1]:52345`);
 listeners bind both IPv4 and IPv6. Domain names are re-resolved on every
 reconnect, so DDNS just works. Give both `--send` and `--receive` to relay.
+
+### LAN discovery
+
+A `--receive` with neither `--connect` nor `--listen` scans the local network
+for sources over UDP and, if several answer, lets you pick one interactively.
+It is the zero-config path for two machines on the same LAN — no address to
+type, no port to remember. It only kicks in in that exact case: give
+`--connect` and you dial a known host directly; give `--listen` and you wait
+to be dialed. Discovery stays on the local segment and does not cross VPNs,
+subnets or firewalls — reach across those with `--connect <host>` instead. If
+a key is set, probes and replies are authenticated so a scanner without the
+key learns nothing.
 
 Ignore patterns (from `-i` or a `.local-mirror/ignore` file, one per line,
 `#` comments) are matched per path segment at any depth and support `* ? []`
@@ -260,15 +273,20 @@ defaults:
 
 tasks:
   - name: photos          # task name = discovery alias = log prefix
-    mode: reality
+    send: true
     path: /srv/photos
     ignore: [cache, "*.log"]
   - name: nas-backup
-    mode: mirror
+    receive: true
+    connect: 192.168.1.100
     path: /srv/backup
-    realityip: 192.168.1.100
     allow_delete: true
 ```
+
+Each task takes the same `--send` / `--receive` / `--connect` / `--listen`
+direction as the command line: `send: true` serves, `receive:` replicates,
+`connect:` dials a host, `listen: true` waits to be dialed, both `send` and
+`receive` relay.
 
 ```bash
 local-mirror --config /etc/local-mirror.yml
@@ -288,7 +306,7 @@ packages install it under `/usr/share/doc/local-mirror/examples/`):
 
 ```bash
 sudo cp deploy/local-mirror.service /etc/systemd/system/
-# edit mode/path/upstream in ExecStart, then:
+# edit the direction/path/upstream in ExecStart, then:
 sudo systemctl daemon-reload
 sudo systemctl enable --now local-mirror
 journalctl -u local-mirror -f
@@ -302,7 +320,7 @@ the process if it dies:
 
 ```bash
 cp deploy/com.xwvike.local-mirror.plist ~/Library/LaunchAgents/
-# edit the binary path, mode/path/upstream and log path, then:
+# edit the binary path, direction/path/upstream and log path, then:
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.xwvike.local-mirror.plist
 # stop and unload:
 launchctl bootout gui/$(id -u)/com.xwvike.local-mirror
@@ -314,18 +332,28 @@ the plist) rather than a `-k` argument, to keep it out of `ps`.
 
 ## Peeking at the watch tiers
 
-The server scores every directory by activity and watches the hot ones in
-real time while polling the cold ones lazily; events raise a directory's
-score and idleness decays it. To see the current table:
+A source scores every directory by activity and watches the hot ones in real
+time while polling the cold ones lazily; events raise a directory's score and
+idleness decays it. A running source keeps the table in
+`.local-mirror/heat.json`; read it with `--heat` (a separate, read-only
+command, like `--status`):
 
 ```bash
-kill -USR1 $(pgrep -f 'local-mirror -m reality')
-cat /path/to/source/.local-mirror/heat.txt
+local-mirror --heat -p /path/to/source   # or --heat --all for every source
 ```
 
-Directories are listed hottest first with their score, tier and event
-count. Handy for checking whether the directories you actually work in
-got real-time watches.
+```
+  heat   /path/to/source
+  tier1 (real-time watch) 3/512 · tier2 (lazy poll) 40 · 43 dirs
+  SCORE     TIER   EVENTS   DIRECTORY
+  128.45    tier1  3410     assets/img
+   42.10    tier1  890      src
+    3.20    tier2  12       docs
+```
+
+Directories are listed hottest first with their score, tier and event count —
+handy for checking whether the directories you actually work in got real-time
+watches. A sink builds no such table.
 
 ## Files it creates
 
@@ -336,11 +364,11 @@ syncing and from git):
 - `key` — self-managed transport key (mode 600), auto-loaded when `-k` is
   omitted; never synced (`--gen-key` writes it, `--show-key` prints it)
 - `status.json` — live runtime status read by `--status`; discardable
+- `heat.json` — directory heat table read by `--heat`; source side; discardable
 - `logs/error.log` — runtime log, rotated at 10 MB keeping the last 3 files
 - `partial/` — chunks of interrupted downloads awaiting resume
 - `backups/` — pre-overwrite copies, only with `--allow-critical`
 - `ignore` — optional ignore patterns, merged with `-i` (restart to apply)
-- `heat.txt` — watch-tier snapshot, written on `SIGUSR1` (server side)
 
 ## Development
 

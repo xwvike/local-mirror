@@ -18,9 +18,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# 服务端示例；客户端改为: -m mirror -r <上游IP> -p /srv/replica
-# 中继改为:            -m relay  -r <上游IP> -p /srv/relay
-ExecStart=/usr/local/bin/local-mirror -m reality -p /srv/data -l warn
+# 源端示例；汇端改为: --receive --connect <上游IP> -p /srv/replica
+# 中继改为:          --send --receive --connect <上游IP> -p /srv/relay
+ExecStart=/usr/local/bin/local-mirror --send -p /srv/data -l warn
 # 传输加密口令建议用环境变量而非命令行参数（避免出现在 ps 输出中）
 #Environment=LOCAL_MIRROR_SECRET=changeme
 #EnvironmentFile=/etc/local-mirror/secret.env

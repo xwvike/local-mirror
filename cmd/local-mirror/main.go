@@ -12,6 +12,7 @@ import (
 	"local-mirror/internal/status"
 	"local-mirror/internal/tree"
 	"local-mirror/internal/tui"
+	"local-mirror/internal/watcher"
 	"local-mirror/pkg/termstyle"
 	"local-mirror/pkg/utils"
 	"net"
@@ -318,9 +319,6 @@ func main() {
 	restoreConsole := enableConsoleUTF8()
 	defer restoreConsole()
 
-	// SIGUSR1 → 目录热度快照落盘（观察用，见 sigdump_unix.go）
-	installHeatDumpSignal()
-
 	flag.Parse()
 
 	// 用户主动请求帮助：输出到 stdout，退出码 0
@@ -339,15 +337,20 @@ func main() {
 	// 多任务监督模式：--config 与单实例旗子互斥，避免"以为在配置任务
 	// 实际全被忽略"的误会
 	if *config.ConfigFile != "" {
-		// --status --config：聚合展示 YAML 里每个任务的状态（各读各自根下的
-		// status.json），而非启动监督进程。这是"通过 yml 部署了多台"的观测入口
-		if *config.Status {
+		// --status/--heat --config：聚合展示 YAML 里每个任务的观测数据（各读各自
+		// 根下的 status.json / heat.json），而非启动监督进程。这是"通过 yml 部署
+		// 了多台"的观测入口
+		if *config.Status || *config.Heat {
 			multiCfg, err := config.LoadMultiConfig(*config.ConfigFile)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
 				os.Exit(2)
 			}
-			runStatusAggregate(multiCfg)
+			if *config.Heat {
+				runHeatAggregate(multiCfg)
+			} else {
+				runStatusAggregate(multiCfg)
+			}
 			os.Exit(0)
 		}
 		var extra []string
@@ -378,15 +381,25 @@ func main() {
 		return
 	}
 
-	// --status --all：从进程表发现本机所有运行中的实例并聚合展示，不需要任何
-	// 路径。放在方向/根解析之前——它与同步无关，也不占目录锁
-	if *config.Status && *config.All {
-		runStatusAll()
-		os.Exit(0)
-	}
-	if *config.All && !*config.Status {
-		fmt.Fprintf(os.Stderr, "local-mirror: --all only applies together with --status\n")
+	// --status 与 --heat 都是只读观测子命令，语义不同，不能同时给
+	if *config.Status && *config.Heat {
+		fmt.Fprintf(os.Stderr, "local-mirror: --status and --heat are separate views; pass one at a time\n")
 		os.Exit(2)
+	}
+
+	// --status/--heat --all：从进程表发现本机所有运行中的实例并聚合展示，不需要
+	// 任何路径。放在方向/根解析之前——它与同步无关，也不占目录锁
+	if *config.All {
+		switch {
+		case *config.Status:
+			runStatusAll()
+		case *config.Heat:
+			runHeatAll()
+		default:
+			fmt.Fprintf(os.Stderr, "local-mirror: --all only applies together with --status or --heat\n")
+			os.Exit(2)
+		}
+		os.Exit(0)
 	}
 
 	// 方向优先 CLI（公网化支柱 A）：位置糖与 --send/--receive × --connect/--listen
@@ -417,6 +430,13 @@ func main() {
 	// 管道/重定向时打印一次（脚本友好）
 	if *config.Status {
 		runStatusSingle(root)
+		os.Exit(0)
+	}
+
+	// --heat：只读源侧常驻进程写下的 heat.json 并渲染目录热度表后退出。
+	// 与 --status 同样早于 InitDB——绝不去抢常驻进程持有的目录锁
+	if *config.Heat {
+		runHeatSingle(root)
 		os.Exit(0)
 	}
 
@@ -971,6 +991,133 @@ func renderAll() {
 		rows = append(rows, statusRow{Name: shortRoot(inst.Root), Dir: dirShortFromSnap(inst.Snap), Snap: inst.Snap})
 	}
 	renderStatusTable(rows, p)
+}
+
+// heatMaxRows 终端里单个热度表最多展示的行数；其余（都是低分 tier2）折叠为计数。
+// 观测关心的是"我干活的目录有没有拿到实时 watch"，高分在前已足够
+const heatMaxRows = 40
+
+// runHeatSingle 单实例 --heat：终端进实时刷新循环，管道则打印一次
+func runHeatSingle(root string) {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		liveLoop(func() { renderHeatSingle(root) })
+	} else {
+		renderHeatSingle(root)
+	}
+}
+
+// runHeatAll 全机 --heat --all：发现本机所有源实例并逐个展示热度表
+func runHeatAll() {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		liveLoop(renderHeatAll)
+	} else {
+		renderHeatAll()
+	}
+}
+
+// runHeatAggregate 多实例 --heat --config：聚合 YAML 每个任务的热度表
+func runHeatAggregate(cfg *config.MultiConfig) {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		liveLoop(func() { renderHeatAggregate(cfg) })
+	} else {
+		renderHeatAggregate(cfg)
+	}
+}
+
+// renderHeatSingle 渲染单个同步根的目录热度表（每帧重新读盘）
+func renderHeatSingle(root string) {
+	p := termstyle.NewPalette(os.Stdout)
+	snap, err := watcher.LoadHeat(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "local-mirror: cannot read heat table: %v\n", err)
+		return
+	}
+	fmt.Println()
+	if snap == nil {
+		fmt.Printf("  %sno heat table for%s %s\n", p.Dim, p.Reset, root)
+		fmt.Printf("  %s(only a running source or relay builds one; a sink has none)%s\n", p.Dim, p.Reset)
+		return
+	}
+	fmt.Printf("  %s%sheat%s   %s%s%s\n", p.Bold, p.Cyan, p.Reset, p.Dim, root, p.Reset)
+	renderHeatTable(snap, p)
+}
+
+// renderHeatAll 从进程表发现本机所有实例，逐个展示各自的热度表（源才有）
+func renderHeatAll() {
+	p := termstyle.NewPalette(os.Stdout)
+	instances := status.DiscoverInstances()
+	fmt.Println()
+	fmt.Printf("  %s%slocal-mirror heat%s   %s%d running on this host%s\n",
+		p.Bold, p.Cyan, p.Reset, p.Dim, len(instances), p.Reset)
+	shown := 0
+	for _, inst := range instances {
+		snap, err := watcher.LoadHeat(inst.Root)
+		if err != nil || snap == nil {
+			continue // 汇实例无热度表，跳过
+		}
+		fmt.Printf("\n  %s%s%s\n", p.Bold, shortRoot(inst.Root), p.Reset)
+		renderHeatTable(snap, p)
+		shown++
+	}
+	if shown == 0 {
+		fmt.Printf("\n  %sno source with a heat table found (sinks don't build one)%s\n", p.Dim, p.Reset)
+	}
+}
+
+// renderHeatAggregate 逐个展示 YAML 每个任务的热度表（各读各自根下的 heat.json）
+func renderHeatAggregate(cfg *config.MultiConfig) {
+	p := termstyle.NewPalette(os.Stdout)
+	fmt.Println()
+	fmt.Printf("  %s%slocal-mirror heat%s   %s%d tasks%s\n", p.Bold, p.Cyan, p.Reset, p.Dim, len(cfg.Tasks), p.Reset)
+	shown := 0
+	for i := range cfg.Tasks {
+		t := cfg.Tasks[i]
+		snap, err := watcher.LoadHeat(t.Path)
+		if err != nil || snap == nil {
+			continue
+		}
+		fmt.Printf("\n  %s%s%s\n", p.Bold, t.Name, p.Reset)
+		renderHeatTable(snap, p)
+		shown++
+	}
+	if shown == 0 {
+		fmt.Printf("\n  %sno task with a heat table found (only source/relay tasks build one)%s\n", p.Dim, p.Reset)
+	}
+}
+
+// renderHeatTable 热度表主体：分数降序，tier1（实时 watch）绿标，超出 heatMaxRows
+// 的低分尾部折叠为计数
+func renderHeatTable(snap *watcher.HeatSnapshot, p termstyle.Palette) {
+	stale := ""
+	if snap.Stale() {
+		stale = p.Yellow + "   (stale: source may have stopped)" + p.Reset
+	}
+	fmt.Printf("  %stier1 (real-time watch) %d/%d · tier2 (lazy poll) %d · %d dirs%s%s\n",
+		p.Dim, snap.Tier1Count, snap.Tier1Limit, snap.Total-snap.Tier1Count, snap.Total, p.Reset, stale)
+	if snap.Total == 0 {
+		fmt.Printf("  %s(no directories scored yet)%s\n", p.Dim, p.Reset)
+		return
+	}
+	fmt.Printf("  %s%s %s %s %s%s\n", p.Dim,
+		padCell("SCORE", 9), padCell("TIER", 6), padCell("EVENTS", 8), "DIRECTORY", p.Reset)
+	for i, e := range snap.Entries {
+		if i >= heatMaxRows {
+			fmt.Printf("  %s… +%d more (tier2, lower score)%s\n", p.Dim, len(snap.Entries)-heatMaxRows, p.Reset)
+			break
+		}
+		tier, tcol := "tier2", p.Dim
+		if e.Tier == 1 {
+			tier, tcol = "tier1", p.Green
+		}
+		dir := e.Path
+		if dir == "" || dir == "." {
+			dir = ". (sync root)"
+		}
+		fmt.Printf("  %s %s%s%s %s %s\n",
+			padCell(fmt.Sprintf("%.2f", e.Score), 9),
+			tcol, padCell(tier, 6), p.Reset,
+			padCell(fmt.Sprintf("%d", e.Events), 8), dir)
+	}
 }
 
 // shortRoot 取同步根的末两段做行标签（如 proj/src），比单纯 basename 更能

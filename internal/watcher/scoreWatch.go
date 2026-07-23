@@ -109,6 +109,7 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 	go GlobalScoreWatch.handleEvents()
 
 	go GlobalScoreWatch.intelligentScan()
+	go GlobalScoreWatch.heatDumpLoop()
 
 	go recoverUnreadable(ctx)
 

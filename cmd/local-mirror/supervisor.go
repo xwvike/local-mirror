@@ -192,14 +192,28 @@ func countRealityTasks(cfg *config.MultiConfig) int {
 	return n
 }
 
-// taskArgs 把任务配置映射为子进程 argv（与单实例旗子一一对应）
+// taskArgs 把任务配置映射为子进程 argv。方向用 --send/--receive 表达（内部
+// Mode 已由 config 归一），传输用 --connect/--listen——子进程再走 resolveDirection
+// 还原四象限。这样 ps 里也是方向优先词汇，不出现遗留的 -m/-r
 func taskArgs(t config.TaskConfig) []string {
-	args := []string{"-m", t.Mode, "-p", t.Path, "-a", t.Name}
+	var args []string
+	switch t.Mode {
+	case "reality":
+		args = []string{"--send"}
+	case "mirror":
+		args = []string{"--receive"}
+	case "relay":
+		args = []string{"--send", "--receive"}
+	}
+	args = append(args, "-p", t.Path, "-a", t.Name)
 	if t.LogLevel != "" {
 		args = append(args, "-l", t.LogLevel)
 	}
 	if t.RealityIP != "" {
-		args = append(args, "-r", t.RealityIP)
+		args = append(args, "--connect", t.RealityIP)
+	}
+	if t.Listen {
+		args = append(args, "--listen")
 	}
 	if len(t.Ignore) > 0 {
 		args = append(args, "-i", strings.Join(t.Ignore, ","))

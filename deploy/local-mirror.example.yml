@@ -7,49 +7,52 @@
 # 修改本文件需重启父进程整体生效。
 #
 # 注意:
-# - 同一台机器的服务端任务(reality/relay)共享 TCP 端口段
-#   52345-52354,最多 10 个
-# - mirror/relay 任务建议显式写 realityip;留空会走非交互自动发现,
-#   局域网里恰好一台服务端时才能自动连接。零台(上游可能还没启动)
-#   exit 1 会被退避重启再扫;多台是配置歧义,exit 2 判永久错误
+# - 方向用 send/receive 表达,传输用 connect/listen(与命令行的
+#   --send/--receive/--connect/--listen 一致);send 提供服务、
+#   receive 拉取镜像、两者都给即中继
+# - 同一台机器里监听端口的任务共享 TCP 端口段 52345-52354,最多 10 个
+# - receive 任务建议显式写 connect;留空会走非交互自动发现,局域网里
+#   恰好一台源端时才能自动连接。零台(上游可能还没启动)exit 1 会被退避
+#   重启再扫;多台是配置歧义,exit 2 判永久错误
 # - secret 经环境变量传给子进程,不出现在 ps 的命令行里;
 #   也可以不写,统一在 systemd unit 里设 Environment=LOCAL_MIRROR_SECRET=…
 
-# 各任务字段留空时的回退值(可选;name/mode/path 不参与回退)
+# 各任务字段留空时的回退值(可选;name/direction/path 不参与回退)
 defaults:
   loglevel: info
   # secret: change-me
 
 tasks:
-  # 服务端:共享照片目录,忽略 RAW 缓存与日志
+  # 源:共享照片目录,忽略 RAW 缓存与日志
   - name: photos
-    mode: reality
+    send: true
     path: /srv/photos
     ignore: [cache, "*.log"]
 
-  # 服务端:共享文档目录
+  # 源:共享文档目录
   - name: docs
-    mode: reality
+    send: true
     path: /srv/docs
 
-  # 客户端:从 NAS 备份下来,完全忠实镜像(允许删除)
+  # 汇:从 NAS 备份下来,完全忠实镜像(允许删除)
   - name: nas-backup
-    mode: mirror
+    receive: true
+    connect: 192.168.1.100
     path: /srv/backup
-    realityip: 192.168.1.100
     allow_delete: true
     cooldown: 3600
 
-  # 客户端:同步到关键路径(如 /etc)需显式解锁 allow_critical;
+  # 汇:同步到关键路径(如 /etc)需显式解锁 allow_critical;
   # 默认这些路径连同步都拒绝,解锁后首次覆盖会备份原文件到 .local-mirror/backups
   # - name: etc-mirror
-  #   mode: mirror
+  #   receive: true
+  #   connect: 192.168.1.100
   #   path: /etc
-  #   realityip: 192.168.1.100
   #   allow_critical: true      # 仅同步不删除;再加 allow_delete: true 才会删除
 
-  # 中继:从上游镜像,同时向下游提供服务
+  # 中继:从上游接收,同时向下游提供服务
   # - name: relay-hub
-  #   mode: relay
+  #   send: true
+  #   receive: true
+  #   connect: 10.0.0.5
   #   path: /srv/relay
-  #   realityip: 10.0.0.5

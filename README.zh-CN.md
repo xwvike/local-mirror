@@ -127,6 +127,7 @@ local-mirror ./path/to/source @vps.example.net:52345
 | `--show-key` | 打印工作目录中已有的密钥文件 | |
 | `--no-encrypt` | 即使工作目录存在密钥文件也强制明文 | |
 | `--status` | 打印运行中实例的状态后退出（`--all` 看全部） | |
+| `--heat` | 打印运行中源端的目录热度表后退出 | |
 | `-c, --cooldown` | 全量扫描间隔（秒），仅汇端 | `1800` |
 | `-f, --filebuffersize` | 传输分块大小（字节），仅源端 | `65536` |
 | `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
@@ -141,6 +142,14 @@ local-mirror ./path/to/source @vps.example.net:52345
 （`--connect [2001:db8::1]:52345`）；监听方同时绑 IPv4 与 IPv6。使用域名每次重连
 都重新解析，DDNS 天然可用。`--send` 和 `--receive` 都给即为中继。
 
+### 局域网发现
+
+`--receive` 且既不带 `--connect` 也不带 `--listen` 时，会通过 UDP 在本地网络
+扫描源端,多个应答时交互选择。这是同一局域网内两台机器的零配置路径——不用
+填地址、不用记端口。仅这一种情况会触发:给了 `--connect` 就直连已知主机,给了
+`--listen` 就等对端拨入。发现只在本网段进行,不跨 VPN、子网或防火墙——那些场景
+请改用 `--connect <host>`。设了密钥时,探测与应答都带认证,没有密钥的扫描者
+什么也拿不到。
 
 忽略模式（来自 `-i` 或 `.local-mirror/ignore` 文件，每行一条，`#` 注释）
 按路径段在任意深度匹配，支持 `* ? []` 通配符。服务端命中即不扫描不提供；
@@ -242,19 +251,23 @@ defaults:
 
 tasks:
   - name: photos          # 任务名 = 发现别名 = 日志前缀
-    mode: reality
+    send: true
     path: /srv/photos
     ignore: [cache, "*.log"]
   - name: nas-backup
-    mode: mirror
+    receive: true
+    connect: 192.168.1.100
     path: /srv/backup
-    realityip: 192.168.1.100
     allow_delete: true
 ```
 
 ```bash
 local-mirror --config /etc/local-mirror.yml
 ```
+
+每个任务用和命令行一样的 `--send` / `--receive` / `--connect` / `--listen`
+方向:`send: true` 提供服务,`receive:` 拉取镜像,`connect:` 拨向主机,
+`listen: true` 等对端拨入,`send` 与 `receive` 都给即中继。
 
 每个任务是独立子进程：崩溃的任务退避重启，配置错误（退出码 2）只停该
 任务，父进程收到 SIGTERM 统一停全部。同机服务端任务共享 52345–52354
@@ -268,7 +281,7 @@ Linux 用 systemd——单元文件示例在
 
 ```bash
 sudo cp deploy/local-mirror.service /etc/systemd/system/
-# 编辑 ExecStart 里的模式/目录/上游地址后：
+# 编辑 ExecStart 里的方向/目录/上游地址后：
 sudo systemctl daemon-reload
 sudo systemctl enable --now local-mirror
 journalctl -u local-mirror -f
@@ -281,7 +294,7 @@ LaunchAgent 示例
 
 ```bash
 cp deploy/com.xwvike.local-mirror.plist ~/Library/LaunchAgents/
-# 编辑二进制路径、模式/目录/上游地址与日志路径后：
+# 编辑二进制路径、方向/目录/上游地址与日志路径后：
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.xwvike.local-mirror.plist
 # 停止并卸载：
 launchctl bootout gui/$(id -u)/com.xwvike.local-mirror
@@ -293,16 +306,25 @@ plist 里 `EnvironmentVariables`），不推荐在 `-k` 参数里，免得出现
 
 ## 查看监听分级
 
-服务 端按活跃度给每个目录打分：热门目录实时监听，冷门目录低频轮询；
-事件会给目录加分，沉寂则逐步衰减。获取当前的热度表：
+源端按活跃度给每个目录打分：热门目录实时监听，冷门目录低频轮询；事件会给
+目录加分，沉寂则逐步衰减。运行中的源端把这张表写在 `.local-mirror/heat.json`
+里，用 `--heat` 读取（独立的只读命令，和 `--status` 一个套路）：
 
 ```bash
-kill -USR1 $(pgrep -f 'local-mirror -m reality')
-cat /path/to/source/.local-mirror/heat.txt
+local-mirror --heat -p /path/to/source   # 或 --heat --all 看全机所有源
 ```
 
-目录按分数降序列出，带层级和事件计数——可以直观确认你正在干活的
-目录有没有拿到实时监听。
+```
+  heat   /path/to/source
+  tier1 (real-time watch) 3/512 · tier2 (lazy poll) 40 · 43 dirs
+  SCORE     TIER   EVENTS   DIRECTORY
+  128.45    tier1  3410     assets/img
+   42.10    tier1  890      src
+    3.20    tier2  12       docs
+```
+
+目录按分数降序列出，带层级和事件计数——可以直观确认你正在干活的目录有没有
+拿到实时监听。汇端不会构建这张表。
 
 ## 运行时产物
 
@@ -312,8 +334,8 @@ cat /path/to/source/.local-mirror/heat.txt
 - `key` — 自管理的传输密钥（权限 600），省略 `-k` 时自动加载，从不同步
   （`--gen-key` 写入，`--show-key` 打印）
 - `status.json` — 供 `--status` 读取的实时状态；可弃
+- `heat.json` — 供 `--heat` 读取的目录热度表；仅源端；可弃
 - `logs/error.log` — 运行日志，单文件 10 MB 轮转，保留最近 3 个
 - `partial/` — 中断下载的分片，等待续传
 - `backups/` — 覆盖前备份，仅 `--allow-critical` 时产生
 - `ignore` — 可选的忽略模式，与 `-i` 合并（改后重启生效）
-- `heat.txt` — 监听分级快照，收到 `SIGUSR1` 时写出（仅服务端）

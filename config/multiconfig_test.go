@@ -80,6 +80,70 @@ func TestLoadMultiConfigErrors(t *testing.T) {
 	}
 }
 
+// TestLoadMultiConfigDirectionFields 方向优先字段归一到内部 Mode/RealityIP
+func TestLoadMultiConfigDirectionFields(t *testing.T) {
+	cfg, err := LoadMultiConfig(writeYAML(t, `
+tasks:
+  - name: src
+    send: true
+    path: /tmp/da
+  - name: sink
+    receive: true
+    connect: 10.0.0.5
+    path: /tmp/db
+    allow_delete: true
+  - name: sinklisten
+    receive: true
+    listen: true
+    path: /tmp/dc
+  - name: relay
+    send: true
+    receive: true
+    connect: 10.0.0.9
+    path: /tmp/dd
+`))
+	if err != nil {
+		t.Fatalf("LoadMultiConfig: %v", err)
+	}
+	src, sink, sinklisten, relay := cfg.Tasks[0], cfg.Tasks[1], cfg.Tasks[2], cfg.Tasks[3]
+	if src.Mode != "reality" {
+		t.Errorf("send → reality, got %q", src.Mode)
+	}
+	if sink.Mode != "mirror" || sink.RealityIP != "10.0.0.5" || !sink.AllowDelete {
+		t.Errorf("receive+connect wrong: %+v", sink)
+	}
+	if sinklisten.Mode != "mirror" || !sinklisten.Listen || sinklisten.RealityIP != "" {
+		t.Errorf("receive+listen wrong: %+v", sinklisten)
+	}
+	if relay.Mode != "relay" || relay.RealityIP != "10.0.0.9" {
+		t.Errorf("send+receive → relay, got mode=%q ip=%q", relay.Mode, relay.RealityIP)
+	}
+}
+
+// TestLoadMultiConfigDirectionErrors 方向字段的非法组合
+func TestLoadMultiConfigDirectionErrors(t *testing.T) {
+	cases := map[string]struct {
+		yml     string
+		wantSub string
+	}{
+		"mix vocab":      {"tasks:\n  - send: true\n    mode: reality\n    path: /tmp/x", "cannot be mixed"},
+		"mix realityip":  {"tasks:\n  - receive: true\n    realityip: 1.2.3.4\n    path: /tmp/x", "cannot be mixed"},
+		"connect+listen": {"tasks:\n  - receive: true\n    connect: 1.2.3.4\n    listen: true\n    path: /tmp/x", "mutually exclusive"},
+		"no direction":   {"tasks:\n  - connect: 1.2.3.4\n    path: /tmp/x", "need a direction"},
+		"nothing at all": {"tasks:\n  - path: /tmp/x", "specify a direction"},
+	}
+	for name, c := range cases {
+		_, err := LoadMultiConfig(writeYAML(t, c.yml))
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.wantSub) {
+			t.Errorf("%s: error %q missing %q", name, err, c.wantSub)
+		}
+	}
+}
+
 func TestLoadMultiConfigDupPathRelativeAbsolute(t *testing.T) {
 	// 相对与绝对写法指向同一目录也要拒绝
 	wd, _ := os.Getwd()

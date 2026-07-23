@@ -1,7 +1,7 @@
 package watcher
 
 import (
-	"fmt"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,50 +12,105 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// WriteHeatSnapshot 把当前热度表快照写到 <同步根>/.local-mirror/heat.txt，
-// 按分数降序排列并标注所属层级。由 SIGUSR1 触发（见 cmd 的信号接线），
-// 用于在生产环境随时观察哪些目录被判为热门（实时 watch）、哪些在冷轮询。
-// watcher 未运行（mirror 模式）时无操作。
-func WriteHeatSnapshot() {
-	sw := GlobalScoreWatch
-	if sw == nil {
-		log.Warn("heat snapshot: watcher not running (only reality/relay have a heat table)")
-		return
-	}
+// HeatSchemaVersion heat.json 的结构版本，读端据此容错跨版本字段变化
+const HeatSchemaVersion = 1
 
-	sw.mu.Lock()
-	entries := make([]HeatScore, 0, len(sw.heatMap))
-	for _, h := range sw.heatMap {
-		entries = append(entries, *h)
+// heatFlushInterval 热度表落盘节奏。热度是分钟级慢信号（每 10 分钟一轮衰减，
+// 事件即时加分），10s 刷新对观测足够，也几乎不占资源（一个小文件的原子写）
+const heatFlushInterval = 10 * time.Second
+
+// HeatEntry heat.json 里的单个目录条目
+type HeatEntry struct {
+	Path   string  `json:"path"`
+	Score  float64 `json:"score"`
+	Tier   int     `json:"tier"` // 1 = 实时 watch，2 = 惰性轮询
+	Events int     `json:"events"`
+}
+
+// HeatSnapshot 源侧常驻进程周期写下的目录热度快照（读端 --heat 渲染）。
+// 与 status.json 同属可弃状态：删了下次自动重建，不影响同步
+type HeatSnapshot struct {
+	Schema        int         `json:"schema"`
+	GeneratedUnix int64       `json:"generated_unix"`
+	Tier1Limit    int         `json:"tier1_limit"`
+	Tier1Count    int         `json:"tier1_count"`
+	Total         int         `json:"total"`
+	Entries       []HeatEntry `json:"entries"` // 按分数降序
+}
+
+// heatDumpLoop 周期把热度表落盘到 <同步根>/.local-mirror/heat.json。
+// 由源/relay 的 watcher 启动（见 scoreWatch，mirror 无 watcher 不落）。
+// 取代旧的 SIGUSR1+heat.txt：常驻进程主动写、--heat 另一进程只读，跨平台、
+// 多实例各写各目录互不干扰
+func (sw *ScoreWatch) heatDumpLoop() {
+	sw.WriteHeatJSON() // 启动即落一版，--heat 立刻有据可读
+	ticker := time.NewTicker(heatFlushInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		sw.WriteHeatJSON()
 	}
+}
+
+// WriteHeatJSON 原子落盘当前热度表：同目录临时文件 + rename，避免读端读到
+// 半个 JSON。条目按分数降序
+func (sw *ScoreWatch) WriteHeatJSON() {
+	sw.mu.Lock()
+	entries := make([]HeatEntry, 0, len(sw.heatMap))
 	tier1 := make(map[string]struct{}, len(sw.tier1))
 	for _, h := range sw.tier1 {
 		tier1[h.Path] = struct{}{}
+	}
+	for _, h := range sw.heatMap {
+		tier := 2
+		if _, ok := tier1[h.Path]; ok {
+			tier = 1
+		}
+		entries = append(entries, HeatEntry{Path: h.Path, Score: h.Score, Tier: tier, Events: h.EventCount})
 	}
 	tier1Limit := sw.tier1Limit
 	sw.mu.Unlock()
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Score > entries[j].Score })
 
-	outPath := filepath.Join(config.StartPath, ".local-mirror", "heat.txt")
-	f, err := os.Create(outPath)
+	snap := HeatSnapshot{
+		Schema:        HeatSchemaVersion,
+		GeneratedUnix: time.Now().Unix(),
+		Tier1Limit:    tier1Limit,
+		Tier1Count:    len(tier1),
+		Total:         len(entries),
+		Entries:       entries,
+	}
+	data, err := json.MarshalIndent(&snap, "", "  ")
 	if err != nil {
+		return
+	}
+	p := filepath.Join(config.StartPath, ".local-mirror", "heat.json")
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		log.Errorf("failed to write heat snapshot: %v", err)
 		return
 	}
-	defer f.Close()
+	_ = os.Rename(tmp, p)
+}
 
-	t1 := len(tier1)
-	fmt.Fprintf(f, "# local-mirror directory heat snapshot  %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(f, "# %d directories: tier1 (real-time watch) %d / limit %d, tier2 (lazy poll) %d\n",
-		len(entries), t1, tier1Limit, len(entries)-t1)
-	fmt.Fprintf(f, "# %-9s %-6s %-7s %s\n", "score", "tier", "events", "directory")
-	for _, e := range entries {
-		tier := "tier2"
-		if _, ok := tier1[e.Path]; ok {
-			tier = "tier1"
-		}
-		fmt.Fprintf(f, "%10.2f %-6s %8d %s\n", e.Score, tier, e.EventCount, e.Path)
+// LoadHeat 读取并解析 heat.json（供 --heat 子命令）。
+// 文件不存在返回 (nil, nil)：调用方据此报「无热度表」
+func LoadHeat(root string) (*HeatSnapshot, error) {
+	data, err := os.ReadFile(filepath.Join(root, ".local-mirror", "heat.json"))
+	if os.IsNotExist(err) {
+		return nil, nil
 	}
-	log.Infof("heat snapshot written to %s (%d directories)", outPath, len(entries))
+	if err != nil {
+		return nil, err
+	}
+	var s HeatSnapshot
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// Stale 快照是否已陈旧（超过 3×落盘间隔未更新 = 源进程可能已停）
+func (s *HeatSnapshot) Stale() bool {
+	return time.Since(time.Unix(s.GeneratedUnix, 0)) > 3*heatFlushInterval
 }
