@@ -16,8 +16,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // SchemaVersion status.json 的结构版本，读端据此容错跨版本字段变化。
@@ -31,6 +34,9 @@ const (
 	activeInterval = 1 * time.Second
 	// rateWindow 传输速率的滚动窗口
 	rateWindow = 5 * time.Second
+	// observeWindow 观测心跳的有效期：observe/ 目录里心跳文件的 mtime 在此窗口内
+	// 视为"有人在看"。观测进程每 activeInterval 刷新一次心跳，取 3× 留足容差
+	observeWindow = 3 * time.Second
 )
 
 // Snapshot 写入 status.json 的运行时快照。identity 段启动时定型，
@@ -99,6 +105,12 @@ var (
 	snap    Snapshot
 	path    string
 	enabled bool
+	// observeDir <同步根>/.local-mirror/observe：观测进程往里投放心跳文件，
+	// 常驻进程据此判断"有人在看"，只有被观测时才落盘（用户不看就停写）
+	observeDir string
+	// observedWriters 被观测时随 status.json 一起触发的附加写入器
+	//（如源端的 heat.json，由 watcher 注册），统一挂在同一个观测门上
+	observedWriters []func()
 	// poke 合并触发即时落盘：状态变化时非阻塞投递，写循环随即刷一次，
 	// 避免高频变化下每次都同步写盘
 	poke = make(chan struct{}, 1)
@@ -128,33 +140,120 @@ func Init(root, version, instance, direction, transport, peer string, encrypted 
 		StartedUnix: started,
 	}
 	path = filepath.Join(root, ".local-mirror", "status.json")
+	observeDir = filepath.Join(root, ".local-mirror", "observe")
+	_ = os.MkdirAll(observeDir, 0755)
 	enabled = true
 }
 
-// Run 启动落盘循环：连接活跃时 activeInterval、空闲时 idleInterval，外加每次
-// poke 即刷，阻塞至 stop 关闭。由常驻进程在后台 goroutine 里跑
+// RegisterObservedWriter 挂一个附加写入器到观测门上：被观测时它与 status.json
+// 同步刷新，无人观测时同样静默。由 watcher 注册 heat.json 写入器。可在 Run
+// 启动后调用（写循环每次取当前列表）
+func RegisterObservedWriter(fn func()) {
+	mu.Lock()
+	observedWriters = append(observedWriters, fn)
+	mu.Unlock()
+}
+
+// Run 落盘循环，只在被观测时写盘（用户不看就停）。无人观测时阻塞在 fsnotify
+// 事件/停止上——零定时器、零写盘、零唤醒（呼应项目对休眠功耗的关注）；观测进程
+// 往 observe/ 投放心跳即触发 fsnotify 事件唤醒本循环，进入按 activeInterval 落盘
+// 的"被观测"态。由常驻进程在后台 goroutine 里跑
 func Run(stop <-chan struct{}) {
 	if !enabled {
 		return
 	}
-	write() // 启动即落一版，--status 立刻有据可读
-	for {
-		mu.Lock()
-		interval := idleInterval
-		if snap.Connected || snap.CurrentFile != "" {
-			interval = activeInterval
-		}
-		mu.Unlock()
-		select {
-		case <-stop:
-			write()
-			return
-		case <-poke:
-			write()
-		case <-time.After(interval):
-			write()
+
+	// 启动落一版：确立身份/PID，供 --all 从进程表发现后交叉核对，也留一份"最后
+	// 已知状态"。之后只在被观测时写盘
+	write()
+
+	// 监视 observe 目录；建不起来则退化为始终写盘（不影响观测正确性，只是失去省电）
+	var events <-chan fsnotify.Event
+	if w, err := fsnotify.NewWatcher(); err == nil {
+		defer w.Close()
+		if err := w.Add(observeDir); err == nil {
+			events = w.Events
 		}
 	}
+
+	var ticker *time.Ticker
+	var tickC <-chan time.Time
+	start := func() {
+		if ticker == nil {
+			ticker = time.NewTicker(activeInterval)
+			tickC = ticker.C
+			writeAll() // 观测刚开始，立即落一版，观测进程尽快有据可读
+		}
+	}
+	stopWriting := func() {
+		if ticker != nil {
+			ticker.Stop()
+			ticker, tickC = nil, nil
+		}
+	}
+	defer stopWriting()
+
+	// fsnotify 建不起来时 events 为 nil：无法感知观测，只能始终写盘兜底
+	if events == nil {
+		start()
+	} else if observedNow() {
+		start()
+	}
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-events:
+			if observedNow() {
+				start()
+			}
+		case <-poke:
+			if ticker != nil {
+				writeAll() // 状态变化且正被观测 → 立刻刷新
+			}
+		case <-tickC:
+			if events != nil && !observedNow() {
+				stopWriting() // 观测者走了 → 停写，回到 fsnotify 睡眠
+			} else {
+				writeAll()
+			}
+		}
+	}
+}
+
+// writeAll 落 status.json，并触发所有 observed-writer（如 heat.json）
+func writeAll() {
+	write()
+	mu.Lock()
+	writers := observedWriters
+	mu.Unlock()
+	for _, fn := range writers {
+		fn()
+	}
+}
+
+// observedNow 扫描 observe 目录判断是否有人在看：任一心跳文件 mtime 在 observeWindow
+// 内即为真；顺手清理陈旧心跳，避免观测进程异常退出后文件堆积
+func observedNow() bool {
+	entries, err := os.ReadDir(observeDir)
+	if err != nil {
+		return false
+	}
+	now := time.Now()
+	fresh := false
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) <= observeWindow {
+			fresh = true
+		} else {
+			_ = os.Remove(filepath.Join(observeDir, e.Name()))
+		}
+	}
+	return fresh
 }
 
 func signal() {
@@ -162,6 +261,47 @@ func signal() {
 	case poke <- struct{}{}:
 	default:
 	}
+}
+
+// observePath 观测进程投放的心跳文件路径（以本进程 PID 命名，天然多观测者隔离）
+func observePath(root string) string {
+	return filepath.Join(root, ".local-mirror", "observe", strconv.Itoa(os.Getpid()))
+}
+
+// TouchObserve 观测进程调用：在目标同步根的 observe 目录留下/刷新本进程心跳，
+// 告知常驻进程"有人在看"。TUI 每帧调用，一次性观测调用一次
+func TouchObserve(root string) {
+	dir := filepath.Join(root, ".local-mirror", "observe")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	p := observePath(root)
+	now := time.Now()
+	if os.Chtimes(p, now, now) != nil {
+		if f, err := os.Create(p); err == nil {
+			_ = f.Close()
+		}
+	}
+}
+
+// ClearObserve 观测进程退出前移除自己的心跳（best-effort；忘了也会被常驻进程
+// 按 observeWindow 陈旧清理）
+func ClearObserve(root string) {
+	_ = os.Remove(observePath(root))
+}
+
+// AwaitFresh 观测进程调用：等目标根下 status.json 在 since 之后被刷新（常驻进程
+// 已响应观测请求），或超时。返回是否等到新鲜数据——超时通常意味常驻进程已停
+func AwaitFresh(root string, since time.Time, timeout time.Duration) bool {
+	p := filepath.Join(root, ".local-mirror", "status.json")
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if info, err := os.Stat(p); err == nil && info.ModTime().After(since) {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 // SessionUp 一条连接就绪（源侧 accept/拨出成功、汇侧握手成功）。

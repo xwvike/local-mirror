@@ -3,6 +3,7 @@ package status
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -11,8 +12,76 @@ func reset() {
 	mu.Lock()
 	snap = Snapshot{}
 	path = ""
+	observeDir = ""
+	observedWriters = nil
 	enabled = false
 	mu.Unlock()
+}
+
+// TestObserveGate 观测门：无心跳=未观测；TouchObserve=已观测；心跳陈旧则未观测且
+// 被清理；ClearObserve 撤销
+func TestObserveGate(t *testing.T) {
+	reset()
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, ".local-mirror"), 0755)
+	Init(root, "v1", "aa", "send · source", "listen", "inbound", false, time.Now().Unix())
+
+	if observedNow() {
+		t.Fatal("no heartbeat should read unobserved")
+	}
+	TouchObserve(root)
+	if !observedNow() {
+		t.Fatal("after TouchObserve should be observed")
+	}
+	// 回拨心跳 mtime 超出 observeWindow → 未观测且顺手清理
+	hb := filepath.Join(root, ".local-mirror", "observe", strconv.Itoa(os.Getpid()))
+	old := time.Now().Add(-2 * observeWindow)
+	if err := os.Chtimes(hb, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if observedNow() {
+		t.Fatal("stale heartbeat should read unobserved")
+	}
+	if _, err := os.Stat(hb); !os.IsNotExist(err) {
+		t.Fatal("stale heartbeat should be pruned")
+	}
+	// 再投一次然后撤销
+	TouchObserve(root)
+	ClearObserve(root)
+	if observedNow() {
+		t.Fatal("after ClearObserve should be unobserved")
+	}
+}
+
+// TestObservedWriter 注册的 observed-writer 会随 writeAll 一起触发
+func TestObservedWriter(t *testing.T) {
+	reset()
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, ".local-mirror"), 0755)
+	Init(root, "v1", "aa", "send · source", "listen", "inbound", false, time.Now().Unix())
+	called := 0
+	RegisterObservedWriter(func() { called++ })
+	writeAll()
+	if called != 1 {
+		t.Fatalf("observed writer should fire once per writeAll, got %d", called)
+	}
+}
+
+// TestAwaitFresh status.json 在 since 之后被写 → 视为新鲜；无文件 → 超时
+func TestAwaitFresh(t *testing.T) {
+	reset()
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, ".local-mirror"), 0755)
+	Init(root, "v1", "aa", "receive · sink", "dial", "peer", false, time.Now().Unix())
+
+	if AwaitFresh(root, time.Now(), 150*time.Millisecond) {
+		t.Fatal("no status.json should time out")
+	}
+	before := time.Now().Add(-time.Second)
+	write()
+	if !AwaitFresh(root, before, 500*time.Millisecond) {
+		t.Fatal("a written status.json should count as fresh vs an earlier 'since'")
+	}
 }
 
 // TestLoadMissing 无快照文件 → (nil, nil)，供 --status 报「无实例」

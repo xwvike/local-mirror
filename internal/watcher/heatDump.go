@@ -15,9 +15,10 @@ import (
 // HeatSchemaVersion heat.json 的结构版本，读端据此容错跨版本字段变化
 const HeatSchemaVersion = 1
 
-// heatFlushInterval 热度表落盘节奏。热度是分钟级慢信号（每 10 分钟一轮衰减，
-// 事件即时加分），10s 刷新对观测足够，也几乎不占资源（一个小文件的原子写）
-const heatFlushInterval = 10 * time.Second
+// heatStaleAfter 读端判定 heat.json 陈旧的阈值。heat.json 只在被观测时随
+// status.json 一起刷新（见 status 的观测门），观测中超过此时长没更新即认为
+// 源端已停
+const heatStaleAfter = 15 * time.Second
 
 // HeatEntry heat.json 里的单个目录条目
 type HeatEntry struct {
@@ -36,19 +37,6 @@ type HeatSnapshot struct {
 	Tier1Count    int         `json:"tier1_count"`
 	Total         int         `json:"total"`
 	Entries       []HeatEntry `json:"entries"` // 按分数降序
-}
-
-// heatDumpLoop 周期把热度表落盘到 <同步根>/.local-mirror/heat.json。
-// 由源/relay 的 watcher 启动（见 scoreWatch，mirror 无 watcher 不落）。
-// 取代旧的 SIGUSR1+heat.txt：常驻进程主动写、--heat 另一进程只读，跨平台、
-// 多实例各写各目录互不干扰
-func (sw *ScoreWatch) heatDumpLoop() {
-	sw.WriteHeatJSON() // 启动即落一版，--heat 立刻有据可读
-	ticker := time.NewTicker(heatFlushInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		sw.WriteHeatJSON()
-	}
 }
 
 // WriteHeatJSON 原子落盘当前热度表：同目录临时文件 + rename，避免读端读到
@@ -110,7 +98,7 @@ func LoadHeat(root string) (*HeatSnapshot, error) {
 	return &s, nil
 }
 
-// Stale 快照是否已陈旧（超过 3×落盘间隔未更新 = 源进程可能已停）
+// Stale 快照是否已陈旧（被观测中仍长时间未更新 = 源进程可能已停）
 func (s *HeatSnapshot) Stale() bool {
-	return time.Since(time.Unix(s.GeneratedUnix, 0)) > 3*heatFlushInterval
+	return time.Since(time.Unix(s.GeneratedUnix, 0)) > heatStaleAfter
 }

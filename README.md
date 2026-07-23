@@ -216,9 +216,11 @@ regenerating it disconnects every one of them.
 
 ## Watching a running instance
 
-`--status` is a separate, read-only command: it reads the snapshot the daemon
-keeps in `.local-mirror/status.json`. Point it at a sync root with `-p` (or
-run it from inside one).
+`--status` is a separate, read-only command. It works on demand: while a
+`--status` is watching, the daemon writes its state to
+`.local-mirror/status.json` once a second and the command renders it; when no
+one is watching, the daemon writes nothing, so observing is free to leave off.
+Point it at a sync root with `-p` (or run it from inside one).
 
 ```bash
 local-mirror --status -p /path/to/source
@@ -334,9 +336,9 @@ the plist) rather than a `-k` argument, to keep it out of `ps`.
 
 A source scores every directory by activity and watches the hot ones in real
 time while polling the cold ones lazily; events raise a directory's score and
-idleness decays it. A running source keeps the table in
-`.local-mirror/heat.json`; read it with `--heat` (a separate, read-only
-command, like `--status`):
+idleness decays it. Read the table with `--heat` (a separate, read-only
+command, like `--status`); the source publishes it to `.local-mirror/heat.json`
+only while you're watching:
 
 ```bash
 local-mirror --heat -p /path/to/source   # or --heat --all for every source
@@ -363,8 +365,8 @@ syncing and from git):
 - `cache.db` — the persisted directory tree; restarts skip unchanged files
 - `key` — self-managed transport key (mode 600), auto-loaded when `-k` is
   omitted; never synced (`--gen-key` writes it, `--show-key` prints it)
-- `status.json` — live runtime status read by `--status`; discardable
-- `heat.json` — directory heat table read by `--heat`; source side; discardable
+- `status.json` — live runtime status, written only while `--status` watches; discardable
+- `heat.json` — directory heat table, written only while `--heat` watches (source side); discardable
 - `logs/error.log` — runtime log, rotated at 10 MB keeping the last 3 files
 - `partial/` — chunks of interrupted downloads awaiting resume
 - `backups/` — pre-overwrite copies, only with `--allow-critical`

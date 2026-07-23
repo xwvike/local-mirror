@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"local-mirror/config"
+	"local-mirror/internal/status"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
 	"math"
@@ -109,7 +110,9 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 	go GlobalScoreWatch.handleEvents()
 
 	go GlobalScoreWatch.intelligentScan()
-	go GlobalScoreWatch.heatDumpLoop()
+	// heat.json 挂在 status 的观测门上：只有 --status/--heat 观测时才随
+	// status.json 一起刷新，无人看则不写（取代独立定时器）
+	status.RegisterObservedWriter(GlobalScoreWatch.WriteHeatJSON)
 
 	go recoverUnreadable(ctx)
 

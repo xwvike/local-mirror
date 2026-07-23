@@ -196,8 +196,9 @@ local-mirror --receive --connect vps.example.net -k <生成的密钥>
 
 ## 查看运行中的实例
 
-`--status` 是独立的只读命令：它读取常驻进程写在 `.local-mirror/status.json`
-的快照。可以使用 `-p` 指向一个同步工作目录（或直接在目录中运行）。
+`--status` 是独立的只读命令,按需工作:有 `--status` 在看时,常驻进程每秒把
+状态写到 `.local-mirror/status.json`、命令负责渲染;没人看时常驻进程根本不写,
+所以不观测就零开销。可以使用 `-p` 指向一个同步工作目录（或直接在目录中运行）。
 
 ```bash
 local-mirror --status -p /path/to/source
@@ -307,8 +308,8 @@ plist 里 `EnvironmentVariables`），不推荐在 `-k` 参数里，免得出现
 ## 查看监听分级
 
 源端按活跃度给每个目录打分：热门目录实时监听，冷门目录低频轮询；事件会给
-目录加分，沉寂则逐步衰减。运行中的源端把这张表写在 `.local-mirror/heat.json`
-里，用 `--heat` 读取（独立的只读命令，和 `--status` 一个套路）：
+目录加分，沉寂则逐步衰减。用 `--heat` 读取（独立的只读命令，和 `--status`
+一个套路）；源端只在你观测时才把这张表写到 `.local-mirror/heat.json`：
 
 ```bash
 local-mirror --heat -p /path/to/source   # 或 --heat --all 看全机所有源
@@ -333,8 +334,8 @@ local-mirror --heat -p /path/to/source   # 或 --heat --all 看全机所有源
 - `cache.db` — 持久化的目录树；重启时跳过未变化的文件
 - `key` — 自管理的传输密钥（权限 600），省略 `-k` 时自动加载，从不同步
   （`--gen-key` 写入，`--show-key` 打印）
-- `status.json` — 供 `--status` 读取的实时状态；可弃
-- `heat.json` — 供 `--heat` 读取的目录热度表；仅源端；可弃
+- `status.json` — 实时状态，仅在 `--status` 观测时才写；可弃
+- `heat.json` — 目录热度表，仅在 `--heat` 观测时才写（仅源端）；可弃
 - `logs/error.log` — 运行日志，单文件 10 MB 轮转，保留最近 3 个
 - `partial/` — 中断下载的分片，等待续传
 - `backups/` — 覆盖前备份，仅 `--allow-critical` 时产生

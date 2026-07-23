@@ -720,12 +720,23 @@ func padCell(text string, w int) string {
 	return text
 }
 
-// runStatusSingle 单实例 --status：终端进实时刷新循环，管道则打印一次
+// observeWarm 一次性观测（管道/重定向）投放心跳后，给常驻进程被 fsnotify 唤醒
+// 并落一版盘的时间——常驻进程默认不写，靠观测心跳触发（用户不看就不写）
+const observeWarm = 400 * time.Millisecond
+
+// runStatusSingle 单实例 --status：终端进实时刷新循环，管道则打印一次。
+// 观测进程投放心跳请求常驻进程落盘，读完撤销——无人看时常驻进程完全不写
 func runStatusSingle(root string) {
 	if term.IsTerminal(int(os.Stdout.Fd())) {
-		liveLoop(func() { renderSingle(root) })
+		status.TouchObserve(root)
+		liveLoop(func() { status.TouchObserve(root); renderSingle(root) })
+		status.ClearObserve(root)
 	} else {
+		since := time.Now()
+		status.TouchObserve(root)
+		status.AwaitFresh(root, since, 2*time.Second)
 		renderSingle(root)
+		status.ClearObserve(root)
 	}
 }
 
@@ -734,6 +745,10 @@ func runStatusAggregate(cfg *config.MultiConfig) {
 	if term.IsTerminal(int(os.Stdout.Fd())) {
 		liveLoop(func() { renderAggregate(cfg) })
 	} else {
+		for i := range cfg.Tasks {
+			status.TouchObserve(cfg.Tasks[i].Path)
+		}
+		time.Sleep(observeWarm)
 		renderAggregate(cfg)
 	}
 }
@@ -957,6 +972,7 @@ func renderAggregate(cfg *config.MultiConfig) {
 	rows := make([]statusRow, 0, len(cfg.Tasks))
 	for i := range cfg.Tasks {
 		t := cfg.Tasks[i]
+		status.TouchObserve(t.Path) // 请求各任务下一帧刷新
 		snap, _ := status.Load(t.Path)
 		rows = append(rows, statusRow{Name: t.Name, Dir: dirShort(t.Mode), Snap: snap})
 	}
@@ -968,6 +984,10 @@ func runStatusAll() {
 	if term.IsTerminal(int(os.Stdout.Fd())) {
 		liveLoop(renderAll)
 	} else {
+		for _, inst := range status.DiscoverInstances() {
+			status.TouchObserve(inst.Root)
+		}
+		time.Sleep(observeWarm)
 		renderAll()
 	}
 }
@@ -988,6 +1008,7 @@ func renderAll() {
 	fmt.Println()
 	rows := make([]statusRow, 0, len(instances))
 	for _, inst := range instances {
+		status.TouchObserve(inst.Root) // 请求各实例下一帧刷新
 		rows = append(rows, statusRow{Name: shortRoot(inst.Root), Dir: dirShortFromSnap(inst.Snap), Snap: inst.Snap})
 	}
 	renderStatusTable(rows, p)
@@ -997,12 +1018,19 @@ func renderAll() {
 // 观测关心的是"我干活的目录有没有拿到实时 watch"，高分在前已足够
 const heatMaxRows = 40
 
-// runHeatSingle 单实例 --heat：终端进实时刷新循环，管道则打印一次
+// runHeatSingle 单实例 --heat：终端进实时刷新循环，管道则打印一次。
+// heat.json 挂在同一个观测门上，投放心跳即触发源端刷新
 func runHeatSingle(root string) {
 	if term.IsTerminal(int(os.Stdout.Fd())) {
-		liveLoop(func() { renderHeatSingle(root) })
+		status.TouchObserve(root)
+		liveLoop(func() { status.TouchObserve(root); renderHeatSingle(root) })
+		status.ClearObserve(root)
 	} else {
+		since := time.Now()
+		status.TouchObserve(root)
+		status.AwaitFresh(root, since, 2*time.Second)
 		renderHeatSingle(root)
+		status.ClearObserve(root)
 	}
 }
 
@@ -1011,6 +1039,10 @@ func runHeatAll() {
 	if term.IsTerminal(int(os.Stdout.Fd())) {
 		liveLoop(renderHeatAll)
 	} else {
+		for _, inst := range status.DiscoverInstances() {
+			status.TouchObserve(inst.Root)
+		}
+		time.Sleep(observeWarm)
 		renderHeatAll()
 	}
 }
@@ -1020,6 +1052,10 @@ func runHeatAggregate(cfg *config.MultiConfig) {
 	if term.IsTerminal(int(os.Stdout.Fd())) {
 		liveLoop(func() { renderHeatAggregate(cfg) })
 	} else {
+		for i := range cfg.Tasks {
+			status.TouchObserve(cfg.Tasks[i].Path)
+		}
+		time.Sleep(observeWarm)
 		renderHeatAggregate(cfg)
 	}
 }
@@ -1051,6 +1087,7 @@ func renderHeatAll() {
 		p.Bold, p.Cyan, p.Reset, p.Dim, len(instances), p.Reset)
 	shown := 0
 	for _, inst := range instances {
+		status.TouchObserve(inst.Root) // 请求各源下一帧刷新 heat.json
 		snap, err := watcher.LoadHeat(inst.Root)
 		if err != nil || snap == nil {
 			continue // 汇实例无热度表，跳过
@@ -1072,6 +1109,7 @@ func renderHeatAggregate(cfg *config.MultiConfig) {
 	shown := 0
 	for i := range cfg.Tasks {
 		t := cfg.Tasks[i]
+		status.TouchObserve(t.Path) // 请求各源下一帧刷新 heat.json
 		snap, err := watcher.LoadHeat(t.Path)
 		if err != nil || snap == nil {
 			continue
