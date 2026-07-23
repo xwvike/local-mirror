@@ -9,25 +9,27 @@
 
 English | [简体中文](README.zh-CN.md)
 
-One-way directory mirroring over TCP. One machine serves a directory (the
-`reality` mode), others keep a live replica of it (`mirror`), optionally
-through relays chained A → B → C. A single static binary on every platform.
+One-way directory mirroring over TCP. One end is the **source** (`--send`),
+the other keeps a live replica as the **sink** (`--receive`), optionally
+through relays chained A → B → C.
 
 ```
 ┌─────────────┐   tree / changes / files   ┌─────────────┐
-│   reality   │ ─────────────────────────▶ │   mirror    │
-│  (server)   │      custom TCP proto      │  (client)   │
+│    source   │ ─────────────────────────▶ │     sink    │
+│   --send    │             TCP            │  --receive  │
 └─────────────┘                            └─────────────┘
  watches the fs                             pulls, stays in sync
 ```
 
-Mirroring is additive by default: files that exist only on the mirror side
-are left alone, deletion requires an explicit flag. Files are compared by
-blake3 hash, transferred in chunks and moved into place atomically;
-interrupted downloads resume. Changes normally arrive within a couple of
-seconds, and a full rescan (every 30 minutes by default) catches anything a
-lost notification might have missed. Symlinks are neither synced nor
-dereferenced.
+Data direction and transport direction are independent: **either end can be
+the one that dials or the one that listens**.
+
+The sink is additive by default: deletion requires an explicit flag at
+startup. Files are compared by blake3 hash, transferred in chunks and moved
+into place atomically; interrupted downloads resume. Changes normally arrive
+within a couple of seconds, and a full rescan (every 30 minutes by default)
+catches anything a lost notification might have missed. Symlinks are neither
+synced nor dereferenced.
 
 ## Install
 
@@ -37,8 +39,8 @@ macOS:
 brew install xwvike/tap/local-mirror
 ```
 
-Windows, via [Scoop](https://scoop.sh) (`irm get.scoop.sh | iex` installs
-Scoop itself if you don't have it — no admin rights needed):
+Windows, via [Scoop](https://scoop.sh) (no Scoop yet? `irm get.scoop.sh | iex`
+installs it):
 
 ```powershell
 scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
@@ -51,12 +53,7 @@ Linux (any distro; also works on macOS without Homebrew):
 curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
 ```
 
-The script detects OS and architecture, downloads the latest release and
-verifies its checksum. Run as root it installs to `/usr/local/bin`; as a
-regular user it installs to `~/.local/bin` (adding it to your PATH if
-needed) and never asks for elevation. `VERSION` and `INSTALL_DIR`
-environment variables override the defaults. If you prefer proper
-packages, deb and rpm files are on the
+Prebuilt deb/rpm packages are on the
 [releases page](https://github.com/xwvike/local-mirror/releases).
 
 Or build from source:
@@ -70,16 +67,29 @@ go build -o local-mirror ./cmd/local-mirror
 
 ```bash
 # serve a directory (-p defaults to the current working directory)
-local-mirror -m reality -p /path/to/source
+local-mirror --send -p /path/to/source
 
 # replicate it on another machine
-local-mirror -m mirror -r 192.168.1.100 -p /path/to/replica
+local-mirror --receive --connect 192.168.1.100 -p /path/to/replica
 
-# leave out -r to discover servers on the LAN and pick one interactively
-local-mirror -m mirror -p /path/to/replica
+# leave out --connect to discover sources on the LAN and pick one interactively
+local-mirror --receive -p /path/to/replica
 
-# relay: mirror from upstream and serve downstream at the same time
-local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
+# relay: receive from upstream and serve downstream at the same time
+local-mirror --send --receive --connect 192.168.1.100 -p /path/to/relay
+```
+
+Reverse who listens to push across the public internet: a server with a
+public IP is the sink, the source dials out to it:
+
+```bash
+# machine A (public IP)
+local-mirror --receive --listen -p /srv/backup --allow-delete
+# machine B (no public IP)
+local-mirror --send --connect a.example.net:52345 -p /path/to/source
+
+# same thing, rsync-style positional sugar (./dir @host = push)
+local-mirror ./path/to/source @vps.example.net:52345
 ```
 
 On startup it prints a banner with the actual listen port, sync directory
@@ -91,12 +101,12 @@ and log location:
 ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀ ▀▀▀   ▀   ▀ ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀
 
 ────────────────────────────────────────────────
-  Local Mirror 0.12.0  ·  reality (server)
+  Local Mirror 2.0.0  ·  reality (server)
 ────────────────────────────────────────────────
   Sync root  /path/to/source
   Ignores    .local-mirror, .git, .DS_Store
-  Listen     0.0.0.0:52345
-  Encryption on (Noise NNpsk0)
+  Listen     :52345 (IPv4 + IPv6)
+  Encryption on (Noise NNpsk0, fp 3f9a…c71e)
   Instance   3b7b81ee
   PID        62289
   Log        .local-mirror/logs/error.log (level warn)
@@ -107,20 +117,35 @@ and log location:
 
 | Flag | Description | Default |
 |---|---|---|
-| `-m, --mode` | `reality` (server), `mirror` (client), or `relay` | `reality` |
+| `--send` | this end is the source: data flows out | |
+| `--receive` | this end is the sink: data flows in (both = relay) | |
+| `--connect` | dial the peer at `host[:port]`; the peer must be listening | |
+| `--listen` | wait for the peer to dial in | |
 | `-p, --path` | sync root; state lives in `.local-mirror/` beneath it | working dir |
-| `-r, --realityip` | upstream address for mirror/relay; empty = LAN discovery | |
 | `-a, --alias` | instance name shown in discovery lists | hostname |
 | `-i, --ignore` | extra ignore patterns, comma-separated | |
 | `--config` | YAML config running multiple tasks (excludes the other flags) | |
-| `--allow-delete` | delete local files that no longer exist upstream | off |
+| `--allow-delete` | delete extra files on the sink that no longer exist upstream | off |
 | `--allow-critical` | allow syncing on critical paths, with overwrite backups | off |
-| `-c, --cooldown` | full-rescan interval in seconds, client side | `1800` |
-| `-f, --filebuffersize` | transfer chunk size in bytes, server side | `65536` |
-| `-k, --secret` | transport encryption passphrase (or env `LOCAL_MIRROR_SECRET`) | |
+| `-k, --secret` | transport encryption key (or env `LOCAL_MIRROR_SECRET`) | |
+| `--gen-key` | generate a random key into `.local-mirror/key`, print it, exit | |
+| `--show-key` | print the existing key file and exit | |
+| `--no-encrypt` | force plaintext even when a key file exists | |
+| `--status` | print a running instance's status and exit (`--all` for every one) | |
+| `-c, --cooldown` | full-rescan interval in seconds, sink side | `1800` |
+| `-f, --filebuffersize` | transfer chunk size in bytes, source side | `65536` |
 | `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
 
 `local-mirror --help` has the long version.
+
+### Direction and transport
+
+Two independent axes: **direction** (`--send` / `--receive`) and **transport**
+(`--connect` / `--listen`). Combine them freely: `--receive --listen` on a
+reachable server, `--send --connect` from behind NAT. `--connect` takes a
+domain name, an IPv4, or an IPv6 literal (`--connect [2001:db8::1]:52345`);
+listeners bind both IPv4 and IPv6. Domain names are re-resolved on every
+reconnect, so DDNS just works. Give both `--send` and `--receive` to relay.
 
 Ignore patterns (from `-i` or a `.local-mirror/ignore` file, one per line,
 `#` comments) are matched per path segment at any depth and support `* ? []`
@@ -147,23 +172,81 @@ wrong directory. There are three levels:
    combined with `--allow-critical`; on normal paths it is enough on its
    own.
 
-Independently of the ladder, every path the server sends is validated to
-stay inside the sync root, so a malicious or buggy server cannot write or
-delete outside the directory you gave it.
-
 ## Encryption
 
-Optional, via the Noise protocol (NNpsk0). Give both ends the same
-passphrase with `-k` and you get mutual authentication and forward secrecy;
-a peer with a wrong passphrase, or one speaking plaintext, fails the
-handshake immediately. On anything but a trusted LAN, use `-k` together
-with an explicit `-r` — LAN discovery is plaintext by design and meant for
-trusted networks only.
+Optional, via the Noise protocol (NNpsk0). Give both ends the same passphrase
+with `-k` for mutual authentication and forward secrecy; a wrong passphrase,
+or a peer speaking plaintext, fails the handshake. On anything but a trusted
+LAN, set `-k` explicitly.
 
-Use a long random string for `-k` (e.g. `openssl rand -base64 24`), not a
-human-memorable password: the key is derived from the passphrase without
-stretching, so a captured handshake can be brute-forced offline against
-weak passphrases.
+Use a long random string for `-k` (e.g. `openssl rand -base64 24`).
+
+To skip inventing one, let the tool generate it. `--gen-key` writes a strong
+random key to `.local-mirror/key` (mode 600), prints it once and exits; add
+run flags to generate and start in the same command. A key file is loaded
+automatically when `-k` is omitted, so the listening end generates it and the
+dialing end passes it in with `-k` just once (the dialer then saves its own
+copy):
+
+```bash
+# on the listening end
+local-mirror --gen-key --send            # prints the key, then serves
+# on the dialing end, first connection only
+local-mirror --receive --connect vps.example.net -k <generated-key>
+```
+
+Resolution order is explicit `-k` (including the env var) > `.local-mirror/key`
+file > plaintext. `--show-key` prints the existing file, `--no-encrypt` forces
+plaintext even when one is present, and `--gen-key --force` regenerates. Don't
+delete the key file on the listening side while dialers are connected —
+regenerating it disconnects every one of them.
+
+## Watching a running instance
+
+`--status` is a separate, read-only command: it reads the snapshot the daemon
+keeps in `.local-mirror/status.json`. Point it at a sync root with `-p` (or
+run it from inside one).
+
+```bash
+local-mirror --status -p /path/to/source
+```
+
+```
+──────────────────────────────────────────────────────
+  Status      ● running   pid 62289 · up 3h12m
+──────────────────────────────────────────────────────
+  Direction   send · source   (listen)
+  Peer        inbound
+  Link        ● serving 192.168.1.50:54012
+  Encryption  on (Noise NNpsk0)
+  Sync root   /path/to/source
+──────────────────────────────────────────────────────
+  Transfer    ▶ docs/report.pdf
+              ██████████░░░░░░░░░░  4.2 MB / 8.1 MB   5.3 MB/s
+  Totals      1.2 GB / 3841 files   · last 2s ago (docs/report.pdf)
+  Errors      0
+──────────────────────────────────────────────────────
+  CPU         1.4%
+  Memory      31 MB rss   (8.1 MB heap · 22 MB sys)
+  FDs         14
+  Goroutines  27
+──────────────────────────────────────────────────────
+```
+
+Add `--all` to find running `local-mirror` processes from the process table
+and print one row each (`--config` deployments get the same table keyed by
+task name):
+
+```bash
+local-mirror --status --all
+```
+
+```
+  NAME             DIR    LINK  RATE        FILES   LAST      CPU    MEM
+  proj/src         send   ●     5.3 MB/s    3841    2s        1.4%   31 MB
+  srv/backup       recv   ●     —           912     1m        0.2%   18 MB
+  media/photos     send   ○     —           220     14m       0.0%   12 MB
+```
 
 ## Multiple tasks (YAML)
 
@@ -233,8 +316,7 @@ the plist) rather than a `-k` argument, to keep it out of `ps`.
 
 The server scores every directory by activity and watches the hot ones in
 real time while polling the cold ones lazily; events raise a directory's
-score and idleness decays it. To see the current table, send the server
-process `SIGUSR1` (Unix only) and read the snapshot it writes:
+score and idleness decays it. To see the current table:
 
 ```bash
 kill -USR1 $(pgrep -f 'local-mirror -m reality')
@@ -251,6 +333,9 @@ Everything lives under `.local-mirror/` in the sync root (excluded from
 syncing and from git):
 
 - `cache.db` — the persisted directory tree; restarts skip unchanged files
+- `key` — self-managed transport key (mode 600), auto-loaded when `-k` is
+  omitted; never synced (`--gen-key` writes it, `--show-key` prints it)
+- `status.json` — live runtime status read by `--status`; discardable
 - `logs/error.log` — runtime log, rotated at 10 MB keeping the last 3 files
 - `partial/` — chunks of interrupted downloads awaiting resume
 - `backups/` — pre-overwrite copies, only with `--allow-critical`

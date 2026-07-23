@@ -9,21 +9,22 @@
 
 [English](README.md) | 简体中文
 
-基于 TCP 的单向目录镜像。一台机器共享目录（`reality` 模式），其他机器保持
-它的实时副本（`mirror`），也可以经中继级联成 A → B → C 传递链。各平台都是
-单个静态二进制。
+基于 TCP 的单向目录镜像。一端是**源**（`--send`），另一端保持它的实时副本、
+作为**汇**（`--receive`），也可以经中继级联成 A → B → C 传递链。
 
 ```
 ┌─────────────┐    目录树 / 变更 / 文件    ┌─────────────┐
-│   reality   │ ─────────────────────────▶ │   mirror    │
-│  （服务端）  │       自定义 TCP 协议      │  （客户端）  │
+│    源 source │ ─────────────────────────▶ │   汇 sink   │
+│    --send    │           TCP           │  --receive  │
 └─────────────┘                            └─────────────┘
   监听文件变化                                持续拉取，保持一致
 ```
 
-镜像默认只做增量：客户端本地多出来的文件不会被动，删除必须显式加参数。
-文件按 blake3 哈希比对，分块传输、原子落盘，中断的下载可以续传。变更通常
-两秒左右到达镜像端，默认每 30 分钟一次的全量扫描兜底丢失的通知。符号链接
+数据方向与传输方向相互独立：**拨号方和监听方可以是任意一端**。
+
+接受端（汇端）默认只做增量：删除必须在启动时显式加参数。
+文件按 blake3 哈希比对，分块传输、原子落盘，支持断点续传。变更通常
+两秒左右到达接受端，默认每 30 分钟一次的全量扫描兜底丢失的通知。符号链接
 不同步也不解引用。
 
 ## 安装
@@ -34,8 +35,8 @@ macOS：
 brew install xwvike/tap/local-mirror
 ```
 
-Windows，经 [Scoop](https://scoop.sh)（没装 Scoop 的话 `irm get.scoop.sh | iex`
-先装它，不需要管理员权限）：
+Windows，使用 [Scoop](https://scoop.sh)（没装 Scoop 的话，执行 `irm get.scoop.sh | iex`
+安装）：
 
 ```powershell
 scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
@@ -48,11 +49,8 @@ Linux（任意发行版；macOS 不想用 Homebrew 也能用）：
 curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
 ```
 
-脚本自动识别系统与架构，下载最新版本并校验 checksum。root 运行装
-`/usr/local/bin`；普通用户装 `~/.local/bin`（需要时自动补 PATH），
-绝不索要提权。环境变量 `VERSION` 和 `INSTALL_DIR` 可覆盖默认行为。
-想走正经包管理的话，[releases 页面](https://github.com/xwvike/local-mirror/releases)
-上有 deb 和 rpm。
+[releases 页面](https://github.com/xwvike/local-mirror/releases)
+
 
 或从源码构建：
 
@@ -64,17 +62,29 @@ go build -o local-mirror ./cmd/local-mirror
 ## 快速开始
 
 ```bash
-# 服务端：共享指定目录（-p 省略时为当前工作目录）
-local-mirror -m reality -p /path/to/source
+# 源：共享指定目录（-p 省略时为当前工作目录）
+local-mirror --send -p /path/to/source
 
 # 另一台机器上镜像它
-local-mirror -m mirror -r 192.168.1.100 -p /path/to/replica
+local-mirror --receive --connect 192.168.1.100 -p /path/to/replica
 
-# 不指定 -r：自动发现局域网服务端并交互选择
-local-mirror -m mirror -p /path/to/replica
+# 不指定 --connect：自动发现局域网的源并交互选择
+local-mirror --receive -p /path/to/replica
 
-# 中继：从上游镜像下来，同时向下游提供服务
-local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
+# 中继：从上游接收下来，同时向下游提供服务
+local-mirror --send --receive --connect 192.168.1.100 -p /path/to/relay
+```
+
+支持反转监听，即有公网IP的服务器充当接受端（汇端），发送端（源端）主动连接：
+
+```bash
+# 设备A（有公网IP）
+local-mirror --receive --listen -p /srv/backup --allow-delete
+# 设备B（无公网IP）
+local-mirror --send --connect a.example.net:52345 -p /path/to/source
+
+# 同样效果，rsync 风格的位置参数糖（./dir @host = 推送）
+local-mirror ./path/to/source @vps.example.net:52345
 ```
 
 启动后打印状态横幅：实际监听端口、同步目录、日志位置：
@@ -85,36 +95,52 @@ local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
 ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀ ▀▀▀   ▀   ▀ ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀
 
 ────────────────────────────────────────────────
-  Local Mirror 0.12.0  ·  reality (server)
+  Local Mirror 2.0.0  ·  reality (server)
 ────────────────────────────────────────────────
   Sync root  /path/to/source
   Ignores    .local-mirror, .git, .DS_Store
-  Listen     0.0.0.0:52345
-  Encryption on (Noise NNpsk0)
+  Listen     :52345 (IPv4 + IPv6)
+  Encryption on (Noise NNpsk0, fp 3f9a…c71e)
   Instance   3b7b81ee
   PID        62289
   Log        .local-mirror/logs/error.log (level warn)
 ────────────────────────────────────────────────
 ```
 
+
 ## 参数
 
 | 参数 | 说明 | 默认值 |
 |---|---|---|
-| `-m, --mode` | `reality`（服务端）/ `mirror`（客户端）/ `relay`（中继） | `reality` |
-| `-p, --path` | 同步根目录，状态目录 `.local-mirror/` 位于其下 | 当前工作目录 |
-| `-r, --realityip` | 上游地址（mirror/relay）；留空走局域网发现 | |
+| `--send` | 本端是源：数据流出 | |
+| `--receive` | 本端是汇：数据流入（两个都给 = 中继） | |
+| `--connect` | 拨向 `host[:port]`；对端须在监听 | |
+| `--listen` | 等对端拨进来 | |
+| `-p, --path` | 同步工作目录，状态目录 `.local-mirror/` 位于其下 | 当前工作目录 |
 | `-a, --alias` | 实例别名，展示在发现列表中 | 主机名 |
 | `-i, --ignore` | 追加忽略模式，逗号分隔 | |
 | `--config` | 多任务 YAML 配置（与其余参数互斥） | |
-| `--allow-delete` | 删除本地多余文件（忠实镜像） | 关 |
+| `--allow-delete` | 允许在同步中删除汇端工作目录里的多余文件（忠实镜像） | 关 |
 | `--allow-critical` | 允许在关键路径上同步，覆盖前备份 | 关 |
-| `-c, --cooldown` | 全量扫描间隔（秒），仅客户端 | `1800` |
-| `-f, --filebuffersize` | 传输分块大小（字节），仅服务端 | `65536` |
-| `-k, --secret` | 传输加密口令（或环境变量 `LOCAL_MIRROR_SECRET`） | |
+| `-k, --secret` | 设置传输预加密密钥（或通过环境变量 `LOCAL_MIRROR_SECRET` 设置） | |
+| `--gen-key` | 生成随机密钥写入 `.local-mirror/key`，打印后退出 | |
+| `--show-key` | 打印工作目录中已有的密钥文件 | |
+| `--no-encrypt` | 即使工作目录存在密钥文件也强制明文 | |
+| `--status` | 打印运行中实例的状态后退出（`--all` 看全部） | |
+| `-c, --cooldown` | 全量扫描间隔（秒），仅汇端 | `1800` |
+| `-f, --filebuffersize` | 传输分块大小（字节），仅源端 | `65536` |
 | `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
 
 完整说明见 `local-mirror --help`。
+
+### 方向与传输
+
+两个相互独立的轴：**方向**（`--send` / `--receive`）和**传输**
+（`--connect` / `--listen`）。支持随意组合：可达的服务器上 `--receive --listen`，NAT
+后面 `--send --connect`。`--connect` 接受域名、IPv4，或 IPv6 字面量
+（`--connect [2001:db8::1]:52345`）；监听方同时绑 IPv4 与 IPv6。使用域名每次重连
+都重新解析，DDNS 天然可用。`--send` 和 `--receive` 都给即为中继。
+
 
 忽略模式（来自 `-i` 或 `.local-mirror/ignore` 文件，每行一条，`#` 注释）
 按路径段在任意深度匹配，支持 `* ? []` 通配符。服务端命中即不扫描不提供；
@@ -123,32 +149,91 @@ local-mirror -m relay -r 192.168.1.100 -p /path/to/relay
 
 ## 删除保护
 
-同步会覆盖已存在的文件，`--allow-delete` 还会删多余的，所以真正要防的
-失败模式是把工具指错目录。保护分三级：
+同步会覆盖已存在的文件，使用 `--allow-delete` 参数还会删多余的，
+所以为了防止工具错误设置工作目录。保护分三级：
 
-1. **默认**——只同步不删除。关键路径直接拒绝启动：家目录、文件系统根，
+1. **默认**——只同步不删除。关键路径拒绝启动：home目录、文件系统根，
    以及 `/etc`、`/usr` 等系统目录树连同其子目录。判定前先解引用符号链接。
-   家目录内部的普通目录不受限制。
+   home目录内部的普通目录不受限制。
 2. **`--allow-critical`**——解锁关键路径上的同步，仍不删除。已存在的文件
-   首次被覆盖前，原件先复制到 `.local-mirror/backups/<相对路径>`。
+   首次被覆盖前，原件先复制备份到 `.local-mirror/backups/<相对路径>`。
 3. **`--allow-delete`**——启用删除。关键路径上必须与 `--allow-critical`
    同时给才生效；普通路径单独给即可。
 
-在这套阶梯之外，服务端下发的每个路径都会校验必须落在同步根之内——恶意或
-有 bug 的服务端没办法写到、删到你给定的目录之外。
 
 ## 加密
 
 可选，走 Noise 协议（NNpsk0）。两端用 `-k` 配同一个口令即可获得双向认证
-和前向保密；口令不对或对端说明文，握手当场失败。只要不是可信局域网，务必
-`-k` 加显式 `-r` 一起用——局域网发现是明文的，只设计给可信网络。
+和前向保密；口令不对或对端设置明文，握手失败。非可信局域网，建议`-k` 显式指定。
 
-`-k` 请用长随机串（比如 `openssl rand -base64 24`），别用人类能记住的
-口令：密钥从口令直接派生、未做拉伸，被动抓到一次握手就能离线暴力猜弱口令。
+`-k` 建议长随机串（比如 `openssl rand -base64 24`）
+
+`--gen-key` 会把强随机密钥写入
+`.local-mirror/key`（权限 600），打印一次后退出；添加运行参数会生成后自动
+启动。省略 `-k` 时会自动加载密钥文件，所以监听端生成后、拨号端使用 `-k` 在首次启动设置一次
+即可（拨号端随后自存一份）：
+
+```bash
+# 监听端
+local-mirror --gen-key --send            # 打印密钥后开始服务
+# 拨号端，仅首次连接
+local-mirror --receive --connect vps.example.net -k <生成的密钥>
+```
+
+解析优先级为：显式 `-k`（含环境变量）＞ `.local-mirror/key` 文件 ＞ 明文。
+`--show-key` 打印已有文件，`--no-encrypt` 即使有文件也强制明文，
+`--gen-key --force` 重新生成。监听端有拨号方连着时请勿删密钥文件——重新生成密钥
+会把每一个拨号方都踢下线。
+
+## 查看运行中的实例
+
+`--status` 是独立的只读命令：它读取常驻进程写在 `.local-mirror/status.json`
+的快照。可以使用 `-p` 指向一个同步工作目录（或直接在目录中运行）。
+
+```bash
+local-mirror --status -p /path/to/source
+```
+
+```
+──────────────────────────────────────────────────────
+  Status      ● running   pid 62289 · up 3h12m
+──────────────────────────────────────────────────────
+  Direction   send · source   (listen)
+  Peer        inbound
+  Link        ● serving 192.168.1.50:54012
+  Encryption  on (Noise NNpsk0)
+  Sync root   /path/to/source
+──────────────────────────────────────────────────────
+  Transfer    ▶ docs/report.pdf
+              ██████████░░░░░░░░░░  4.2 MB / 8.1 MB   5.3 MB/s
+  Totals      1.2 GB / 3841 files   · last 2s ago (docs/report.pdf)
+  Errors      0
+──────────────────────────────────────────────────────
+  CPU         1.4%
+  Memory      31 MB rss   (8.1 MB heap · 22 MB sys)
+  FDs         14
+  Goroutines  27
+──────────────────────────────────────────────────────
+```
+
+`--all`——会从进程表里找出运行中
+的 `local-mirror` 进程，每个打印一行（`--config` 部署也是同一张表，按任务名
+索引）：
+
+```bash
+local-mirror --status --all
+```
+
+```
+  NAME             DIR    LINK  RATE        FILES   LAST      CPU    MEM
+  proj/src         send   ●     5.3 MB/s    3841    2s        1.4%   31 MB
+  srv/backup       recv   ●     —           912     1m        0.2%   18 MB
+  media/photos     send   ○     —           220     14m       0.0%   12 MB
+```
 
 ## 多任务（YAML）
 
-一台机器要同时共享几个目录、或者边共享边备份别人时，一个 YAML 全部搞定
+单台要同时共享几个目录、或者边共享，边备份别人时，使用 YAML 可以方便地管理多个任务。
 （示例：[deploy/local-mirror.example.yml](deploy/local-mirror.example.yml)）：
 
 ```yaml
@@ -192,7 +277,7 @@ journalctl -u local-mirror -f
 macOS 用 launchd——`brew services` 只支持 formula 不支持 cask，用
 LaunchAgent 示例
 [deploy/com.xwvike.local-mirror.plist](deploy/com.xwvike.local-mirror.plist)
-（发行压缩包里也有）。登录即启动，进程挂了自动拉起：
+（发行压缩包里也有）。登录即启动，自动拉起：
 
 ```bash
 cp deploy/com.xwvike.local-mirror.plist ~/Library/LaunchAgents/
@@ -203,14 +288,13 @@ launchctl bootout gui/$(id -u)/com.xwvike.local-mirror
 ```
 
 两边一样：口令走环境变量注入（unit 里 `Environment=`/`EnvironmentFile=`，
-plist 里 `EnvironmentVariables`），别写在 `-k` 参数里，免得出现在 `ps`
+plist 里 `EnvironmentVariables`），不推荐在 `-k` 参数里，免得出现在 `ps`
 输出中。
 
 ## 查看监听分级
 
-服务端按活跃度给每个目录打分：热门目录实时监听，冷门目录低频轮询；
-事件会给目录加分，沉寂则逐步衰减。想看当前的热度表，给服务端进程发
-`SIGUSR1`（仅 Unix），然后读它写出的快照：
+服务 端按活跃度给每个目录打分：热门目录实时监听，冷门目录低频轮询；
+事件会给目录加分，沉寂则逐步衰减。获取当前的热度表：
 
 ```bash
 kill -USR1 $(pgrep -f 'local-mirror -m reality')
@@ -222,20 +306,14 @@ cat /path/to/source/.local-mirror/heat.txt
 
 ## 运行时产物
 
-全部在同步根下的 `.local-mirror/` 里（同步逻辑和 git 都忽略它）：
+全部在工作目录下的 `.local-mirror/` 里（同步逻辑和 git 都忽略它）：
 
 - `cache.db` — 持久化的目录树；重启时跳过未变化的文件
+- `key` — 自管理的传输密钥（权限 600），省略 `-k` 时自动加载，从不同步
+  （`--gen-key` 写入，`--show-key` 打印）
+- `status.json` — 供 `--status` 读取的实时状态；可弃
 - `logs/error.log` — 运行日志，单文件 10 MB 轮转，保留最近 3 个
 - `partial/` — 中断下载的分片，等待续传
 - `backups/` — 覆盖前备份，仅 `--allow-critical` 时产生
 - `ignore` — 可选的忽略模式，与 `-i` 合并（改后重启生效）
 - `heat.txt` — 监听分级快照，收到 `SIGUSR1` 时写出（仅服务端）
-
-## 开发
-
-日常就是 `go build ./...` 和 `go test ./...`。发版推一个 `v*` tag 即可：
-CI 跑 goreleaser，一次产出压缩包、deb/rpm、Homebrew cask 和 Scoop
-manifest（本地想全平台构建用 `goreleaser release --snapshot --clean`，
-不发布）。
-
-MIT 许可证。
