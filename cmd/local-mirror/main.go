@@ -757,15 +757,26 @@ func runStatusAggregate(cfg *config.MultiConfig) {
 // 走 os.Exit 会跳过 defer，故进出终端态都显式做，不依赖 defer
 func liveLoop(frame func()) {
 	p := termstyle.NewPalette(os.Stdout)
+	// 刷新期间关掉输入回显：否则键入/滚轮产生的转义序列会被回显到备用屏上，
+	// 显得很脏。保留 ISIG（Ctrl-C 仍生成 SIGINT，沿用下面的信号退出）与输出
+	// 处理（\n→\r\n，否则整屏阶梯错位）。非 TTY 或失败时是空操作。
+	restoreInput := quietInput()
 	fmt.Print("\033[?1049h\033[?25l") // 备用屏 + 隐藏光标
-	leave := func() { fmt.Print("\033[?25h\033[?1049l") }
+	leave := func() {
+		fmt.Print("\033[?25h\033[?1049l")
+		restoreInput()
+	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	t := time.NewTicker(1 * time.Second)
 	for {
-		fmt.Print("\033[H\033[2J") // 光标归位 + 清屏
+		// 同步刷新（DEC 私有模式 2026）：把「清屏 + 重绘」包成一次原子提交，
+		// 支持的终端（iTerm2/kitty/wezterm/ghostty/alacritty/tmux≥3.4）不再露出
+		// 清屏后重绘前的空屏 → 消除闪烁；不支持的终端会忽略该序列，退化为原行为。
+		fmt.Print("\033[?2026h\033[H\033[2J") // 开始同步 + 光标归位 + 清屏
 		frame()
 		fmt.Printf("\n  %srefresh 1s · Ctrl-C to exit%s\n", p.Dim, p.Reset)
+		fmt.Print("\033[?2026l") // 结束同步（原子呈现整帧）
 		select {
 		case <-sig:
 			t.Stop()
