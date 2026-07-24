@@ -153,8 +153,10 @@ local-mirror ./path/to/source @vps.example.net:52345
 
 忽略模式（来自 `-i` 或 `.local-mirror/ignore` 文件，每行一条，`#` 注释）
 按路径段在任意深度匹配，支持 `* ? []` 通配符。服务端命中即不扫描不提供；
-客户端命中即不下载也不删除。内置默认只有 `.local-mirror`、`.git`、
-`.DS_Store`——想跳过 `node_modules` 之类的请自行添加。
+客户端命中即不下载也不删除。`.local-mirror`（工具自己的状态目录）强制排除、
+不可取消；`.git` 与 `.DS_Store` 默认排除但可取消——模式前加 `!` 即让它参与
+同步（如 `-i '!.git'`）。注意 `.git` 是活的数据库，仓库该用 git 自己复制
+（push/fetch）而非文件镜像。`node_modules` 之类的请自行添加。
 
 ## 删除保护
 

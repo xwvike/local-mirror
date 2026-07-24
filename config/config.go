@@ -30,12 +30,21 @@ const (
 )
 
 var (
-	// IgnoreFileList 生效的忽略列表：内置默认 + -i/--ignore + .local-mirror/ignore
-	// 文件合并去重后的结果（见 LoadIgnoreList，启动时调用一次，不热加载）。
-	// 匹配按路径段进行，每段支持 * ? [] 通配符（见 utils.IsIgnored）。
+	// forcedIgnores 强制忽略项：任何情况下都不同步，不可用 ! 取消（不变量）。
+	// .local-mirror 是状态目录（cache.db/status.json/observe/key…），同步它=自指
+	forcedIgnores = []string{".local-mirror"}
+	// defaultIgnores 默认忽略项：合理的开箱默认，但属"政策"非"不变量"，
+	// 可用 -i '!pattern'（或 ignore 文件里的 !pattern）逐项取消。
+	// .git 是版本控制数据库（用文件复制器实时抄会抓到不一致态，该交给 git 自己
+	// 复制）、.DS_Store 是 macOS 元数据垃圾，默认都不该同步
+	defaultIgnores = []string{".git", ".DS_Store"}
+
+	// IgnoreFileList 生效的忽略列表：forced + default（去掉被 ! 取消的）+ -i/--ignore
+	// + .local-mirror/ignore 文件，合并去重后的结果（见 LoadIgnoreList，启动时调用
+	// 一次，不热加载）。匹配按路径段进行，每段支持 * ? [] 通配符（见 utils.IsIgnored）。
 	// 服务端命中即不扫描/不监听（不进树），客户端命中即不同步（不下载也不删除）。
-	// 初始值即内置默认：.local-mirror 是状态目录，任何情况下都不得同步（强制项）
-	IgnoreFileList = []string{".local-mirror", ".git", ".DS_Store"}
+	// 未调用 LoadIgnoreList 前即 forced + default
+	IgnoreFileList = append(append([]string{}, forcedIgnores...), defaultIgnores...)
 )
 
 var (
@@ -111,18 +120,44 @@ var (
 	SecretFromKeyFile bool = false
 )
 
-// LoadIgnoreList 合并生效忽略列表：内置默认 + -i/--ignore 逗号分隔条目 +
-// <startPath>/.local-mirror/ignore 文件（每行一条，# 注释，空行跳过，
-// 文件不存在则静默跳过）。每条模式用 filepath.Match 预校验，非法模式
-// （如未闭合的 "["）返回错误。结果去重（保序）后写回 IgnoreFileList。
-// 启动时调用一次；运行中修改文件不生效，需重启
+// LoadIgnoreList 合并生效忽略列表：forcedIgnores（强制，不可取消）+ defaultIgnores
+// （默认，可用 !pattern 逐项取消）+ -i/--ignore 逗号分隔条目 + <startPath>/.local-mirror/ignore
+// 文件（每行一条，# 注释，空行跳过，文件不存在则静默跳过）。以 ! 开头的条目表示
+// "取消一个默认忽略项"（如 !.git 让 .git 参与同步）；! 不能取消强制项。普通模式用
+// filepath.Match 预校验（非法如未闭合的 "[" 返回错误）。结果去重（保序）后写回
+// IgnoreFileList。启动时调用一次；运行中修改文件不生效，需重启
 func LoadIgnoreList(startPath string) error {
-	patterns := append([]string{}, IgnoreFileList...)
+	var adds []string                // -i/文件里的普通忽略模式（叠加）
+	negated := make(map[string]bool) // 被 !pattern 取消的默认项
+
+	collect := func(raw string) error {
+		p := strings.TrimSpace(raw)
+		if p == "" || strings.HasPrefix(p, "#") {
+			return nil
+		}
+		if neg, ok := strings.CutPrefix(p, "!"); ok {
+			if neg = strings.TrimSpace(neg); neg == "" {
+				return nil
+			}
+			for _, f := range forcedIgnores {
+				if neg == f {
+					return fmt.Errorf("cannot un-ignore %q: it is a forced ignore (the state dir must never be synced)", neg)
+				}
+			}
+			negated[neg] = true // 非默认项的 ! 属无操作（该项本就不在列表里）
+			return nil
+		}
+		if _, err := filepath.Match(p, "x"); err != nil {
+			return fmt.Errorf("invalid ignore pattern %q: %w", p, err)
+		}
+		adds = append(adds, p)
+		return nil
+	}
 
 	if *Ignore != "" {
 		for _, p := range strings.Split(*Ignore, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				patterns = append(patterns, p)
+			if err := collect(p); err != nil {
+				return err
 			}
 		}
 	}
@@ -130,22 +165,26 @@ func LoadIgnoreList(startPath string) error {
 	ignoreFile := filepath.Join(startPath, ".local-mirror", "ignore")
 	if data, err := os.ReadFile(ignoreFile); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
+			if err := collect(line); err != nil {
+				return err
 			}
-			patterns = append(patterns, line)
 		}
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("failed to read ignore file %s: %w", ignoreFile, err)
 	}
 
+	// 组装：强制项恒在；默认项去掉被取消的；再叠加 -i/文件的普通条目
+	patterns := append([]string{}, forcedIgnores...)
+	for _, d := range defaultIgnores {
+		if !negated[d] {
+			patterns = append(patterns, d)
+		}
+	}
+	patterns = append(patterns, adds...)
+
 	seen := make(map[string]struct{}, len(patterns))
 	merged := make([]string, 0, len(patterns))
 	for _, p := range patterns {
-		if _, err := filepath.Match(p, "x"); err != nil {
-			return fmt.Errorf("invalid ignore pattern %q: %w", p, err)
-		}
 		if _, ok := seen[p]; ok {
 			continue
 		}
@@ -241,7 +280,8 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  -i, --ignore string          extra ignore patterns (comma-separated), matched per path\n")
 	fmt.Fprintf(w, "                               segment, * ? [] globs supported. Server: never scanned or\n")
 	fmt.Fprintf(w, "                               served; client: never downloaded or deleted.\n")
-	fmt.Fprintf(w, "                               Built-in defaults: .local-mirror .git .DS_Store.\n")
+	fmt.Fprintf(w, "                               Defaults: .local-mirror (forced), plus .git and .DS_Store\n")
+	fmt.Fprintf(w, "                               (removable — prefix with ! to sync them, e.g. -i '!.git').\n")
 	fmt.Fprintf(w, "                               Also read from .local-mirror/ignore (one per line, # comments;\n")
 	fmt.Fprintf(w, "                               restart to apply)\n")
 	fmt.Fprintf(w, "      --allow-delete           delete local files that no longer exist upstream\n")

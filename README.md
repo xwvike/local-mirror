@@ -163,9 +163,12 @@ key learns nothing.
 Ignore patterns (from `-i` or a `.local-mirror/ignore` file, one per line,
 `#` comments) are matched per path segment at any depth and support `* ? []`
 globs. On the server a match means the entry is never scanned or served; on
-the client it means never downloaded and never deleted. Built-in defaults
-are only `.local-mirror`, `.git` and `.DS_Store` — add things like
-`node_modules` yourself if you want them skipped.
+the client it means never downloaded and never deleted. `.local-mirror` (the
+tool's own state dir) is always excluded and cannot be un-ignored; `.git` and
+`.DS_Store` are excluded by default but removable — prefix a pattern with `!`
+to sync it (e.g. `-i '!.git'`). Note `.git` is a live database: replicate
+repositories with git itself (push/fetch), not a file-level mirror. Add things
+like `node_modules` yourself if you want them skipped.
 
 ## Deletion safety
 
