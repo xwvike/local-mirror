@@ -210,17 +210,6 @@ func (s *fileServer) removeClientIfCurrent(id uint32, expected *client) {
 	s.clientMap.CompareAndDelete(id, expected)
 }
 
-func (s *fileServer) GetAllClients() []*client {
-	clients := make([]*client, 0)
-	s.clientMap.Range(func(key, value interface{}) bool {
-		if c, ok := value.(*client); ok {
-			clients = append(clients, c)
-		}
-		return true
-	})
-	return clients
-}
-
 func NewFileServer(listener net.Listener) *fileServer {
 	log.Info("Creating file server, listen address:", listener.Addr())
 	return &fileServer{

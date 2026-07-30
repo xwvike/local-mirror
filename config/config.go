@@ -222,20 +222,6 @@ func TransportListens() bool {
 	return false
 }
 
-// TransportDials 本进程是否主动拨出：与 TransportListens 对偶，
-// relay 上游侧恒拨出
-func TransportDials() bool {
-	switch *Mode {
-	case "reality":
-		return SourceDials
-	case "mirror":
-		return !SinkListens
-	case "relay":
-		return true
-	}
-	return false
-}
-
 // PrintUsage 输出用法说明。
 // 用户主动 --help 时应写入 stdout；参数解析出错被动打印时写入 stderr
 func PrintUsage(w io.Writer) {

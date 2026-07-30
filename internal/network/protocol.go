@@ -64,13 +64,15 @@ const (
 )
 
 // 错误码（ErrorMessage.Code）。客户端据此区分可重试/永久失败，
-// 服务端 handler 用 wireError 构造；未归类的错误一律 ErrCodeInternal
+// 服务端 handler 用 wireError 构造；未归类的错误一律 ErrCodeInternal。
+// 与消息类型同理：删除的码留空洞不复用——v2.0.x 的对端仍按原编号发送，
+// 复用编号会让同一 v3 会话里两端对同一数字的解释错位
 const (
-	ErrCodeInternal          uint16 = 0 // 未归类错误，语义等同 v2 的裸字符串
-	ErrCodeNotFound          uint16 = 1 // 文件/目录不存在（永久，重试无意义）
-	ErrCodePermissionDenied  uint16 = 2 // 权限拒绝（永久，上游修复前跳过）
-	ErrCodeOutOfRoot         uint16 = 3 // 路径越界/符号链接等策略拒绝（永久）
-	ErrCodeTooLarge          uint16 = 4 // 响应超出协议上限（永久）
+	ErrCodeInternal         uint16 = 0 // 未归类错误，语义等同 v2 的裸字符串
+	ErrCodeNotFound         uint16 = 1 // 文件/目录不存在（永久，重试无意义）
+	ErrCodePermissionDenied uint16 = 2 // 权限拒绝（永久，上游修复前跳过）
+	ErrCodeOutOfRoot        uint16 = 3 // 路径越界/符号链接等策略拒绝（永久）
+	// 4 曾是 ErrCodeTooLarge（声明后从未实际下发），清理死代码时删除，编号作废
 	ErrCodeVersionMismatch   uint16 = 5 // 协议版本区间无交集（升级前永久）
 	ErrCodeDirectionConflict uint16 = 6 // 数据方向不互补（两端同为 send 或同为 receive，配置错误）
 )
