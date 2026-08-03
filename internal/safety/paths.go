@@ -136,6 +136,15 @@ func isAncestorOrEqual(ancestor, target string) bool {
 		!filepath.IsAbs(rel)
 }
 
+// IsInside 判断 target 是否等于 dir 或位于 dir 之内。
+// 两边都先解引用真实路径，防止符号链接绕过（macOS 的 /etc → /private/etc 等）。
+//
+// 用于「配置文件不得位于同步根内部」这条校验：同步根是要被复制到对端的，
+// 落在里面的配置文件（含明文 secret）会被一并镜像出去。
+func IsInside(dir, target string) bool {
+	return isAncestorOrEqual(normalize(dir), normalize(target))
+}
+
 // IsCriticalRoot 判断同步根是否落在关键路径上。命中返回 true 及命中的关键路径。
 // 校验对象是解引用后的真实路径，防止符号链接绕过。
 //

@@ -82,6 +82,11 @@ Go 的 `os.UserConfigDir()` 在 macOS 上返回 `~/Library/Application Support`�
 
 > 编号保留 R1/R4 是为了对齐上一版设计的讨论记录；R2/R3/R5/R6 随发现机制一并作废。
 
+**已实现并验证**（2026-08-03）：两条规则都落在 `config.LoadMultiConfig` 里
+（配置的唯一校验入口，调用方无需记得单独校验），失败均 exit 2。
+R4 复用 `safety.IsInside`（新导出），两边路径都解引用真实路径，
+软链指向同步根内部同样拦得住；同前缀的兄弟目录（`/x/rootX` vs `/x/root`）不误判。
+
 ### P1.5 为什么推翻「自动发现」
 
 上一版设计了 `--config` → CWD → 用户级 → 系统级的四层发现链。推翻它的三个理由，

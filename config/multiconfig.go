@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 
+	"local-mirror/internal/safety"
+
 	"gopkg.in/yaml.v3"
 )
 
 // TaskConfig 多任务配置中的单个任务，字段与命令行旗子一一对应。
-// 监督进程把它映射为子进程的 argv（secret 例外，走环境变量）。
+// 监督进程把它映射为子进程的 argv（secret 例外，走 stdin 首行）。
 //
 // 方向优先字段（send/receive/connect/listen）与 CLI 的 --send/--receive/
 // --connect/--listen 对齐，是文档化的写法；老的 mode/realityip 仍被解析
@@ -29,7 +31,7 @@ type TaskConfig struct {
 	RealityIP string `yaml:"realityip"` // 上游地址
 
 	Ignore         []string `yaml:"ignore"`         // 忽略模式（-i）
-	Secret         string   `yaml:"secret"`         // 传输加密口令（经环境变量传递，不进 argv）
+	Secret         string   `yaml:"secret"`         // 传输加密口令（经 stdin 传给子进程，不进 argv 也不进环境变量）
 	LogLevel       string   `yaml:"loglevel"`       // 日志级别（-l）
 	AllowDelete    bool     `yaml:"allow_delete"`   // 删除同步（--allow-delete）
 	AllowCritical  bool     `yaml:"allow_critical"` // 允许在关键路径上同步（--allow-critical）
@@ -48,9 +50,15 @@ type MultiConfig struct {
 // 返回的任务已完成 defaults 合并与 name 缺省填充；
 // 任何校验失败返回错误（调用方按用法错误处理，exit 2）
 func LoadMultiConfig(path string) (*MultiConfig, error) {
+	// R1（docs/CONFIG_AND_SERVICE.md §P1.4）：显式指定的配置文件读不到就直接失败，
+	// 不做任何回落。静默改用别的配置是最难排查的一类故障——
+	// 你以为在跑 A，实际跑的是 B
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("config file not found: %s", path)
+		}
+		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 	var cfg MultiConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -99,6 +107,15 @@ func LoadMultiConfig(path string) (*MultiConfig, error) {
 		}
 		seenPaths[abs] = t.Name
 		seenNames[t.Name] = true
+
+		// R4（docs/CONFIG_AND_SERVICE.md §P1.4 / §P2.4）：配置文件不得位于同步根内部。
+		// 这是 local-mirror 独有的约束——同步根是要被复制到对端的，
+		// 落在里面的配置文件会连同其中的明文 secret 一起被镜像出去
+		if safety.IsInside(t.Path, path) {
+			return nil, fmt.Errorf("config file %s sits inside the sync root of task %q (%s); "+
+				"the sync root is mirrored to the peer, so the config and its secret would be copied out. "+
+				"move the config outside the sync root", path, t.Name, t.Path)
+		}
 
 		if t.LogLevel != "" {
 			switch t.LogLevel {
