@@ -438,6 +438,11 @@ systemctl enable --now local-mirror
 ⚠️ 打包 unit 默认以 **root** 运行（汇端常需保留任意属主的文件）。
 降权用 `systemctl edit local-mirror` 加 drop-in，不要直接改被包管理的文件。
 
+**降权必须配套 chown（2026-08-03 真机迁移时踩到）**：包把配置装成 `root:root 0600`，
+一旦 drop-in 里写了 `User=非root`，服务就读不到配置、起不来。必须
+`sudo chown <user>:<user> /etc/local-mirror/config.yml`（权限仍保持 0600——里面有 secret）。
+已写进打包 unit 顶部注释。
+
 ---
 
 ## 迁移：现有生产两端

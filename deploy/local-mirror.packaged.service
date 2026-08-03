@@ -11,7 +11,11 @@
 #   [Service]
 #   User=someone
 #   Group=someone
-# 该用户须对配置里每个 path 可读写。
+#
+# 降权后还必须做一步：配置文件由包安装为 root:root 0600，非 root 用户读不到，
+# 服务会起不来。把它交给该用户（权限仍保持 0600，里面有 secret）：
+#   sudo chown someone:someone /etc/local-mirror/config.yml
+# 该用户同样须对配置里每个 path 可读写。
 #
 # 本文件的内容与 `local-mirror service install` 生成的完全一致，
 # 由 TestPackagedUnitMatchesGenerator 守住，改一处必须改另一处。
