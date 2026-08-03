@@ -54,7 +54,11 @@ curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh
 ```
 
 Prebuilt deb/rpm packages are on the
-[releases page](https://github.com/xwvike/local-mirror/releases).
+[releases page](https://github.com/xwvike/local-mirror/releases). They also
+drop in a ready-to-use systemd unit and a blank `/etc/local-mirror/config.yml`,
+so installing one is `apt install ./local-mirror_*.deb`, fill in the config,
+`systemctl enable --now local-mirror`. See
+[Running as a service](#running-as-a-service).
 
 Or build from source:
 
@@ -101,7 +105,7 @@ and log location:
 ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀ ▀▀▀   ▀   ▀ ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀
 
 ────────────────────────────────────────────────
-  Local Mirror 2.0.0  ·  reality (server)
+  Local Mirror 2.1.1  ·  reality (server)
 ────────────────────────────────────────────────
   Sync root  /path/to/source
   Ignores    .local-mirror, .git, .DS_Store
@@ -124,7 +128,7 @@ and log location:
 | `-p, --path` | sync root; state lives in `.local-mirror/` beneath it | working dir |
 | `-a, --alias` | instance name shown in discovery lists | hostname |
 | `-i, --ignore` | extra ignore patterns, comma-separated | |
-| `--config` | YAML config running multiple tasks (excludes the other flags) | |
+| `--config` | YAML config file (excludes the other flags) | |
 | `--allow-delete` | delete extra files on the sink that no longer exist upstream | off |
 | `--allow-critical` | allow syncing on critical paths, with overwrite backups | off |
 | `-k, --secret` | transport encryption key (or `secret:` in the YAML config) | |
@@ -138,6 +142,9 @@ and log location:
 | `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
 
 `local-mirror --help` has the long version.
+
+There is one subcommand, `local-mirror service <install|uninstall|status>`,
+covered under [Running as a service](#running-as-a-service).
 
 ### Direction and transport
 
@@ -211,8 +218,8 @@ local-mirror --gen-key --send            # prints the key, then serves
 local-mirror --receive --connect vps.example.net -k <generated-key>
 ```
 
-Resolution order is explicit `-k` (including the env var) > `.local-mirror/key`
-file > plaintext. `--show-key` prints the existing file, `--no-encrypt` forces
+Resolution order is explicit `-k` (or `secret:` in the YAML config) >
+`.local-mirror/key` file > plaintext. `--show-key` prints the existing file, `--no-encrypt` forces
 plaintext even when one is present, and `--gen-key --force` regenerates. Don't
 delete the key file on the listening side while dialers are connected —
 regenerating it disconnects every one of them.
@@ -297,43 +304,59 @@ direction as the command line: `send: true` serves, `receive:` replicates,
 local-mirror --config /etc/local-mirror.yml
 ```
 
-Each task runs as its own child process; crashed tasks restart with backoff,
-configuration errors (exit code 2) stop only the affected task, and a
-SIGTERM to the parent shuts down everything. Server tasks on one machine
-share the 52345–52354 port range, so ten at most. `secret` is passed to
-children through the environment and never shows up in `ps`.
+A config holding a single task runs directly in that one process. With two or
+more, each task gets its own child process: crashed tasks restart with backoff,
+configuration errors (exit code 2) stop only the affected task, and a SIGTERM
+to the parent shuts down everything. Server tasks on one machine share the
+52345–52354 port range, so ten at most. `secret` reaches children over their
+stdin, so it shows up neither in `ps` nor in the environment.
+
+The config file must not live inside any task's sync root — that root gets
+mirrored to the peer, which would copy the config and its secret out with it.
+local-mirror refuses to load such a config rather than leak it.
 
 ## Running as a service
 
-Linux, with systemd — a unit file example is included at
-[deploy/local-mirror.service](deploy/local-mirror.service) (the deb/rpm
-packages install it under `/usr/share/doc/local-mirror/examples/`):
+`service install` writes the service description file for you and creates a
+blank config to fill in — no hand-editing unit files or plists:
 
 ```bash
-sudo cp deploy/local-mirror.service /etc/systemd/system/
-# edit the direction/path/upstream in ExecStart, then:
-sudo systemctl daemon-reload
-sudo systemctl enable --now local-mirror
-journalctl -u local-mirror -f
+local-mirror service install     # --system on Linux, --user on macOS by default
+# it prints the config path; fill in your tasks there, then:
+sudo systemctl enable --now local-mirror                    # Linux
+launchctl kickstart -k gui/$(id -u)/com.xwvike.local-mirror # macOS
 ```
 
-macOS, with launchd — `brew services` only manages formulas, not casks, so
-use the LaunchAgent example at
-[deploy/com.xwvike.local-mirror.plist](deploy/com.xwvike.local-mirror.plist)
-(also shipped inside the release archives). It starts at login and restarts
-the process if it dies:
+It never starts the service (the config is blank, so it would only fail) and
+never overwrites an existing config, so re-running it to refresh the generated
+file is safe.
 
 ```bash
-cp deploy/com.xwvike.local-mirror.plist ~/Library/LaunchAgents/
-# edit the binary path, direction/path/upstream and log path, then:
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.xwvike.local-mirror.plist
-# stop and unload:
-launchctl bootout gui/$(id -u)/com.xwvike.local-mirror
+local-mirror service status      # where the config and service live, and whether it is registered
+local-mirror service uninstall   # deregister and remove the service file; the config is kept
+local-mirror service install --dry-run   # print what it would write and run, and touch nothing
 ```
 
-Either way, inject the passphrase through the environment
-(`Environment=`/`EnvironmentFile=` in the unit, `EnvironmentVariables` in
-the plist) rather than a `-k` argument, to keep it out of `ps`.
+The config lives at `/etc/local-mirror/config.yml` for a system service and
+`~/.config/local-mirror/config.yml` for a per-user one, and the generated
+`ExecStart` points at it explicitly, so `systemctl cat local-mirror` tells you
+exactly which file is in play.
+
+On Linux the service runs as the invoking user (not root — otherwise newly
+synced files would land as root). Pass `--run-as <user>` to choose someone
+else; reinstalling keeps whoever is already installed, so it never changes
+behind your back. The config is chowned to that user (still mode 0600) so the
+service can read it.
+
+Installing the deb/rpm gets you the same thing without running `service
+install`: a ready-to-use unit at `/lib/systemd/system/local-mirror.service`
+and a blank `/etc/local-mirror/config.yml` (a conffile, so upgrades never
+overwrite your edits). It runs as root by default; drop privileges with
+`systemctl edit local-mirror` and chown the config to match.
+
+Keep the passphrase in the config's `secret:` field (mode 0600) or in a
+`.local-mirror/key` file, never in a `-k` argument — command lines are visible
+in `ps`.
 
 ## Peeking at the watch tiers
 

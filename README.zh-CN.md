@@ -51,6 +51,11 @@ curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh
 
 [releases 页面](https://github.com/xwvike/local-mirror/releases)
 
+deb/rpm 包还会直接带上可用的 systemd unit 和空白的
+`/etc/local-mirror/config.yml`，所以装包流程就是
+`apt install ./local-mirror_*.deb` → 填配置 → `systemctl enable --now local-mirror`，
+详见[服务化运行](#服务化运行)。
+
 
 或从源码构建：
 
@@ -95,7 +100,7 @@ local-mirror ./path/to/source @vps.example.net:52345
 ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀ ▀▀▀   ▀   ▀ ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀
 
 ────────────────────────────────────────────────
-  Local Mirror 2.0.0  ·  reality (server)
+  Local Mirror 2.1.1  ·  reality (server)
 ────────────────────────────────────────────────
   Sync root  /path/to/source
   Ignores    .local-mirror, .git, .DS_Store
@@ -119,7 +124,7 @@ local-mirror ./path/to/source @vps.example.net:52345
 | `-p, --path` | 同步工作目录，状态目录 `.local-mirror/` 位于其下 | 当前工作目录 |
 | `-a, --alias` | 实例别名，展示在发现列表中 | 主机名 |
 | `-i, --ignore` | 追加忽略模式，逗号分隔 | |
-| `--config` | 多任务 YAML 配置（与其余参数互斥） | |
+| `--config` | YAML 配置文件（与其余参数互斥） | |
 | `--allow-delete` | 允许在同步中删除汇端工作目录里的多余文件（忠实镜像） | 关 |
 | `--allow-critical` | 允许在关键路径上同步，覆盖前备份 | 关 |
 | `-k, --secret` | 设置传输预加密密钥（或在 YAML 配置里写 `secret:`） | |
@@ -133,6 +138,9 @@ local-mirror ./path/to/source @vps.example.net:52345
 | `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
 
 完整说明见 `local-mirror --help`。
+
+另有一个子命令 `local-mirror service <install|uninstall|status>`，
+见[服务化运行](#服务化运行)。
 
 ### 方向与传输
 
@@ -191,7 +199,7 @@ local-mirror --gen-key --send            # 打印密钥后开始服务
 local-mirror --receive --connect vps.example.net -k <生成的密钥>
 ```
 
-解析优先级为：显式 `-k`（含环境变量）＞ `.local-mirror/key` 文件 ＞ 明文。
+解析优先级为：显式 `-k`（或 YAML 配置里的 `secret:`）＞ `.local-mirror/key` 文件 ＞ 明文。
 `--show-key` 打印已有文件，`--no-encrypt` 即使有文件也强制明文，
 `--gen-key --force` 重新生成。监听端有拨号方连着时请勿删密钥文件——重新生成密钥
 会把每一个拨号方都踢下线。
@@ -272,40 +280,52 @@ local-mirror --config /etc/local-mirror.yml
 方向:`send: true` 提供服务,`receive:` 拉取镜像,`connect:` 拨向主机,
 `listen: true` 等对端拨入,`send` 与 `receive` 都给即中继。
 
-每个任务是独立子进程：崩溃的任务退避重启，配置错误（退出码 2）只停该
-任务，父进程收到 SIGTERM 统一停全部。同机服务端任务共享 52345–52354
-端口段，最多 10 个。`secret` 经环境变量传给子进程，不出现在 `ps` 里。
+只有一个任务的配置直接在本进程跑，不额外起监督进程。两个及以上时每个任务是
+独立子进程：崩溃的任务退避重启，配置错误（退出码 2）只停该任务，父进程收到
+SIGTERM 统一停全部。同机服务端任务共享 52345–52354 端口段，最多 10 个。
+`secret` 经 stdin 传给子进程，既不出现在 `ps` 里，也不进环境变量。
+
+配置文件**不能放在任何任务的同步根内部**——同步根是要被复制到对端的，
+放在里面等于把配置连同其中的密钥一起镜像出去。local-mirror 会拒绝加载这样的
+配置，而不是让它泄漏。
 
 ## 服务化运行
 
-Linux 用 systemd——单元文件示例在
-[deploy/local-mirror.service](deploy/local-mirror.service)
-（deb/rpm 包会把它装到 `/usr/share/doc/local-mirror/examples/`）：
+`service install` 会替你写好服务描述文件、建好配置目录与空白配置——
+不需要手工编辑 unit 或 plist：
 
 ```bash
-sudo cp deploy/local-mirror.service /etc/systemd/system/
-# 编辑 ExecStart 里的方向/目录/上游地址后：
-sudo systemctl daemon-reload
-sudo systemctl enable --now local-mirror
-journalctl -u local-mirror -f
+local-mirror service install     # Linux 默认 --system，macOS 默认 --user
+# 它会打印配置文件路径，填好任务后：
+sudo systemctl enable --now local-mirror                    # Linux
+launchctl kickstart -k gui/$(id -u)/com.xwvike.local-mirror # macOS
 ```
 
-macOS 用 launchd——`brew services` 只支持 formula 不支持 cask，用
-LaunchAgent 示例
-[deploy/com.xwvike.local-mirror.plist](deploy/com.xwvike.local-mirror.plist)
-（发行压缩包里也有）。登录即启动，自动拉起：
+它**不会**顺手启动服务（配置还空着，起来必然失败），也**绝不覆盖**已有配置，
+所以为了刷新生成的服务文件而重跑它是安全的。
 
 ```bash
-cp deploy/com.xwvike.local-mirror.plist ~/Library/LaunchAgents/
-# 编辑二进制路径、方向/目录/上游地址与日志路径后：
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.xwvike.local-mirror.plist
-# 停止并卸载：
-launchctl bootout gui/$(id -u)/com.xwvike.local-mirror
+local-mirror service status      # 配置与服务各在哪、是否已注册
+local-mirror service uninstall   # 注销并删除服务文件，配置始终保留
+local-mirror service install --dry-run   # 只打印将写入什么、将执行什么，不碰系统
 ```
 
-两边一样：口令走环境变量注入（unit 里 `Environment=`/`EnvironmentFile=`，
-plist 里 `EnvironmentVariables`），不推荐在 `-k` 参数里，免得出现在 `ps`
-输出中。
+配置文件位置：系统级服务在 `/etc/local-mirror/config.yml`，用户级在
+`~/.config/local-mirror/config.yml`。生成的 `ExecStart` 会**显式写出这个路径**，
+所以 `systemctl cat local-mirror` 一眼就能看到用的是哪份配置。
+
+Linux 上服务以**调用者的身份**运行（而非 root——否则新同步下来的文件会变成
+root 属主）。用 `--run-as <用户>` 可以指定别人；重装时会**沿用已安装的身份**，
+不会在你背后改掉。配置会被 chown 给该用户（权限仍保持 0600）以便服务读取。
+
+装 deb/rpm 则不用跑 `service install` 也是同样效果：包里直接带了可用的
+`/lib/systemd/system/local-mirror.service` 和空白的
+`/etc/local-mirror/config.yml`（是 conffile，升级绝不覆盖你的改动）。
+它默认以 root 运行；要降权请用 `systemctl edit local-mirror`，并把配置
+chown 给对应用户。
+
+口令写在配置的 `secret:` 字段（0600）或 `.local-mirror/key` 文件里，
+不要放在 `-k` 参数上——命令行在 `ps` 里是可见的。
 
 ## 查看监听分级
 
