@@ -149,7 +149,7 @@ func resolveDirection() error {
 // resolveSecret 落实密钥自管理（公网化支柱 C，docs/PUBLIC_EXPOSURE.md）。
 // 解析优先级：显式 -k（或内部的 --secret-stdin）＞ 密钥文件 ＞ 明文；
 // --no-encrypt 强制明文（逃生门）。--show-key / --gen-key 是子命令式旗子：
-// 前者打印后退出；后者生成后退出，除非还带了运行旗子（如 -m）才继续启动。
+// 前者打印后退出；后者生成后退出，除非还带了运行旗子（如 --send）才继续启动。
 // key 只对 tty 输出，稳态横幅与日志只显指纹。
 // 返回的错误属用法错误，调用方以退出码 2 处理
 func resolveSecret() error {

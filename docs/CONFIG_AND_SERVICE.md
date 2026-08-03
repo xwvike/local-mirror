@@ -339,8 +339,7 @@ WantedBy=multi-user.target
 `ReadWritePaths=/` 这种把加固削成零、却看起来像有加固的危险规则。
 宁可明确地不加固，也不要假装加固。
 
-注意这里补回了 `ProtectSystem=full`（仓库模板 `deploy/local-mirror.service:37` 本来就有，
-生产 unit 反而漏了），并按配置里的 `path` 自动生成 `ReadWritePaths`。
+注意这里带上了 `ProtectSystem=full`，并按配置里的 `path` 自动生成 `ReadWritePaths`。
 
 ### P4.3.1 实现状态（2026-08-03）
 
@@ -356,6 +355,35 @@ WantedBy=multi-user.target
 
 ⚠️ **尚未做过真实的 live install**：生成的 launchd label 与 systemd unit 名
 都与现有生产服务同名，真装会顶掉生产。live 安装留到迁移那一步做（那时替换生产正是目的）。
+
+### P4.3.2 第三种 init：procd（OpenWrt）—— 2026-08-03 补齐
+
+`detectInit()` 按 `/run/systemd/system`（systemd 的权威判据）→ `/sbin/procd` 依次判定，
+darwin 直接是 launchd。procd 落点 `/etc/init.d/local-mirror`（**0755，init 脚本要可执行**），
+注册走 `<script> enable`（建 rc.d 软链），日志进 `logread`。
+
+**实测得到的两条硬约束**（OpenWrt 24.10 的 `/lib/functions/procd.sh`）：
+- `_procd_set_param` **不支持 `user`/`group`** —— procd 下服务只能以 root 运行。
+  因此 `--run-as` 在该平台**直接报错**，而不是生成一个会被静默忽略的参数。
+- 没有 `ProtectSystem`/`ReadWritePaths` 的对应物 —— 因此也不再提示
+  「填好配置后重跑 install 即可补上加固」，那在 procd 下是空头支票。
+  能给的只有 `no_new_privs`。
+
+### P4.3.3 运行身份的三条规则（借鉴 xray 安装脚本）
+
+1. **`--run-as <user>`** 显式指定；用户级服务与 procd 下给了即报错（不静默忽略旗子）。
+2. **重装保留既有身份**：Linux 上优先问 `systemctl show -p User --value` 要**合并后**的
+   生效值——drop-in 里的 `User=` 只 grep 主 unit 是看不到的（xray 的做法会漏）。
+3. **写入前校验用户存在**，避免装得上、起不来、报的还是跟同步无关的错。
+4. **自动把配置 chown 给运行用户**（权限仍 0600）：配置属主不对，服务读不到就起不来。
+   改属主而非放宽权限，密钥暴露面一点不扩大。
+
+### P4.3.4 服务文件里必须写稳定路径
+
+`os.Executable()` 的结果**不做 `EvalSymlinks`**。包管理器给的正是一个稳定软链
+（brew cask：`/opt/homebrew/bin/local-mirror` → `Caskroom/<版本>/local-mirror`），
+解析后会把**版本化路径**烤进服务文件，下次 `brew upgrade` 删掉旧 Caskroom 目录，
+服务就再也起不来。软链本身才是该写进去的长期有效路径（v2.2.1 修复）。
 
 ### P4.4 Windows 的诚实范围
 

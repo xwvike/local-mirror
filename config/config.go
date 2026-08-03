@@ -117,7 +117,7 @@ var (
 
 	// SecretFromKeyFile 生效口令来自 .local-mirror/key 密钥文件而非显式 -k
 	//（横幅展示来源用）。密钥解析优先级见 main.resolveSecret：
-	// 显式 -k（含 env）＞ 密钥文件 ＞ 明文；--no-encrypt 强制明文
+	// 显式 -k（或 YAML 配置的 secret:）＞ 密钥文件 ＞ 明文；--no-encrypt 强制明文
 	SecretFromKeyFile bool = false
 )
 
@@ -244,7 +244,8 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               Never starts it, never overwrites an existing config\n")
 	fmt.Fprintf(w, "  local-mirror service uninstall       deregister and remove it; the config is kept\n")
 	fmt.Fprintf(w, "  local-mirror service status          where things are and whether it is registered\n")
-	fmt.Fprintf(w, "                               Flags: --system / --user / --config / --dry-run\n\n")
+	fmt.Fprintf(w, "                               Flags: --system / --user / --run-as / --config / --dry-run\n")
+	fmt.Fprintf(w, "                               Handles systemd, launchd and procd (OpenWrt) automatically\n\n")
 
 	fmt.Fprintf(w, "Direction (what this end is):\n")
 	fmt.Fprintf(w, "      --send                   this directory is the source: data flows out\n")
@@ -288,9 +289,10 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               still requires --allow-delete on top\n")
 	fmt.Fprintf(w, "  -k, --secret string          transport encryption key (Noise NNpsk0), must match on both\n")
 	fmt.Fprintf(w, "                               ends. Resolution order:\n")
-	fmt.Fprintf(w, "                               explicit -k > .local-mirror/key file > plaintext\n")
+	fmt.Fprintf(w, "                               explicit -k (or secret: in the YAML config) >\n")
+	fmt.Fprintf(w, "                               .local-mirror/key file > plaintext\n")
 	fmt.Fprintf(w, "      --gen-key                generate a strong random key into .local-mirror/key (600),\n")
-	fmt.Fprintf(w, "                               print it to the terminal, then exit; add run flags (e.g. -m)\n")
+	fmt.Fprintf(w, "                               print it to the terminal, then exit; add run flags (e.g. --send)\n")
 	fmt.Fprintf(w, "                               to generate and start in one go. Refuses to overwrite an\n")
 	fmt.Fprintf(w, "                               existing key (--force to regenerate)\n")
 	fmt.Fprintf(w, "      --status                 live status dashboard for the running instance (refreshes\n")
@@ -305,8 +307,10 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "      --show-key               print the key file to the terminal and exit\n")
 	fmt.Fprintf(w, "      --no-encrypt             force plaintext even when a key file exists\n")
 	fmt.Fprintf(w, "      --force                  with --gen-key: overwrite the existing key file\n")
-	fmt.Fprintf(w, "      --config string          YAML config running multiple tasks under a supervisor\n")
-	fmt.Fprintf(w, "                               (one child process per task, crash backoff restart;\n")
+	fmt.Fprintf(w, "      --config string          YAML config file (excludes the other flags). A single task\n")
+	fmt.Fprintf(w, "                               runs in this process; two or more get a supervisor with one\n")
+	fmt.Fprintf(w, "                               child each and crash backoff restart. secret: reaches children\n")
+	fmt.Fprintf(w, "                               over stdin, never via argv or the environment;\n")
 	fmt.Fprintf(w, "                               see deploy/local-mirror.example.yml)\n")
 	fmt.Fprintf(w, "  -h, --help                   show this help\n")
 	fmt.Fprintf(w, "  -v, --version                show version\n\n")
@@ -410,7 +414,7 @@ func init() {
 	Ignore = flag.String("ignore", "", "extra ignore patterns, comma-separated")
 	flag.StringVar(Ignore, "i", "", "alias of --ignore")
 
-	ConfigFile = flag.String("config", "", "YAML config running multiple tasks under a supervisor; excludes other flags")
+	ConfigFile = flag.String("config", "", "YAML config file; a single task runs in-process, two or more under a supervisor; excludes other flags")
 
 	// 方向优先 CLI（公网化支柱 A）：两个正交轴取代不透明的 mode 词汇，
 	// -m 降级为废弃别名。方向 --send/--receive × 传输 --connect/--listen

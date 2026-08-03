@@ -29,9 +29,9 @@ archives:
       - LICENSE
       - README.md
       - README.zh-CN.md
-      - deploy/local-mirror.service
+      # 只带配置示例：服务描述文件由 `local-mirror service install` 按平台生成，
+      # 手工模板既冗余又诱导用户去踩已经解决的坑（属主、路径、init 差异）
       - deploy/local-mirror.example.yml
-      - deploy/com.xwvike.local-mirror.plist
 
 checksum:
   name_template: checksums.txt
