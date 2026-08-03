@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"local-mirror/config"
 	"local-mirror/internal/safety"
@@ -513,8 +512,8 @@ func chownConfigTo(cfgPath, username string) error {
 		return err
 	}
 	if fi, err := os.Stat(cfgPath); err == nil {
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) == uid {
-			return nil // 属主已正确
+		if owner, ok := fileOwnerUID(fi); ok && owner == uid {
+			return nil // 属主已正确，不必（也可能没权限）再 chown 一次
 		}
 	}
 	return os.Chown(cfgPath, uid, gid)
