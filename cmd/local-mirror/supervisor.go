@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"local-mirror/config"
@@ -199,6 +200,23 @@ func countRealityTasks(cfg *config.MultiConfig) int {
 // taskArgs 把任务配置映射为子进程 argv。方向用 --send/--receive 表达（内部
 // Mode 已由 config 归一），传输用 --connect/--listen——子进程再走 resolveDirection
 // 还原四象限。这样 ps 里也是方向优先词汇，不出现遗留的 -m/-r
+// applySingleTask 把唯一任务的配置落进本进程自己的旗子状态，供单任务免 fork 直跑。
+//
+// 刻意复用 taskArgs 这同一份 TaskConfig→argv 映射在进程内重解析，而不是另写一个
+// 逐字段赋值的版本：后者会与 taskArgs 形成两份必然漂移的映射（加了字段只改一处），
+// 重解析还顺带复用了 flag 包的类型转换与下游 resolveDirection 的全部校验。
+// 重解析后 flag.Visit 会把这些旗子报为"已显式给出"，正是我们要的——
+// 与命令行直接给旗子完全等价。
+//
+// 口令单独赋值：绝不进 argv（ps 可见）。单任务没有子进程，
+// 也就用不上 --secret-stdin 那条父子通道
+func applySingleTask(t config.TaskConfig) {
+	// flag.CommandLine 是 ExitOnError：taskArgs 产出的旗子若不合法会自行打印用法并退出。
+	// 实践中不会发生——LoadMultiConfig 已校验过任务字段
+	_ = flag.CommandLine.Parse(taskArgs(t))
+	*config.Secret = t.Secret
+}
+
 func taskArgs(t config.TaskConfig) []string {
 	var args []string
 	switch t.Mode {

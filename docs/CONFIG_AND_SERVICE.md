@@ -211,15 +211,24 @@ len(tasks) == 1  →  单进程直跑（不 fork）
 len(tasks) >  1  →  监督模式（现状不变）
 ```
 
-**实现要点**：不要手写一个 `applyTaskConfig(t)` 去逐字段写 `config.*` 全局变量——
-那会和 `taskArgs()`（`supervisor.go:198`）形成**两份必然漂移的映射**。
-改用**在进程内重解析**：
+**实现要点**：不要手写一个逐字段写 `config.*` 全局变量的版本——
+那会和 `taskArgs()` 形成**两份必然漂移的映射**（加了字段只改一处）。
+改用**在进程内重解析**，落成 `applySingleTask()`（`supervisor.go`，紧邻 `taskArgs`）：
 
 ```go
-flag.CommandLine.Parse(taskArgs(t))   // 复用多任务路径同一个映射函数
-*config.Secret = t.Secret             // 密钥单独赋值，绝不进 argv
-// 然后落回既有的单实例主流程
+func applySingleTask(t config.TaskConfig) {
+	_ = flag.CommandLine.Parse(taskArgs(t))  // 复用多任务路径同一个映射函数
+	*config.Secret = t.Secret                // 密钥单独赋值，绝不进 argv
+}
+// 调用后落回既有的单实例主流程，与命令行直接给旗子完全同路
 ```
+
+重解析后 `flag.Visit` 会把这些旗子报为「已显式给出」，正是所需——
+下游 `resolveDirection()` 等校验逻辑全部原样复用，无需任何特判。
+
+**已实现并验证**（2026-08-03）：单任务配置启动后进程数 = 1（多任务仍为 1 父 + N 子）；
+输出不再带 `[task-name]` 前缀（无父进程转发即为免 fork 的直接证据）；
+单测 `TestApplySingleTaskMapsEveryField` 逐字段断言映射完整，防止将来加字段漏落。
 
 好处：**TaskConfig → 配置** 只有一处映射，单/多任务两条路径永远一致；
 参数校验逻辑也完全复用既有的那套。

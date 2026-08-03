@@ -392,12 +392,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
 			os.Exit(2)
 		}
-		if n := countRealityTasks(multiCfg); n > config.PortScanRange {
-			fmt.Fprintf(os.Stderr, "local-mirror: warning: %d server tasks exceed the port scan range (%d); the excess cannot bind a port\n",
-				n, config.PortScanRange)
+		// 单任务不 fork：监督进程存在的意义是管理多个子进程的生命周期，
+		// 只有一个任务时那层父进程纯属开销（多一次调度、多一层信号转发，
+		// 还让 pgrep/pkill 多一个匹配目标）。见 docs/CONFIG_AND_SERVICE.md §P3
+		if len(multiCfg.Tasks) == 1 {
+			applySingleTask(multiCfg.Tasks[0])
+			// 落回下方单实例主流程，与命令行直接给旗子完全同路
+		} else {
+			if n := countRealityTasks(multiCfg); n > config.PortScanRange {
+				fmt.Fprintf(os.Stderr, "local-mirror: warning: %d server tasks exceed the port scan range (%d); the excess cannot bind a port\n",
+					n, config.PortScanRange)
+			}
+			runSupervisor(multiCfg) // 不返回
+			return
 		}
-		runSupervisor(multiCfg) // 不返回
-		return
 	}
 
 	// --status 与 --heat 都是只读观测子命令，语义不同，不能同时给
