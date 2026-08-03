@@ -263,6 +263,41 @@ func TestInstallHintFollowsConfigReadiness(t *testing.T) {
 	}
 }
 
+// TestServiceFileKeepsSymlinkPath 服务文件里必须写包管理器给的**稳定软链**路径，
+// 而不是解析后的真实路径。
+//
+// brew cask 的 /opt/homebrew/bin/local-mirror 指向
+// Caskroom/local-mirror/<版本>/local-mirror——把版本化路径烤进服务文件，
+// 下次 brew upgrade 删掉旧 Caskroom 目录后服务就再也起不来
+func TestServiceFileKeepsSymlinkPath(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "Caskroom", "9.9.9")
+	if err := os.MkdirAll(real, 0755); err != nil {
+		t.Fatal(err)
+	}
+	realBin := filepath.Join(real, "local-mirror")
+	if err := os.WriteFile(realBin, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(binDir, "local-mirror")
+	if err := os.Symlink(realBin, link); err != nil {
+		t.Skipf("本平台不支持符号链接: %v", err)
+	}
+
+	// 服务文件应引用软链本身，不含版本化的真实路径
+	out := systemdUnitText(serviceSpec{ExePath: link, ConfigPath: "/etc/local-mirror/config.yml"})
+	if !strings.Contains(out, link) {
+		t.Errorf("应写入软链路径 %s:\n%s", link, out)
+	}
+	if strings.Contains(out, "Caskroom/9.9.9") {
+		t.Errorf("不应出现版本化真实路径（brew upgrade 后会失效）:\n%s", out)
+	}
+}
+
 // TestProcdInitScript OpenWrt 的 procd init 脚本必须符合 rc.common 规范：
 // shebang 指向 /etc/rc.common、USE_PROCD=1、start_service 里成对开关 instance
 func TestProcdInitScript(t *testing.T) {

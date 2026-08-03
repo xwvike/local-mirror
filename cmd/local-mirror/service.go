@@ -322,9 +322,11 @@ func serviceInstall(userScope bool, explicitConfig, explicitRunAs string, dryRun
 		fmt.Fprintf(os.Stderr, "local-mirror: cannot determine own executable path: %v\n", err)
 		os.Exit(1)
 	}
-	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
-		exePath = resolved
-	}
+	// ⚠️ 刻意不做 filepath.EvalSymlinks：包管理器给的正是一个**稳定软链**，
+	// 解析后会得到带版本号的真实路径（brew cask 是
+	// /opt/homebrew/bin/local-mirror → Caskroom/local-mirror/<版本>/local-mirror）。
+	// 把版本化路径烤进服务文件，下次 brew upgrade 删掉旧 Caskroom 目录后
+	// 服务就再也起不来了。软链本身才是该写进去的长期有效路径
 
 	cfgPath, err := resolveServiceConfigPath(explicitConfig, userScope)
 	if err != nil {
