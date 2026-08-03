@@ -342,6 +342,21 @@ WantedBy=multi-user.target
 注意这里补回了 `ProtectSystem=full`（仓库模板 `deploy/local-mirror.service:37` 本来就有，
 生产 unit 反而漏了），并按配置里的 `path` 自动生成 `ReadWritePaths`。
 
+### P4.3.1 实现状态（2026-08-03）
+
+**已实现**：`cmd/local-mirror/service.go`，子命令分发在 `main()` 里 `flag.Parse()` 之前，
+**只精确匹配 `service` 这一个词**——不能用「argv[1] 不以 `-` 开头」判定，
+那会把位置糖 `local-mirror ./dir @peer` 里的 `./dir` 误当成子命令。
+额外提供 `--dry-run`：打印将写入的内容与将执行的命令，不碰系统。
+
+**已验证**：12 个单测覆盖两个平台的产物（systemd 系统级/用户级、launchd 转义与
+`plutil -lint` 真校验）、加固开关随 `RWPaths` 联动、关键路径跳过加固、
+空白配置绝不覆盖已有配置、落点解析（临时 HOME）；真机跑通 `service status`、
+`install --dry-run`、`uninstall --dry-run`、未知动作报错。
+
+⚠️ **尚未做过真实的 live install**：生成的 launchd label 与 systemd unit 名
+都与现有生产服务同名，真装会顶掉生产。live 安装留到迁移那一步做（那时替换生产正是目的）。
+
 ### P4.4 Windows 的诚实范围
 
 Windows 服务要接 SCM（Service Control Manager），Go 得引 `golang.org/x/sys/windows/svc`

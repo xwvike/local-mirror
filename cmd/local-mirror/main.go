@@ -338,6 +338,14 @@ func main() {
 	restoreConsole := enableConsoleUTF8()
 	defer restoreConsole()
 
+	// 子命令分发必须在 flag.Parse() 之前，且只精确匹配 "service" 这一个词。
+	// 不能用「argv[1] 不以 - 开头」来判定——位置糖 `local-mirror ./dir @peer`
+	// 里的 ./dir 同样不以 - 开头，会被误当成子命令。
+	// 代价是同步一个名为 service 的目录时要写 `-p ./service`，可接受
+	if len(os.Args) > 1 && os.Args[1] == "service" {
+		runServiceCommand(os.Args[2:]) // 不返回
+	}
+
 	flag.Parse()
 
 	// 用户主动请求帮助：输出到 stdout，退出码 0

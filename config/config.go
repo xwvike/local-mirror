@@ -235,7 +235,16 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "Usage:\n")
 	fmt.Fprintf(w, "  local-mirror [flags]\n")
 	fmt.Fprintf(w, "  local-mirror ./dir @host[:port]      push ./dir to the listening sink\n")
-	fmt.Fprintf(w, "  local-mirror @host[:port] ./dir      pull into ./dir from the listening source\n\n")
+	fmt.Fprintf(w, "  local-mirror @host[:port] ./dir      pull into ./dir from the listening source\n")
+	fmt.Fprintf(w, "  local-mirror service <action>        manage the system service (see below)\n\n")
+
+	fmt.Fprintf(w, "Service subcommand:\n")
+	fmt.Fprintf(w, "  local-mirror service install         create the config dir and a blank config,\n")
+	fmt.Fprintf(w, "                               write and register the service description file.\n")
+	fmt.Fprintf(w, "                               Never starts it, never overwrites an existing config\n")
+	fmt.Fprintf(w, "  local-mirror service uninstall       deregister and remove it; the config is kept\n")
+	fmt.Fprintf(w, "  local-mirror service status          where things are and whether it is registered\n")
+	fmt.Fprintf(w, "                               Flags: --system / --user / --config / --dry-run\n\n")
 
 	fmt.Fprintf(w, "Direction (what this end is):\n")
 	fmt.Fprintf(w, "      --send                   this directory is the source: data flows out\n")
