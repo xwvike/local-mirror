@@ -127,7 +127,7 @@ and log location:
 | `--config` | YAML config running multiple tasks (excludes the other flags) | |
 | `--allow-delete` | delete extra files on the sink that no longer exist upstream | off |
 | `--allow-critical` | allow syncing on critical paths, with overwrite backups | off |
-| `-k, --secret` | transport encryption key (or env `LOCAL_MIRROR_SECRET`) | |
+| `-k, --secret` | transport encryption key (or `secret:` in the YAML config) | |
 | `--gen-key` | generate a random key into `.local-mirror/key`, print it, exit | |
 | `--show-key` | print the existing key file and exit | |
 | `--no-encrypt` | force plaintext even when a key file exists | |

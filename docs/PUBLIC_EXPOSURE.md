@@ -193,7 +193,7 @@ Happy Eyeballs 由 `net.DialTimeout("tcp", …)` 自带。
 
 | 输入 | 行为 |
 |---|---|
-| `-k <value>`（含 env `LOCAL_MIRROR_SECRET`） | 用这个值（**显式最高优先**，与当前一致） |
+| `-k <value>`（或 YAML 配置的 `secret:`，经内部 `--secret-stdin` 下发） | 用这个值（**显式最高优先**，与当前一致） |
 | 未给 `-k`，但密钥文件存在 | 读文件、开加密（banner 显指纹） |
 | 未给 `-k`，且无密钥文件 | 不加密（明文，与当前一致） |
 | `--no-encrypt` | 强制关闭，即便文件存在（逃生门） |

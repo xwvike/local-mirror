@@ -21,9 +21,9 @@ Type=simple
 # 源端示例；汇端改为: --receive --connect <上游IP> -p /srv/replica
 # 中继改为:          --send --receive --connect <上游IP> -p /srv/relay
 ExecStart=/usr/local/bin/local-mirror --send -p /srv/data -l warn
-# 传输加密口令建议用环境变量而非命令行参数（避免出现在 ps 输出中）
-#Environment=LOCAL_MIRROR_SECRET=changeme
-#EnvironmentFile=/etc/local-mirror/secret.env
+# 传输加密口令不要写进 ExecStart（命令行参数在 ps 输出中可见）。两种安全做法：
+#   1. 用 YAML 配置：ExecStart=… --config /etc/local-mirror/config.yml，口令写进任务的 secret:
+#   2. 在同步根下放密钥文件：local-mirror --gen-key -p /srv/data（自动读取 .local-mirror/key）
 
 Restart=on-failure
 RestartSec=5s

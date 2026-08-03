@@ -14,8 +14,8 @@
 # - receive 任务建议显式写 connect;留空会走非交互自动发现,局域网里
 #   恰好一台源端时才能自动连接。零台(上游可能还没启动)exit 1 会被退避
 #   重启再扫;多台是配置歧义,exit 2 判永久错误
-# - secret 经环境变量传给子进程,不出现在 ps 的命令行里;
-#   也可以不写,统一在 systemd unit 里设 Environment=LOCAL_MIRROR_SECRET=…
+# - secret 经 stdin 传给子进程,既不出现在 ps 的命令行里、也不进环境变量;
+#   也可以不写,改在各任务的同步根下放密钥文件(--gen-key 生成 .local-mirror/key)
 
 # 各任务字段留空时的回退值(可选;name/direction/path 不参与回退)
 defaults:

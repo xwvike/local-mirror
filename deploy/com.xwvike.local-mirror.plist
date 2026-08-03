@@ -54,13 +54,10 @@
 	<key>StandardErrorPath</key>
 	<string>/Users/you/Library/Logs/local-mirror.log</string>
 
-	<!-- 传输加密口令建议放这里而非命令行参数（避免出现在 ps 输出中） -->
-	<!--
-	<key>EnvironmentVariables</key>
-	<dict>
-		<key>LOCAL_MIRROR_SECRET</key>
-		<string>changeme</string>
-	</dict>
-	-->
+	<!-- 传输加密口令不要写进 ProgramArguments（命令行参数在 ps 输出中可见）。
+	     两种安全做法：
+	       1. 用 YAML 配置：参数给 --config <路径>，口令写进任务的 secret:
+	       2. 在同步根下放密钥文件：local-mirror --gen-key -p <同步根>
+	          （自动读取 .local-mirror/key，无需在此声明任何东西） -->
 </dict>
 </plist>

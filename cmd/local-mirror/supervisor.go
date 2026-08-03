@@ -135,16 +135,20 @@ func superviseTask(ctx context.Context, exe string, t config.TaskConfig, ref *ch
 // runTaskOnce 启动一次子进程并阻塞到其退出，返回退出码。
 // stdout/stderr 按行加 [name] 前缀转发到父进程对应流
 func runTaskOnce(ctx context.Context, exe string, t config.TaskConfig, ref *childRef) (int, error) {
-	cmd := exec.Command(exe, taskArgs(t)...)
-	// 口令绝不进 argv（ps 可见）：复用现有的 LOCAL_MIRROR_SECRET 环境变量
-	// 机制（config 包将其作为 -k 的默认值）。任务未配置 secret 时不追加，
-	// 继承父进程环境（允许在 systemd unit 里统一设置全局口令）
-	cmd.Env = os.Environ()
+	args := taskArgs(t)
+	// 口令既不进 argv（ps 可见）也不进环境变量（/proc/<pid>/environ 可见），
+	// 改由父进程写进子进程 stdin 的第一行。见 docs/CONFIG_AND_SERVICE.md §P2.3
 	if t.Secret != "" {
-		cmd.Env = append(cmd.Env, "LOCAL_MIRROR_SECRET="+t.Secret)
+		args = append(args, "--secret-stdin")
 	}
-	// stdin 显式空设备：子进程确定性走非 TTY 路径（发现、无色输出）
+	cmd := exec.Command(exe, args...)
+	cmd.Env = os.Environ()
+	// 无口令时 stdin 显式空设备；有口令时是管道——两种情况都非 TTY，
+	// 子进程确定性走非交互路径（发现、无色输出）
 	cmd.Stdin = nil
+	if t.Secret != "" {
+		cmd.Stdin = strings.NewReader(t.Secret + "\n")
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

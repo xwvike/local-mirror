@@ -62,6 +62,7 @@ var (
 	FileBufferSize *uint64
 	RealityIP      *string
 	Secret         *string
+	SecretStdin    *bool
 	Path           *string
 	Alias          *string
 	Ignore         *string
@@ -277,7 +278,7 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               backs the original up to .local-mirror/backups; deletion\n")
 	fmt.Fprintf(w, "                               still requires --allow-delete on top\n")
 	fmt.Fprintf(w, "  -k, --secret string          transport encryption key (Noise NNpsk0), must match on both\n")
-	fmt.Fprintf(w, "                               ends. Env: LOCAL_MIRROR_SECRET. Resolution order:\n")
+	fmt.Fprintf(w, "                               ends. Resolution order:\n")
 	fmt.Fprintf(w, "                               explicit -k > .local-mirror/key file > plaintext\n")
 	fmt.Fprintf(w, "      --gen-key                generate a strong random key into .local-mirror/key (600),\n")
 	fmt.Fprintf(w, "                               print it to the terminal, then exit; add run flags (e.g. -m)\n")
@@ -369,11 +370,13 @@ func init() {
 	RealityIP = flag.String("realityip", "", "upstream server address (mirror/relay); empty = LAN discovery")
 	flag.StringVar(RealityIP, "r", "", "alias of --realityip")
 
-	// 默认值取自环境变量：命令行参数会出现在 ps 输出中，
-	// 环境变量方式适合不想暴露口令的场景
-	secretDefault := os.Getenv("LOCAL_MIRROR_SECRET")
-	Secret = flag.String("secret", secretDefault, "transport encryption passphrase, must match on both ends; empty = plaintext")
-	flag.StringVar(Secret, "k", secretDefault, "alias of --secret")
+	Secret = flag.String("secret", "", "transport encryption passphrase, must match on both ends; empty = plaintext")
+	flag.StringVar(Secret, "k", "", "alias of --secret")
+
+	// --secret-stdin 是监督进程与子进程之间的内部通道，不面向用户，故不进 PrintUsage：
+	// 口令既不进 argv（ps 可见）也不进环境变量（/proc/<pid>/environ 可见），
+	// 由父进程写入子进程 stdin 的第一行。见 docs/CONFIG_AND_SERVICE.md §P2.3
+	SecretStdin = flag.Bool("secret-stdin", false, "read the transport key from the first line of stdin (internal: supervisor to child)")
 
 	// 密钥自管理（公网化支柱 C）：监听端生成强随机 key，消灭弱口令
 	GenKey = flag.Bool("gen-key", false, "generate a strong random key into .local-mirror/key, print it to the terminal, then exit")

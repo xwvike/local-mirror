@@ -122,7 +122,7 @@ local-mirror ./path/to/source @vps.example.net:52345
 | `--config` | 多任务 YAML 配置（与其余参数互斥） | |
 | `--allow-delete` | 允许在同步中删除汇端工作目录里的多余文件（忠实镜像） | 关 |
 | `--allow-critical` | 允许在关键路径上同步，覆盖前备份 | 关 |
-| `-k, --secret` | 设置传输预加密密钥（或通过环境变量 `LOCAL_MIRROR_SECRET` 设置） | |
+| `-k, --secret` | 设置传输预加密密钥（或在 YAML 配置里写 `secret:`） | |
 | `--gen-key` | 生成随机密钥写入 `.local-mirror/key`，打印后退出 | |
 | `--show-key` | 打印工作目录中已有的密钥文件 | |
 | `--no-encrypt` | 即使工作目录存在密钥文件也强制明文 | |

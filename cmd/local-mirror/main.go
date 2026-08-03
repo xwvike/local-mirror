@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"local-mirror/config"
@@ -146,7 +147,7 @@ func resolveDirection() error {
 }
 
 // resolveSecret 落实密钥自管理（公网化支柱 C，docs/PUBLIC_EXPOSURE.md）。
-// 解析优先级：显式 -k（含 env LOCAL_MIRROR_SECRET）＞ 密钥文件 ＞ 明文；
+// 解析优先级：显式 -k（或内部的 --secret-stdin）＞ 密钥文件 ＞ 明文；
 // --no-encrypt 强制明文（逃生门）。--show-key / --gen-key 是子命令式旗子：
 // 前者打印后退出；后者生成后退出，除非还带了运行旗子（如 -m）才继续启动。
 // key 只对 tty 输出，稳态横幅与日志只显指纹。
@@ -154,6 +155,24 @@ func resolveDirection() error {
 func resolveSecret() error {
 	root := config.StartPath
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+
+	// 监督进程传下来的口令走 stdin 首行（不进 argv、不进 environ）。
+	// 归一成"显式 -k"后走下面完全相同的解析路径
+	if *config.SecretStdin {
+		if *config.Secret != "" {
+			return fmt.Errorf("--secret-stdin conflicts with -k/--secret: pick one key source")
+		}
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		// 父进程可能不带结尾换行就关闭管道：EOF 但已读到内容仍然有效
+		if err != nil && line == "" {
+			return fmt.Errorf("--secret-stdin: failed to read the key from stdin: %w", err)
+		}
+		key := strings.TrimRight(line, "\r\n")
+		if key == "" {
+			return fmt.Errorf("--secret-stdin: the key read from stdin is empty")
+		}
+		*config.Secret = key
+	}
 
 	if *config.ShowKey {
 		if *config.GenKey {
@@ -179,7 +198,7 @@ func resolveSecret() error {
 	if *config.GenKey {
 		// 一次只认一个密钥来源，避免"生成了 A、实际用的却是 B"
 		if *config.Secret != "" {
-			return fmt.Errorf("--gen-key conflicts with -k/--secret (or LOCAL_MIRROR_SECRET): pick one key source")
+			return fmt.Errorf("--gen-key conflicts with -k/--secret: pick one key source")
 		}
 		if *config.NoEncrypt {
 			return fmt.Errorf("--gen-key conflicts with --no-encrypt")
@@ -214,7 +233,7 @@ func resolveSecret() error {
 
 	if *config.NoEncrypt {
 		if *config.Secret != "" {
-			return fmt.Errorf("--no-encrypt conflicts with -k/--secret (or LOCAL_MIRROR_SECRET)")
+			return fmt.Errorf("--no-encrypt conflicts with -k/--secret")
 		}
 		return nil
 	}
