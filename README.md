@@ -53,12 +53,13 @@ Linux (any distro; also works on macOS without Homebrew):
 curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
 ```
 
-Prebuilt deb/rpm packages are on the
-[releases page](https://github.com/xwvike/local-mirror/releases). They also
-drop in a ready-to-use systemd unit and a blank `/etc/local-mirror/config.yml`,
-so installing one is `apt install ./local-mirror_*.deb`, fill in the config,
-`systemctl enable --now local-mirror`. See
-[Running as a service](#running-as-a-service).
+The script detects your OS and CPU architecture, verifies the checksum and
+drops the binary somewhere on your PATH. Pass `WITH_SERVICE=1` to have it
+install the system service too. Prebuilt archives for every platform are on the
+[releases page](https://github.com/xwvike/local-mirror/releases) if you would
+rather do it by hand — it is a single static binary with no dependencies, so
+it runs on any Linux (glibc or musl: Debian, Alpine, Arch, OpenWrt …), macOS
+and Windows.
 
 Or build from source:
 
@@ -348,11 +349,12 @@ else; reinstalling keeps whoever is already installed, so it never changes
 behind your back. The config is chowned to that user (still mode 0600) so the
 service can read it.
 
-Installing the deb/rpm gets you the same thing without running `service
-install`: a ready-to-use unit at `/lib/systemd/system/local-mirror.service`
-and a blank `/etc/local-mirror/config.yml` (a conffile, so upgrades never
-overwrite your edits). It runs as root by default; drop privileges with
-`systemctl edit local-mirror` and chown the config to match.
+It knows three init systems and picks the right one automatically: **systemd**
+(most Linux distros), **launchd** (macOS) and **procd** (OpenWrt — the init
+script lands at `/etc/init.d/local-mirror` and its output goes to `logread`).
+procd has no way to drop privileges and no `ProtectSystem` equivalent, so
+there the service runs as root with `no_new_privs` and nothing is promised
+that cannot be delivered.
 
 Keep the passphrase in the config's `secret:` field (mode 0600) or in a
 `.local-mirror/key` file, never in a `-k` argument — command lines are visible
@@ -402,7 +404,7 @@ syncing and from git):
 
 `go build ./...` and `go test ./...` are all there is to it. Releases are
 cut by pushing a `v*` tag: CI runs goreleaser, which publishes the archives,
-deb/rpm packages, the Homebrew cask and the Scoop manifest in one go
+the Homebrew cask and the Scoop manifest in one go
 (`goreleaser release --snapshot --clean` builds everything locally without
 publishing).
 

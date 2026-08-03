@@ -13,7 +13,7 @@
 | **P2** | 密钥归位 | key 可写进配置，`LOCAL_MIRROR_SECRET` 用户面退休 | 让配置文件能承载**全部**配置 |
 | **P3** | 单任务不 fork | 配置里只有一个 task 时直接跑，不起监督父进程 | 服务化的进程模型代价必须为零 |
 | **P4** | `service` 子命令 | 跨平台装服务 + **自动创建空白配置** | 用户最终看到的那个「一条命令」 |
-| **P5** | 打包投递 | deb/rpm 直接投递可用 unit，二进制名不带版本号 | `apt install` 完就能 start |
+| **P5** | 分发形态 | ~~deb/rpm~~ → **纯静态二进制 + install.sh 代理 service install** | 覆盖任何 Linux/macOS/Windows |
 
 **依赖顺序**：P1 是基座（P4 要靠它才知道把配置建在哪、`ExecStart` 里写什么路径）；
 P2 独立、非破坏，可与 P1 并行；P3 独立（纯进程模型优化）；P4 依赖 P1+P2；
@@ -368,82 +368,65 @@ Windows 服务要接 SCM（Service Control Manager），Go 得引 `golang.org/x/
 
 ---
 
-## P5. 打包投递
+## P5. 打包投递 —— **已推翻，改为纯二进制分发**
 
-### P5.1 二进制名不该带版本号（现状澄清）
+> **2026-08-03 决策反转**：deb/rpm 已从 `.goreleaser.yaml` 移除。
+> 下面保留原设计与推翻理由，供日后有人再提起时不必重吵一遍。
 
-查 `.goreleaser.yaml`，项目**本来就是 xray/sing-box 那个规范**：
+### P5.1 二进制名不该带版本号（结论仍然有效）
 
-```yaml
-project_name: local-mirror                                  # 二进制就叫 local-mirror
-archives: name_template: "…_{{.Version}}_{{.Os}}_{{.Arch}}" # 版本只在压缩包名上
-nfpms:    bindir: /usr/bin                                  # deb/rpm 装完 = /usr/bin/local-mirror
-```
+`.goreleaser.yaml` 产出的二进制**本来就叫 `local-mirror`**，版本只出现在压缩包名上。
+生产上那个 `local-mirror-2.0.1` 是当初手工 scp 部署时自己加的，不是打包产物。
+结论：这个问题不需要"解决"，只需要停止手工搬运。**软链方案作废**。
 
-生产上那个 `local-mirror-2.0.1` 是**当初手工 scp 部署时自己加的**，
-不是打包产物，也不是设计。结论：**这个问题不需要"解决"，只需要停止手工搬运。**
+### P5.2 为什么放弃 deb/rpm
 
-### P5.2 用 deb/rpm 取代手工 scp（连软链都不需要）
+原设计让 deb/rpm 投递可用的 unit 与空白配置，并已实现验证过。推翻理由：
 
-goreleaser **已经在产 deb/rpm，一直没人用**。改用包管理器后：
+**① 我们没有 apt/yum 源。** 没有源的 `.deb` 只是"带额外步骤的 tar 包"——
+照样得手动下载，没有 `apt update && apt upgrade`，没有依赖解析（静态二进制本就无依赖）。
+**包管理最大的价值（仓库化的生命周期管理）一条都没拿到。**
 
-| 诉求 | 手工 scp + 版本号文件名 | `dpkg -i` |
+**② 残余价值已被别的东西覆盖：**
+
+| deb 的残余价值 | 现在谁提供 |
+|---|---|
+| 升级不覆盖配置 | `service install` 本就绝不覆盖已有配置 |
+| 干净卸载 | `service uninstall` |
+| 服务文件放对位置 | `service install`（还跨三种 init，deb 只管 systemd） |
+
+**③ 覆盖面反而更窄。** 二进制是 `CGO_ENABLED=0` 的纯静态程序：
+
+| | deb + rpm | 静态二进制 + install.sh |
 |---|---|---|
-| ExecStart 稳定 | ❌ 每次升级改 unit + daemon-reload | ✅ 永远 `/usr/bin/local-mirror` |
-| 升级 | 手工 cp + 改 unit | `dpkg -i 新包` |
-| 回滚 | 留一堆版本号二进制 | `dpkg -i 旧包` |
-| 版本查询 | 看文件名 | `dpkg -l` / `--version` |
+| Debian/Ubuntu、RHEL/Fedora | ✅ | ✅ |
+| Alpine（musl）、Arch、NixOS | ❌ | ✅ |
+| **OpenWrt**（musl + procd） | ❌ | ✅ 已实测 |
+| macOS / Windows | ❌ | ✅ |
 
-**软链方案作废**——它是在给一个「不该存在的问题」打补丁。
+**用更少的机器换更多的覆盖。**
 
-### P5.3 deb/rpm 投递可用的 unit
-
-现在 goreleaser 把 unit 当**文档**塞进包里，注释写明了原因：
-示例 `ExecStart` 指向占位目录 `/srv/data`、路径还写的是 `/usr/local/bin`，必须手改才能用。
-
-P1~P4 就位后这个理由消失了：二进制路径固定为 `/usr/bin/local-mirror`、
-配置路径固定为 `/etc/local-mirror/config.yml`，unit 里两个路径都是常量、无需手改。
-于是 deb/rpm 可以：
-
-- 投递**真正可用**的 `/lib/systemd/system/local-mirror.service`
-- 投递**空白配置** `/etc/local-mirror/config.yml`（`%config(noreplace)` 语义，升级不覆盖用户改动）
-- 不 `enable`、不 `start`（配置还是空的，必须由用户填完再启动）
-
-最终用户路径收敛成三步：
+### P5.3 取而代之的分发形态
 
 ```
-apt install ./local-mirror_2.1.0_linux_amd64.deb
-vim /etc/local-mirror/config.yml
-systemctl enable --now local-mirror
+install.sh（识别 OS/架构、校验 checksum、放进 PATH）
+   └─ WITH_SERVICE=1 时代理调用 → local-mirror service install
 ```
 
-**已实现并验证**（2026-08-03）：`goreleaser check` 通过，真构建 snapshot 后
-拆包核对 deb 内容：
+**刻意让 install.sh 代理而非重写**：服务文件生成逻辑覆盖三种 init、有 20+ 单测守着
+（XML 转义、用户校验、重装保留身份、属主 chown、关键路径跳过加固）。
+用 POSIX sh 重写一遍会脆得多且测不了。各干一件事：
+install.sh 负责"把正确架构的二进制放到正确位置"，`service install` 负责服务生命周期。
 
-| 落点 | 权限 | 说明 |
-|---|---|---|
-| `/usr/bin/local-mirror` | 755 | 固定路径，升级原地覆盖 |
-| `/lib/systemd/system/local-mirror.service` | 644 | 开箱即用，无需编辑 |
-| `/etc/local-mirror/config.yml` | **600** | 列入 `conffiles`，升级不覆盖用户改动 |
-| `/usr/share/doc/.../examples/*` | 644 | 手工安装场景的示例仍保留 |
+**同时保证了**：brew / scoop / 手动下压缩包 / `go build` 自己编的用户，
+一样能用 `service install`——服务能力不依附于安装脚本。
 
-无 postinstall 脚本 → 不 enable、不 start（配置装出来是空白的，
-自动启动只会留下一个 failed 单元）。
+### P5.4 顺带发现的 busybox 兼容性问题
 
-**两处防漂移**：空白配置模板改用 `//go:embed`，`service install` 与 deb 投递
-共用 `cmd/local-mirror/config.blank.yml` 同一个文件；打包 unit 与
-`systemdUnitText()` 的输出由 `TestPackagedUnitMatchesGenerator` 逐字节比对，
-改一处必须改另一处。
-
-⚠️ 打包 unit 默认以 **root** 运行（汇端常需保留任意属主的文件）。
-降权用 `systemctl edit local-mirror` 加 drop-in，不要直接改被包管理的文件。
-
-**降权必须配套 chown（2026-08-03 真机迁移时踩到）**：包把配置装成 `root:root 0600`，
-一旦 drop-in 里写了 `User=非root`，服务就读不到配置、起不来。必须
-`sudo chown <user>:<user> /etc/local-mirror/config.yml`（权限仍保持 0600——里面有 secret）。
-已写进打包 unit 顶部注释。
-
----
+install.sh 原先用 `install -m 755` 落二进制，**busybox 没有 `install(1)`**（OpenWrt 实测）。
+改为 `rm -f` + `cp` + `chmod`——顺带同时绕开两个坑：Linux 上覆盖运行中的可执行文件会
+ETXTBSY「文本文件忙」，Apple Silicon 上则会让新副本因签名失效被内核 SIGKILL。
+换个 inode 两者都不存在。
 
 ## 迁移：现有生产两端
 

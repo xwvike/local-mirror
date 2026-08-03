@@ -6,6 +6,7 @@
 #
 # 可用环境变量覆盖：
 #   VERSION=v0.9.0     安装指定版本（默认最新）
+#   WITH_SERVICE=1     安装后顺带执行 `local-mirror service install` 装成系统服务
 #   INSTALL_DIR=/path  安装目录。默认按身份走：root 装 /usr/local/bin，
 #                      普通用户装 ~/.local/bin——脚本自身从不提权，
 #                      运行时同样以调用者权限做文件操作
@@ -66,7 +67,12 @@ else
 	dir="$HOME/.local/bin"
 fi
 mkdir -p "$dir"
-install -m 755 "$tmp/local-mirror" "$dir/local-mirror"
+# 不用 install(1)：busybox 没有它（OpenWrt 等）。
+# 先 rm 再 cp——覆盖正在运行的可执行文件在 Linux 上会 ETXTBSY「文本文件忙」，
+# 在 Apple Silicon 上则会让新副本因签名失效被内核 SIGKILL；换个 inode 两者都绕开
+rm -f "$dir/local-mirror"
+cp "$tmp/local-mirror" "$dir/local-mirror"
+chmod 755 "$dir/local-mirror"
 
 case ":$PATH:" in
 *":$dir:"*) ;;
@@ -89,3 +95,14 @@ esac
 
 echo "installed: $dir/local-mirror"
 "$dir/local-mirror" --version
+
+# 服务安装委托给二进制自己：它按平台生成 systemd unit / launchd plist /
+# procd init 脚本，逻辑有单测覆盖，不在这里用 shell 重写一遍
+if [ "${WITH_SERVICE:-0}" = 1 ]; then
+	echo
+	"$dir/local-mirror" service install
+else
+	echo
+	echo "install it as a service with:  $dir/local-mirror service install"
+	echo "(or re-run this script with WITH_SERVICE=1)"
+fi

@@ -49,12 +49,12 @@ Linux（任意发行版；macOS 不想用 Homebrew 也能用）：
 curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
 ```
 
-[releases 页面](https://github.com/xwvike/local-mirror/releases)
+脚本会识别系统与 CPU 架构、校验 checksum、把二进制放到 PATH 上。
+加 `WITH_SERVICE=1` 可以顺带把系统服务也装好。
 
-deb/rpm 包还会直接带上可用的 systemd unit 和空白的
-`/etc/local-mirror/config.yml`，所以装包流程就是
-`apt install ./local-mirror_*.deb` → 填配置 → `systemctl enable --now local-mirror`，
-详见[服务化运行](#服务化运行)。
+想手动装就去 [releases 页面](https://github.com/xwvike/local-mirror/releases) 下压缩包——
+它是**无依赖的单个静态二进制**，任何 Linux（glibc 或 musl：Debian、Alpine、
+Arch、OpenWrt……）、macOS、Windows 都能直接跑，只需要选对 CPU 架构。
 
 
 或从源码构建：
@@ -318,11 +318,11 @@ Linux 上服务以**调用者的身份**运行（而非 root——否则新同�
 root 属主）。用 `--run-as <用户>` 可以指定别人；重装时会**沿用已安装的身份**，
 不会在你背后改掉。配置会被 chown 给该用户（权限仍保持 0600）以便服务读取。
 
-装 deb/rpm 则不用跑 `service install` 也是同样效果：包里直接带了可用的
-`/lib/systemd/system/local-mirror.service` 和空白的
-`/etc/local-mirror/config.yml`（是 conffile，升级绝不覆盖你的改动）。
-它默认以 root 运行；要降权请用 `systemctl edit local-mirror`，并把配置
-chown 给对应用户。
+它认识三种 init 系统并自动选对：**systemd**（多数 Linux 发行版）、
+**launchd**（macOS）、**procd**（OpenWrt——init 脚本落在
+`/etc/init.d/local-mirror`，输出进 `logread`）。procd 没有降权能力、
+也没有 `ProtectSystem` 的对应物，所以那边服务以 root 运行、只加
+`no_new_privs`，不承诺做不到的事。
 
 口令写在配置的 `secret:` 字段（0600）或 `.local-mirror/key` 文件里，
 不要放在 `-k` 参数上——命令行在 `ps` 里是可见的。

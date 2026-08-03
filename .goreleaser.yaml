@@ -44,38 +44,6 @@ changelog:
       - "^test"
       - "^ci"
 
-nfpms:
-  - package_name: local-mirror
-    vendor: XWVIKE
-    homepage: https://github.com/xwvike/local-mirror
-    maintainer: XWVIKE <xwvike@gmail.com>
-    description: One-way directory mirroring over TCP with relays, LAN discovery and optional Noise encryption.
-    license: MIT
-    formats: [deb, rpm]
-    bindir: /usr/bin
-    contents:
-      # 开箱即用的 systemd unit：ExecStart 的两个路径都是固定常量
-      # （/usr/bin/local-mirror 与 /etc/local-mirror/config.yml），无需编辑。
-      # 这取代了从前"当示例文档塞进 doc 目录、用户自己复制并改两处"的做法
-      - src: deploy/local-mirror.packaged.service
-        dst: /lib/systemd/system/local-mirror.service
-
-      # 空白配置。config|noreplace：升级时绝不覆盖用户改动
-      # （rpm 落成 .rpmnew，deb 走 conffile 询问），配置是用户数据
-      - src: cmd/local-mirror/config.blank.yml
-        dst: /etc/local-mirror/config.yml
-        type: "config|noreplace"
-        file_info:
-          mode: 0600
-
-      # 手工安装场景的示例仍然保留（不走包管理器的用户参照它）
-      - src: deploy/local-mirror.service
-        dst: /usr/share/doc/local-mirror/examples/local-mirror.service
-      - src: deploy/local-mirror.example.yml
-        dst: /usr/share/doc/local-mirror/examples/local-mirror.example.yml
-    # 刻意不提供 postinstall 脚本：不 enable、不 start。
-    # 配置装出来是空白的，自动启动必然失败并留下一个 failed 单元
-
 homebrew_casks:
   - name: local-mirror
     # auto：预发行/快照不推 cask，稳定版用户 brew upgrade 不会被拽到 RC

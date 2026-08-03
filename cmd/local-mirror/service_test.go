@@ -263,6 +263,57 @@ func TestInstallHintFollowsConfigReadiness(t *testing.T) {
 	}
 }
 
+// TestProcdInitScript OpenWrt 的 procd init 脚本必须符合 rc.common 规范：
+// shebang 指向 /etc/rc.common、USE_PROCD=1、start_service 里成对开关 instance
+func TestProcdInitScript(t *testing.T) {
+	out := procdInitScript(serviceSpec{
+		ExePath: "/usr/bin/local-mirror", ConfigPath: "/etc/local-mirror/config.yml",
+	})
+	for _, want := range []string{
+		"#!/bin/sh /etc/rc.common",
+		"USE_PROCD=1",
+		"start_service()",
+		"procd_open_instance",
+		"procd_set_param command /usr/bin/local-mirror --config /etc/local-mirror/config.yml",
+		"procd_set_param respawn",
+		"procd_close_instance",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("procd 脚本缺少 %q:\n%s", want, out)
+		}
+	}
+	if !strings.HasPrefix(out, "#!/bin/sh /etc/rc.common") {
+		t.Errorf("shebang 必须在第一行:\n%s", out)
+	}
+	// procd 的 set_param 不认 user/group（实测 OpenWrt 24.10），
+	// 写了也会被忽略，反而让人误以为降权生效了
+	if strings.Contains(out, "procd_set_param user") || strings.Contains(out, "procd_set_param group") {
+		t.Errorf("procd 不支持 user/group，不应写入:\n%s", out)
+	}
+	// systemd 专属的东西不能漏进来
+	for _, forbidden := range []string{"ExecStart", "ProtectSystem", "WantedBy"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("procd 脚本混入了 systemd 指令 %q:\n%s", forbidden, out)
+		}
+	}
+}
+
+// TestProcdScriptIsShellValid 生成的脚本必须是合法 shell 语法——
+// 它是要被 /bin/sh 执行的，语法错会让服务完全起不来
+func TestProcdScriptIsShellValid(t *testing.T) {
+	out := procdInitScript(serviceSpec{
+		ExePath: "/usr/bin/local-mirror", ConfigPath: "/etc/local-mirror/config.yml",
+	})
+	f := filepath.Join(t.TempDir(), "init")
+	if err := os.WriteFile(f, []byte(out), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// -n 只做语法检查不执行（rc.common 在非 OpenWrt 上不存在，不能真跑）
+	if b, err := exec.Command("sh", "-n", f).CombinedOutput(); err != nil {
+		t.Fatalf("shell 语法检查失败: %v\n%s\n生成内容:\n%s", err, b, out)
+	}
+}
+
 // TestRunAsRejectedForUserScope 用户级服务必然以你自己的身份运行，
 // 给了 --run-as 必须报错而不是静默忽略——静默忽略旗子最让人困惑
 func TestRunAsRejectedForUserScope(t *testing.T) {
@@ -349,30 +400,6 @@ func TestChownConfigToCurrentUser(t *testing.T) {
 	}
 	if perm := fi.Mode().Perm(); perm != 0600 {
 		t.Errorf("chown 不应改变权限位，实际 %o", perm)
-	}
-}
-
-// TestPackagedUnitMatchesGenerator deb/rpm 投递的 unit 必须与
-// `service install` 生成的内容完全一致。两者一旦漂移，包管理器装出来的服务
-// 与手工装的行为就不同了——这是最难察觉的一类不一致
-func TestPackagedUnitMatchesGenerator(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "local-mirror.packaged.service"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 剥掉文件开头的说明性注释块，只比对实际 unit 内容
-	body := string(raw)
-	if i := strings.Index(body, "[Unit]"); i >= 0 {
-		body = body[i:]
-	}
-
-	want := systemdUnitText(serviceSpec{
-		ExePath:    "/usr/bin/local-mirror",
-		ConfigPath: "/etc/local-mirror/config.yml",
-		// 包不知道该以哪个用户跑：不写 User= 即 root，降权交给 systemctl edit drop-in
-	})
-	if body != want {
-		t.Errorf("打包 unit 与生成器输出不一致\n--- 打包文件 ---\n%s\n--- 生成器 ---\n%s", body, want)
 	}
 }
 

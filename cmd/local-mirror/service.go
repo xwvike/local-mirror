@@ -114,6 +114,58 @@ func launchdPlistText(s serviceSpec) string {
 	return b.String()
 }
 
+// init 系统标识。Linux 上不止 systemd——OpenWrt 用的是 procd，
+// 两者的服务描述文件格式、落点、注册方式全不一样
+const (
+	initSystemd = "systemd"
+	initProcd   = "procd"
+	initLaunchd = "launchd"
+)
+
+// detectInit 判断本机的 init 系统。
+//
+// /run/systemd/system 是「以 systemd 引导」的权威判据（比 systemctl 是否在
+// PATH 里可靠——容器/chroot 里可能装了工具却不是 systemd 引导）。
+// 都不匹配时回落到 systemd，保持既有行为
+func detectInit() string {
+	if runtime.GOOS == "darwin" {
+		return initLaunchd
+	}
+	if _, err := os.Stat("/run/systemd/system"); err == nil {
+		return initSystemd
+	}
+	if _, err := os.Stat("/sbin/procd"); err == nil {
+		return initProcd
+	}
+	return initSystemd
+}
+
+// procdInitScript 生成 OpenWrt 的 procd init 脚本。
+//
+// ⚠️ procd 的 _procd_set_param 不支持 user/group（实测 OpenWrt 24.10 的
+// /lib/functions/procd.sh 只认 command/respawn/stdout/stderr/no_new_privs 等），
+// 所以 procd 下服务只能以 root 运行，也没有 ProtectSystem/ReadWritePaths 的对应物。
+// 能给的加固只有 no_new_privs
+func procdInitScript(s serviceSpec) string {
+	var b strings.Builder
+	b.WriteString("#!/bin/sh /etc/rc.common\n")
+	b.WriteString("# local-mirror directory sync —— 由 `local-mirror service install` 生成\n\n")
+	b.WriteString("START=95\n")
+	b.WriteString("STOP=10\n")
+	b.WriteString("USE_PROCD=1\n\n")
+	b.WriteString("start_service() {\n")
+	b.WriteString("\tprocd_open_instance\n")
+	fmt.Fprintf(&b, "\tprocd_set_param command %s --config %s\n", s.ExePath, s.ConfigPath)
+	b.WriteString("\tprocd_set_param respawn\n")
+	// 让横幅与错误进 logread，OpenWrt 上没有 journalctl
+	b.WriteString("\tprocd_set_param stdout 1\n")
+	b.WriteString("\tprocd_set_param stderr 1\n")
+	b.WriteString("\tprocd_set_param no_new_privs 1\n")
+	b.WriteString("\tprocd_close_instance\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
 // rwPathsFromConfig 从配置里算出需要授权可写的同步根。
 //
 // 返回空切片 = 不加固。三种情况都会落到这里：配置还是空白的（首次安装）、
@@ -121,6 +173,11 @@ func launchdPlistText(s serviceSpec) string {
 func rwPathsFromConfig(configPath string) (paths []string, note string) {
 	cfg, err := config.LoadMultiConfig(configPath)
 	if err != nil {
+		// procd 本就没有 ProtectSystem/ReadWritePaths 的对应物，
+		// 在那里承诺「重跑即可补上加固」是空头支票
+		if detectInit() == initProcd {
+			return nil, ""
+		}
 		return nil, "配置尚未填写或暂不可解析：本次不写入 ProtectSystem 加固；填好配置后重跑 service install 即可补上"
 	}
 	for _, t := range cfg.Tasks {
@@ -145,6 +202,13 @@ func serviceFilePath(userScope bool) (string, error) {
 		}
 		return filepath.Join("/Library", "LaunchDaemons", serviceLabel+".plist"), nil
 	case "linux":
+		if detectInit() == initProcd {
+			// procd 没有用户级服务的概念
+			if userScope {
+				return "", fmt.Errorf("procd (OpenWrt) has no per-user services; install with --system")
+			}
+			return "/etc/init.d/local-mirror", nil
+		}
 		if userScope {
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -156,6 +220,15 @@ func serviceFilePath(userScope bool) (string, error) {
 	default:
 		return "", fmt.Errorf("service management is not supported on %s yet", runtime.GOOS)
 	}
+}
+
+// serviceFileMode 服务描述文件的权限。procd 的 init 脚本是要被执行的，必须可执行；
+// systemd unit 与 launchd plist 只是被读取
+func serviceFileMode() os.FileMode {
+	if detectInit() == initProcd {
+		return 0755
+	}
+	return 0644
 }
 
 // defaultUserScope 各平台的默认作用域。
@@ -297,11 +370,14 @@ func serviceInstall(userScope bool, explicitConfig, explicitRunAs string, dryRun
 	}
 
 	var content string
-	if runtime.GOOS == "darwin" {
+	switch detectInit() {
+	case initLaunchd:
 		home, _ := os.UserHomeDir()
 		spec.LogPath = filepath.Join(home, "Library", "Logs", "local-mirror.log")
 		content = launchdPlistText(spec)
-	} else {
+	case initProcd:
+		content = procdInitScript(spec)
+	default:
 		content = systemdUnitText(spec)
 	}
 
@@ -323,7 +399,7 @@ func serviceInstall(userScope bool, explicitConfig, explicitRunAs string, dryRun
 		fmt.Fprintf(os.Stderr, "local-mirror: cannot create %s: %v\n", filepath.Dir(svcPath), err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(svcPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(svcPath, []byte(content), serviceFileMode()); err != nil {
 		fmt.Fprintf(os.Stderr, "local-mirror: cannot write %s: %v\n(系统级安装需要 root，试试 sudo)\n", svcPath, err)
 		os.Exit(1)
 	}
@@ -360,7 +436,12 @@ func serviceInstall(userScope bool, explicitConfig, explicitRunAs string, dryRun
 	// 学 xray 的 systemd_cat_config：让用户能核对**合并 drop-in 之后**的实际生效内容，
 	// 而不是只知道"文件写到哪了"
 	if effective := effectiveConfigHint(userScope); effective != "" {
-		fmt.Printf("\n核对实际生效的服务配置（含 drop-in）：\n  %s\n", effective)
+		// systemd 的 cat 会把 drop-in 合并进来，procd/launchd 没有这个概念
+		label := "核对实际生效的服务配置"
+		if detectInit() == initSystemd {
+			label += "（含 drop-in）"
+		}
+		fmt.Printf("\n%s：\n  %s\n", label, effective)
 	}
 }
 
@@ -380,6 +461,9 @@ func runAsDesc(runAsUser string, userScope bool) string {
 func effectiveConfigHint(userScope bool) string {
 	switch runtime.GOOS {
 	case "linux":
+		if detectInit() == initProcd {
+			return "cat /etc/init.d/local-mirror   # 日志：logread -e local-mirror"
+		}
 		if userScope {
 			return "systemctl --user cat local-mirror"
 		}
@@ -418,6 +502,14 @@ func resolveRunAsUser(explicit string, userScope bool, svcPath string) (string, 
 	if userScope {
 		if explicit != "" {
 			return "", fmt.Errorf("--run-as 只对 --system 安装有意义：用户级服务必然以你自己的身份运行")
+		}
+		return "", nil
+	}
+	// procd 的 procd_set_param 不认 user/group，服务只能以 root 跑。
+	// 与其生成一个被忽略的参数、让用户以为降权生效了，不如直接拒绝
+	if detectInit() == initProcd {
+		if explicit != "" {
+			return "", fmt.Errorf("procd (OpenWrt) 不支持服务降权，--run-as 无法生效；服务将以 root 运行")
 		}
 		return "", nil
 	}
@@ -532,6 +624,10 @@ func registerCmd(userScope bool, svcPath string) []string {
 		}
 		return []string{"launchctl", "bootstrap", "system", svcPath}
 	case "linux":
+		if detectInit() == initProcd {
+			// procd 没有 daemon-reload，enable 建好 rc.d 软链即完成注册
+			return []string{svcPath, "enable"}
+		}
 		if userScope {
 			return []string{"systemctl", "--user", "daemon-reload"}
 		}
@@ -548,6 +644,9 @@ func startHint(userScope bool) string {
 		}
 		return fmt.Sprintf("sudo launchctl kickstart -k system/%s", serviceLabel)
 	case "linux":
+		if detectInit() == initProcd {
+			return "/etc/init.d/local-mirror start"
+		}
 		if userScope {
 			return "systemctl --user enable --now local-mirror"
 		}
@@ -621,6 +720,9 @@ func deregisterCmd(userScope bool, svcPath string) []string {
 		}
 		return []string{"launchctl", "bootout", "system/" + serviceLabel}
 	case "linux":
+		if detectInit() == initProcd {
+			return []string{svcPath, "disable"}
+		}
 		if userScope {
 			return []string{"systemctl", "--user", "disable", "--now", serviceUnitName}
 		}
