@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"local-mirror/config"
 	"local-mirror/internal/status"
@@ -251,7 +252,13 @@ func (sw *ScoreWatch) performScan() {
 		fullPath := filepath.Join(config.StartPath, heat.Path)
 		entries, err := os.ReadDir(fullPath)
 		if err != nil {
-			log.Warnf("Failed to read directory %s: %v", heat.Path, err)
+			// 目录确已不存在 → 剔除孤儿热度条目（此处已持 sw.mu，直接删 map，
+			// 不能调 removeHeat 否则重入死锁）；其余错误（权限、fd 耗尽等）仍告警保留
+			if os.IsNotExist(err) {
+				delete(sw.heatMap, heat.Path)
+			} else {
+				log.Warnf("Failed to read directory %s: %v", heat.Path, err)
+			}
 			continue
 		}
 		switch utils.BaseOSInfo().OS {
@@ -319,14 +326,25 @@ func (sw *ScoreWatch) monitorTier2() {
 			sw.mu.Unlock()
 
 			changed := false
+			var orphans []string
 			for _, heat := range batch {
 				c, err := hasDirectoryChanged(heat.Path)
 				if err != nil {
-					log.Warnf("Failed to check directory change for %s: %v", heat.Path, err)
+					// 目录已从树索引中消失（多为父目录被删后遗留的孤儿条目）：
+					// 剔除而非反复告警，否则每轮都对这批幽灵目录刷屏、日志无限膨胀
+					if errors.Is(err, tree.ErrDirNotFound) {
+						orphans = append(orphans, heat.Path)
+					} else {
+						log.Warnf("Failed to check directory change for %s: %v", heat.Path, err)
+					}
 				}
 				if c {
 					changed = true
 				}
+			}
+			// removeHeat 自持锁，故在释放 batch 快照锁之后、循环之外统一剔除
+			for _, p := range orphans {
+				sw.removeHeat(p)
 			}
 
 			if changed {

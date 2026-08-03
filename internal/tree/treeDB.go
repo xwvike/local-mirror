@@ -3,6 +3,7 @@ package tree
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"local-mirror/config"
 	"os"
@@ -13,6 +14,10 @@ import (
 	log "github.com/sirupsen/logrus"
 	bolt "go.etcd.io/bbolt"
 )
+
+// ErrDirNotFound 表示路径在树索引中不存在（父目录被删后遗留的孤儿引用）。
+// 用哨兵错误而非字符串匹配，供上层 errors.Is 判定后剔除孤儿热度条目。
+var ErrDirNotFound = errors.New("directory not found")
 
 /*
 数据库结构设计：
@@ -554,7 +559,7 @@ func GetDirContents(dirPath string) ([]Node, error) {
 
 		pathID := string(pathIndexBucket.Get([]byte(dirPath)))
 		if pathID == "" {
-			return fmt.Errorf("directory not found: %s", dirPath)
+			return fmt.Errorf("%w: %s", ErrDirNotFound, dirPath)
 		}
 		childrenIds := childrenBucket.Get([]byte(pathID))
 		if childrenIds == nil {
