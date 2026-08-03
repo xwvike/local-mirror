@@ -11,7 +11,9 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"local-mirror/config"
 	"local-mirror/internal/safety"
@@ -100,6 +102,10 @@ func launchdPlistText(s serviceSpec) string {
 		fmt.Fprintf(&b, "\t\t<string>%s</string>\n", esc(arg))
 	}
 	b.WriteString("\t</array>\n\n")
+	// LaunchDaemon（系统级）才有换用户一说；LaunchAgent 必然以登录用户身份跑
+	if !s.UserScope && s.RunAsUser != "" {
+		fmt.Fprintf(&b, "\t<key>UserName</key>\n\t<string>%s</string>\n\n", esc(s.RunAsUser))
+	}
 	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n\n")
 	// 优雅退出（exit 0）不重启，异常退出才拉起——与 systemd 的 Restart=on-failure 对齐
 	b.WriteString("\t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n\n")
@@ -168,6 +174,7 @@ func runServiceCommand(args []string) {
 	systemScope := fs.Bool("system", false, "install as a system-wide service (Linux default; needs root)")
 	userScope := fs.Bool("user", false, "install as a per-user service (macOS default; no root needed)")
 	configPath := fs.String("config", "", "config file path (defaults to the platform's conventional location)")
+	runAs := fs.String("run-as", "", "with --system: run the service as this user (default: keep the installed one, else the invoking user)")
 	dryRun := fs.Bool("dry-run", false, "print what would be written and run, without touching the system")
 	fs.Usage = func() { printServiceUsage(os.Stdout) }
 
@@ -191,7 +198,7 @@ func runServiceCommand(args []string) {
 
 	switch action {
 	case "install":
-		serviceInstall(scopeIsUser, *configPath, *dryRun)
+		serviceInstall(scopeIsUser, *configPath, *runAs, *dryRun)
 	case "uninstall":
 		serviceUninstall(scopeIsUser, *dryRun)
 	case "status":
@@ -219,6 +226,10 @@ func printServiceUsage(w *os.File) {
 	fmt.Fprintf(w, "  --system     system-wide service (Linux default; needs root)\n")
 	fmt.Fprintf(w, "  --user       per-user service (macOS default; no root needed)\n")
 	fmt.Fprintf(w, "  --config     config file path (defaults to the platform's conventional location)\n")
+	fmt.Fprintf(w, "  --run-as     with --system: run the service as this user. Reinstalling keeps the\n")
+	fmt.Fprintf(w, "               user already installed, so it is never changed behind your back;\n")
+	fmt.Fprintf(w, "               otherwise defaults to the invoking user. The config is chowned to\n")
+	fmt.Fprintf(w, "               them (still 0600) so the service can read it\n")
 	fmt.Fprintf(w, "  --dry-run    print what would be written and run, without touching the system\n")
 }
 
@@ -233,7 +244,7 @@ func resolveServiceConfigPath(explicit string, userScope bool) (string, error) {
 	return config.SystemConfigPath()
 }
 
-func serviceInstall(userScope bool, explicitConfig string, dryRun bool) {
+func serviceInstall(userScope bool, explicitConfig, explicitRunAs string, dryRun bool) {
 	exePath, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "local-mirror: cannot determine own executable path: %v\n", err)
@@ -257,13 +268,6 @@ func serviceInstall(userScope bool, explicitConfig string, dryRun bool) {
 	}
 
 	rwPaths, note := rwPathsFromConfig(cfgPath)
-	spec := serviceSpec{
-		ExePath: exePath, ConfigPath: cfgPath,
-		UserScope: userScope, RWPaths: rwPaths,
-	}
-	if !userScope {
-		spec.RunAsUser = installTargetUser()
-	}
 
 	if runtime.GOOS == "windows" {
 		// Windows 原生服务要接 SCM，是独立的一块工作量，本期明确不做。
@@ -281,6 +285,18 @@ func serviceInstall(userScope bool, explicitConfig string, dryRun bool) {
 		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
 		os.Exit(1)
 	}
+
+	// 运行身份要在 svcPath 之后定：重装时得先能读到已安装服务里的既有身份
+	runAsUser, err := resolveRunAsUser(explicitRunAs, userScope, svcPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+		os.Exit(2)
+	}
+	spec := serviceSpec{
+		ExePath: exePath, ConfigPath: cfgPath,
+		UserScope: userScope, RWPaths: rwPaths, RunAsUser: runAsUser,
+	}
+
 	var content string
 	if runtime.GOOS == "darwin" {
 		home, _ := os.UserHomeDir()
@@ -291,8 +307,12 @@ func serviceInstall(userScope bool, explicitConfig string, dryRun bool) {
 	}
 
 	if dryRun {
-		fmt.Printf("[dry-run] 将写入服务描述文件 %s：\n\n%s\n", svcPath, content)
+		fmt.Printf("[dry-run] 将写入服务描述文件 %s（运行身份 %s）：\n\n%s\n",
+			svcPath, runAsDesc(runAsUser, userScope), content)
 		reportConfigOutcome(cfgPath, created, dryRun)
+		if runAsUser != "" {
+			fmt.Printf("[dry-run] 将把配置交给 %s（chown，权限仍保持 600）\n", runAsUser)
+		}
 		if note != "" {
 			fmt.Printf("提示：%s\n", note)
 		}
@@ -308,7 +328,16 @@ func serviceInstall(userScope bool, explicitConfig string, dryRun bool) {
 		fmt.Fprintf(os.Stderr, "local-mirror: cannot write %s: %v\n(系统级安装需要 root，试试 sudo)\n", svcPath, err)
 		os.Exit(1)
 	}
-	fmt.Printf("服务描述文件已写入 %s\n", svcPath)
+	fmt.Printf("服务描述文件已写入 %s（运行身份 %s）\n", svcPath, runAsDesc(runAsUser, userScope))
+
+	// 配置是 0600，属主不对运行用户就读不到、服务起不来。改属主而非放宽权限
+	if runAsUser != "" {
+		if err := chownConfigTo(cfgPath, runAsUser); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"警告：无法把配置交给 %s（%v）。服务以该用户运行时读不到 0600 的配置会起不来，请手工执行：\n  sudo chown %s %s\n",
+				runAsUser, err, runAsUser, cfgPath)
+		}
+	}
 
 	if args := registerCmd(userScope, svcPath); len(args) > 0 {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
@@ -329,9 +358,43 @@ func serviceInstall(userScope bool, explicitConfig string, dryRun bool) {
 		fmt.Printf("\n下一步：编辑配置后再启动（配置还没有可用任务，现在启动必然失败）\n")
 	}
 	fmt.Printf("  %s\n", startHint(userScope))
+	// 学 xray 的 systemd_cat_config：让用户能核对**合并 drop-in 之后**的实际生效内容，
+	// 而不是只知道"文件写到哪了"
+	if effective := effectiveConfigHint(userScope); effective != "" {
+		fmt.Printf("\n核对实际生效的服务配置（含 drop-in）：\n  %s\n", effective)
+	}
 }
 
-// installTargetUser 系统级 unit 里 User= 应该写谁。
+// runAsDesc 运行身份的人类可读描述
+func runAsDesc(runAsUser string, userScope bool) string {
+	switch {
+	case userScope:
+		return "当前用户"
+	case runAsUser == "":
+		return "root"
+	default:
+		return runAsUser
+	}
+}
+
+// effectiveConfigHint 查看合并后生效配置的命令
+func effectiveConfigHint(userScope bool) string {
+	switch runtime.GOOS {
+	case "linux":
+		if userScope {
+			return "systemctl --user cat local-mirror"
+		}
+		return "systemctl cat local-mirror"
+	case "darwin":
+		if userScope {
+			return fmt.Sprintf("launchctl print gui/%d/%s", os.Getuid(), serviceLabel)
+		}
+		return fmt.Sprintf("sudo launchctl print system/%s", serviceLabel)
+	}
+	return ""
+}
+
+// installTargetUser 系统级 unit 里 User= 的兜底人选。
 //
 // 系统级安装必然要 sudo，此时 user.Current() 返回的是 root——直接用它会生成
 // User=root，而用户想要的几乎肯定是自己（同步根在自己家目录下，跑成 root
@@ -345,6 +408,120 @@ func installTargetUser() string {
 	}
 	return ""
 }
+
+// resolveRunAsUser 定下系统级服务以谁的身份运行。
+//
+// 优先级：显式 --run-as ＞ 已安装服务里的既有身份 ＞ SUDO_USER/当前用户。
+// 中间那档是关键：重跑 install（比如为了更新加固规则）**不能悄悄换掉运行身份**，
+// 否则同步目录的属主会突然对不上。用户级服务没有这个概念——它必然以你自己跑，
+// 此时给了 --run-as 直接报错，而不是静默忽略一个旗子
+func resolveRunAsUser(explicit string, userScope bool, svcPath string) (string, error) {
+	if userScope {
+		if explicit != "" {
+			return "", fmt.Errorf("--run-as 只对 --system 安装有意义：用户级服务必然以你自己的身份运行")
+		}
+		return "", nil
+	}
+	if explicit != "" {
+		if _, err := user.Lookup(explicit); err != nil {
+			return "", fmt.Errorf("用户 %q 在本机不存在：%w", explicit, err)
+		}
+		return explicit, nil
+	}
+	if existing := existingRunAsUser(svcPath); existing != "" {
+		if _, err := user.Lookup(existing); err == nil {
+			return existing, nil // 重装：沿用既有身份
+		}
+	}
+	fallback := installTargetUser()
+	if fallback == "" {
+		return "", nil // 交给 systemd 默认（root）
+	}
+	if _, err := user.Lookup(fallback); err != nil {
+		return "", fmt.Errorf("用户 %q 在本机不存在（可用 --run-as 显式指定）：%w", fallback, err)
+	}
+	return fallback, nil
+}
+
+// existingRunAsUser 读出已安装服务当前的运行身份，读不到返回空。
+//
+// Linux 上优先问 systemd 要**合并后的生效值**——它能看到 drop-in 里的 User=，
+// 而只 grep 主 unit 文件会漏掉（我们自己的 debian 部署正是把 User= 写在 drop-in 里）
+func existingRunAsUser(svcPath string) string {
+	if runtime.GOOS == "linux" {
+		out, err := exec.Command("systemctl", "show", serviceUnitName, "-p", "User", "--value").Output()
+		if v := strings.TrimSpace(string(out)); err == nil && v != "" {
+			return v
+		}
+	}
+	data, err := os.ReadFile(svcPath)
+	if err != nil {
+		return ""
+	}
+	if runtime.GOOS == "darwin" {
+		return runAsFromPlist(string(data))
+	}
+	return runAsFromSystemdUnit(string(data))
+}
+
+// runAsFromSystemdUnit 从 unit 文本里取 User=。纯函数，便于各平台测
+func runAsFromSystemdUnit(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "User="); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// runAsFromPlist 取 <key>UserName</key> 后面紧跟的那个 <string>。纯函数
+func runAsFromPlist(text string) string {
+	i := strings.Index(text, "<key>UserName</key>")
+	if i < 0 {
+		return ""
+	}
+	rest := text[i:]
+	s := strings.Index(rest, "<string>")
+	if s < 0 {
+		return ""
+	}
+	e := strings.Index(rest[s:], "</string>")
+	if e < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[s+len("<string>") : s+e])
+}
+
+// chownConfigTo 把配置交给运行用户。
+//
+// 配置是 0600（里面有 secret），属主不对就读不到、服务起不来。改属主而非放宽
+// 权限：密钥的暴露面一点不扩大，只是从"仅 root 可读"变成"仅运行用户可读"
+func chownConfigTo(cfgPath, username string) error {
+	if username == "" {
+		return nil // 以 root 跑，无需改
+	}
+	u, err := user.Lookup(username)
+	if err != nil {
+		return err
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return err
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return err
+	}
+	if fi, err := os.Stat(cfgPath); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) == uid {
+			return nil // 属主已正确
+		}
+	}
+	return os.Chown(cfgPath, uid, gid)
+}
+
+// registerCmd 注册服务的命令。launchd 的 bootstrap 需要域名 + plist 路径；
+// systemd 只需 daemon-reload（enable/start 交给用户，见 install 的收尾提示）
 
 // registerCmd 注册服务的命令。launchd 的 bootstrap 需要域名 + plist 路径；
 // systemd 只需 daemon-reload（enable/start 交给用户，见 install 的收尾提示）

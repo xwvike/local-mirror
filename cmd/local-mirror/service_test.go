@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -259,6 +260,95 @@ func TestInstallHintFollowsConfigReadiness(t *testing.T) {
 	}
 	if paths, _ := rwPathsFromConfig(blank); len(paths) != 0 {
 		t.Error("空白配置不应产出授权路径")
+	}
+}
+
+// TestRunAsRejectedForUserScope 用户级服务必然以你自己的身份运行，
+// 给了 --run-as 必须报错而不是静默忽略——静默忽略旗子最让人困惑
+func TestRunAsRejectedForUserScope(t *testing.T) {
+	if _, err := resolveRunAsUser("someone", true, ""); err == nil {
+		t.Error("用户级 + --run-as 应报错")
+	}
+	if got, err := resolveRunAsUser("", true, ""); err != nil || got != "" {
+		t.Errorf("用户级不指定身份应返回空: %q %v", got, err)
+	}
+}
+
+// TestRunAsValidatesUser 写进 unit 前必须确认用户存在，
+// 否则装得上、起不来，报的还是跟同步毫无关系的错
+func TestRunAsValidatesUser(t *testing.T) {
+	if _, err := resolveRunAsUser("definitely-no-such-user-xyz", false, ""); err == nil {
+		t.Error("不存在的用户应被拒绝")
+	}
+	cur, err := user.Current()
+	if err != nil {
+		t.Skip("取不到当前用户")
+	}
+	if got, err := resolveRunAsUser(cur.Username, false, ""); err != nil || got != cur.Username {
+		t.Errorf("存在的用户应通过: %q %v", got, err)
+	}
+}
+
+// TestRunAsRoundTripsThroughGeneratedFiles 重装时要能读回已安装服务的运行身份，
+// 否则重跑一次 install 就把它悄悄换掉了（同步目录属主会突然对不上）。
+// 用「生成 → 解析」闭环测：两个平台的产物各自都要能被自己的解析函数读回来
+func TestRunAsRoundTripsThroughGeneratedFiles(t *testing.T) {
+	spec := serviceSpec{ExePath: "/usr/bin/local-mirror", ConfigPath: "/c.yml",
+		LogPath: "/l", RunAsUser: "someuser"}
+
+	if got := runAsFromSystemdUnit(systemdUnitText(spec)); got != "someuser" {
+		t.Errorf("systemd unit 应读回 someuser，实际 %q", got)
+	}
+	if got := runAsFromPlist(launchdPlistText(spec)); got != "someuser" {
+		t.Errorf("launchd plist 应读回 someuser，实际 %q", got)
+	}
+
+	// 没写运行身份（以 root 跑）时应读到空，不能瞎猜出一个来
+	bare := serviceSpec{ExePath: "/usr/bin/local-mirror", ConfigPath: "/c.yml", LogPath: "/l"}
+	if got := runAsFromSystemdUnit(systemdUnitText(bare)); got != "" {
+		t.Errorf("无 User= 时应为空，实际 %q", got)
+	}
+	if got := runAsFromPlist(launchdPlistText(bare)); got != "" {
+		t.Errorf("无 UserName 时应为空，实际 %q", got)
+	}
+}
+
+// TestLaunchdUserNameOnlyForSystemScope LaunchAgent 必然以登录用户跑，
+// 写 UserName 无意义；LaunchDaemon 才需要
+func TestLaunchdUserNameOnlyForSystemScope(t *testing.T) {
+	agent := launchdPlistText(serviceSpec{
+		ExePath: "/x", ConfigPath: "/c.yml", LogPath: "/l", UserScope: true, RunAsUser: "someone",
+	})
+	if strings.Contains(agent, "UserName") {
+		t.Errorf("LaunchAgent 不应写 UserName:\n%s", agent)
+	}
+	daemon := launchdPlistText(serviceSpec{
+		ExePath: "/x", ConfigPath: "/c.yml", LogPath: "/l", RunAsUser: "someone",
+	})
+	if !strings.Contains(daemon, "<key>UserName</key>") || !strings.Contains(daemon, "<string>someone</string>") {
+		t.Errorf("LaunchDaemon 应写 UserName:\n%s", daemon)
+	}
+}
+
+// TestChownConfigToCurrentUser chown 到当前用户是幂等的空操作（属主已正确）
+func TestChownConfigToCurrentUser(t *testing.T) {
+	cur, err := user.Current()
+	if err != nil {
+		t.Skip("取不到当前用户")
+	}
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if _, err := ensureBlankConfig(path, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := chownConfigTo(path, cur.Username); err != nil {
+		t.Errorf("chown 给当前用户应成功: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0600 {
+		t.Errorf("chown 不应改变权限位，实际 %o", perm)
 	}
 }
 
