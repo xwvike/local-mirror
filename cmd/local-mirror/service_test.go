@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"local-mirror/config"
 )
 
 // TestSystemdUnitExplicitConfigPath unit 的 ExecStart 必须显式写出配置路径：
@@ -222,6 +224,51 @@ func TestInstallWritesRealFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(svcPath); err != nil {
 		t.Fatalf("服务描述文件未落盘: %v", err)
+	}
+}
+
+// TestPackagedUnitMatchesGenerator deb/rpm 投递的 unit 必须与
+// `service install` 生成的内容完全一致。两者一旦漂移，包管理器装出来的服务
+// 与手工装的行为就不同了——这是最难察觉的一类不一致
+func TestPackagedUnitMatchesGenerator(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "local-mirror.packaged.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 剥掉文件开头的说明性注释块，只比对实际 unit 内容
+	body := string(raw)
+	if i := strings.Index(body, "[Unit]"); i >= 0 {
+		body = body[i:]
+	}
+
+	want := systemdUnitText(serviceSpec{
+		ExePath:    "/usr/bin/local-mirror",
+		ConfigPath: "/etc/local-mirror/config.yml",
+		// 包不知道该以哪个用户跑：不写 User= 即 root，降权交给 systemctl edit drop-in
+	})
+	if body != want {
+		t.Errorf("打包 unit 与生成器输出不一致\n--- 打包文件 ---\n%s\n--- 生成器 ---\n%s", body, want)
+	}
+}
+
+// TestBlankConfigTemplateIsValidYAML 空白模板必须是合法 YAML：
+// 它同时被 service install 写盘、被 deb/rpm 投递到 /etc，
+// 语法坏掉会让用户一上来就撞解析错误
+func TestBlankConfigTemplateIsValidYAML(t *testing.T) {
+	if !strings.HasPrefix(blankConfigTemplate, "# local-mirror") {
+		t.Fatalf("embed 的模板内容异常: %.60s", blankConfigTemplate)
+	}
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(blankConfigTemplate), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// 全是注释 → 合法 YAML 但没有任务，应报「tasks 为空」而非解析错误
+	_, err := config.LoadMultiConfig(path)
+	if err == nil {
+		t.Fatal("空白模板不该产出可用配置")
+	}
+	if strings.Contains(err.Error(), "failed to parse YAML") {
+		t.Fatalf("空白模板不是合法 YAML: %v", err)
 	}
 }
 

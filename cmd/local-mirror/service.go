@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/xml"
 	"flag"
 	"fmt"
@@ -24,25 +25,13 @@ const (
 
 // blankConfigTemplate 首次安装时创建的空白配置。全部注释掉——
 // 用户取消注释填几个字段即可，不需要自己建目录、建文件、查字段名。
-// 装完就能跑的前提是用户先填它，所以 install 不会顺手把服务起起来
-const blankConfigTemplate = `# local-mirror 配置文件
-#
-# 填好之后启动服务：
-#   Linux:  sudo systemctl enable --now local-mirror
-#   macOS:  launchctl kickstart -k gui/$(id -u)/` + serviceLabel + `
-#
-# 观测：local-mirror --status --all
-#
-# tasks:
-#   - name: backup            # 实例别名，缺省取 path 的最后一段
-#     receive: true           # 本机是汇（数据流入）；源用 send: true
-#     listen: true            # 等对端拨入；主动拨出用 connect: host[:port]
-#     path: /srv/backup       # 同步根（必填）
-#     allow_delete: true      # 忠实镜像（含删除）；不给则只增不删
-#     loglevel: warn          # debug / info / warn / error
-#     secret: <--gen-key 生成的 key 贴这里>   # 不填则明文传输
-#     ignore: [node_modules, dist]           # 额外忽略项
-`
+// 装完就能跑的前提是用户先填它，所以 install 不会顺手把服务起起来。
+//
+// 用 embed 而非源码里的字符串字面量：deb/rpm 也要把同一份模板投递到
+// /etc/local-mirror/config.yml（见 .goreleaser.yaml），共用一个文件才不会漂移
+//
+//go:embed config.blank.yml
+var blankConfigTemplate string
 
 // serviceSpec 生成服务描述文件所需的全部输入。
 // 抽成纯数据 + 纯函数，是为了让各平台的产物能在任一平台上被单测覆盖

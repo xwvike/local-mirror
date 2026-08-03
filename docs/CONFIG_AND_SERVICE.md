@@ -417,6 +417,27 @@ vim /etc/local-mirror/config.yml
 systemctl enable --now local-mirror
 ```
 
+**已实现并验证**（2026-08-03）：`goreleaser check` 通过，真构建 snapshot 后
+拆包核对 deb 内容：
+
+| 落点 | 权限 | 说明 |
+|---|---|---|
+| `/usr/bin/local-mirror` | 755 | 固定路径，升级原地覆盖 |
+| `/lib/systemd/system/local-mirror.service` | 644 | 开箱即用，无需编辑 |
+| `/etc/local-mirror/config.yml` | **600** | 列入 `conffiles`，升级不覆盖用户改动 |
+| `/usr/share/doc/.../examples/*` | 644 | 手工安装场景的示例仍保留 |
+
+无 postinstall 脚本 → 不 enable、不 start（配置装出来是空白的，
+自动启动只会留下一个 failed 单元）。
+
+**两处防漂移**：空白配置模板改用 `//go:embed`，`service install` 与 deb 投递
+共用 `cmd/local-mirror/config.blank.yml` 同一个文件；打包 unit 与
+`systemdUnitText()` 的输出由 `TestPackagedUnitMatchesGenerator` 逐字节比对，
+改一处必须改另一处。
+
+⚠️ 打包 unit 默认以 **root** 运行（汇端常需保留任意属主的文件）。
+降权用 `systemctl edit local-mirror` 加 drop-in，不要直接改被包管理的文件。
+
 ---
 
 ## 迁移：现有生产两端

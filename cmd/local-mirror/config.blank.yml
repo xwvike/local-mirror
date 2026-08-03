@@ -1,0 +1,17 @@
+# local-mirror 配置文件
+#
+# 填好之后启动服务：
+#   Linux:  sudo systemctl enable --now local-mirror
+#   macOS:  launchctl kickstart -k gui/$(id -u)/com.xwvike.local-mirror
+#
+# 观测：local-mirror --status --all
+#
+# tasks:
+#   - name: backup            # 实例别名，缺省取 path 的最后一段
+#     receive: true           # 本机是汇（数据流入）；源用 send: true
+#     listen: true            # 等对端拨入；主动拨出用 connect: host[:port]
+#     path: /srv/backup       # 同步根（必填）
+#     allow_delete: true      # 忠实镜像（含删除）；不给则只增不删
+#     loglevel: warn          # debug / info / warn / error
+#     secret: <--gen-key 生成的 key 贴这里>   # 不填则明文传输
+#     ignore: [node_modules, dist]           # 额外忽略项
