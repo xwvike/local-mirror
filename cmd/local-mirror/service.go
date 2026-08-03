@@ -262,9 +262,7 @@ func serviceInstall(userScope bool, explicitConfig string, dryRun bool) {
 		UserScope: userScope, RWPaths: rwPaths,
 	}
 	if !userScope {
-		if u, err := user.Current(); err == nil {
-			spec.RunAsUser = u.Username
-		}
+		spec.RunAsUser = installTargetUser()
 	}
 
 	if runtime.GOOS == "windows" {
@@ -323,8 +321,29 @@ func serviceInstall(userScope bool, explicitConfig string, dryRun bool) {
 	if note != "" {
 		fmt.Printf("提示：%s\n", note)
 	}
-	fmt.Printf("\n下一步：编辑配置后再启动（配置还空着，现在启动必然失败）\n")
+	// 配置是否已经可用，决定收尾提示该说"先去编辑"还是"可以启动了"。
+	// rwPathsFromConfig 拿得到授权路径 ⇔ 配置解析成功且有任务
+	if len(rwPaths) > 0 {
+		fmt.Printf("\n下一步：启动服务\n")
+	} else {
+		fmt.Printf("\n下一步：编辑配置后再启动（配置还没有可用任务，现在启动必然失败）\n")
+	}
 	fmt.Printf("  %s\n", startHint(userScope))
+}
+
+// installTargetUser 系统级 unit 里 User= 应该写谁。
+//
+// 系统级安装必然要 sudo，此时 user.Current() 返回的是 root——直接用它会生成
+// User=root，而用户想要的几乎肯定是自己（同步根在自己家目录下，跑成 root
+// 还会让新同步下来的文件变成 root 属主）。SUDO_USER 才是真正的调用者
+func installTargetUser() string {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		return sudoUser
+	}
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	return ""
 }
 
 // registerCmd 注册服务的命令。launchd 的 bootstrap 需要域名 + plist 路径；

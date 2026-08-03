@@ -227,6 +227,41 @@ func TestInstallWritesRealFiles(t *testing.T) {
 	}
 }
 
+// TestInstallTargetUserPrefersSudoUser 系统级安装必然要 sudo，此时
+// user.Current() 返回 root——直接用它会生成 User=root，而用户想要的几乎肯定是自己
+// （同步根在自己家目录下，跑成 root 还会让新同步的文件变成 root 属主）
+func TestInstallTargetUserPrefersSudoUser(t *testing.T) {
+	t.Setenv("SUDO_USER", "xwvike")
+	if got := installTargetUser(); got != "xwvike" {
+		t.Errorf("应取 SUDO_USER，实际 %q", got)
+	}
+
+	// 非 sudo 场景回落到当前用户
+	t.Setenv("SUDO_USER", "")
+	if got := installTargetUser(); got == "" {
+		t.Error("无 SUDO_USER 时应回落到当前用户，得到空值")
+	}
+}
+
+// TestInstallHintFollowsConfigReadiness 配置已填好时不该再提示"配置还空着"
+func TestInstallHintFollowsConfigReadiness(t *testing.T) {
+	dir := t.TempDir()
+
+	filled := filepath.Join(dir, "filled.yml")
+	writeServiceCfg(t, filled, filepath.Join(dir, "data"))
+	if paths, _ := rwPathsFromConfig(filled); len(paths) == 0 {
+		t.Error("填好的配置应产出授权路径（收尾提示据此判断是否可启动）")
+	}
+
+	blank := filepath.Join(dir, "blank.yml")
+	if _, err := ensureBlankConfig(blank, false); err != nil {
+		t.Fatal(err)
+	}
+	if paths, _ := rwPathsFromConfig(blank); len(paths) != 0 {
+		t.Error("空白配置不应产出授权路径")
+	}
+}
+
 // TestPackagedUnitMatchesGenerator deb/rpm 投递的 unit 必须与
 // `service install` 生成的内容完全一致。两者一旦漂移，包管理器装出来的服务
 // 与手工装的行为就不同了——这是最难察觉的一类不一致
