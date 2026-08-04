@@ -20,14 +20,13 @@
   监听文件变化                                持续拉取，保持一致
 ```
 
-数据方向与传输方向相互独立：**拨号方和监听方可以是任意一端**。
-
-接受端（汇端）默认只做增量：删除必须在启动时显式加参数。
-文件按 blake3 哈希比对，分块传输、原子落盘，支持断点续传。变更通常
-两秒左右到达接受端，默认每 30 分钟一次的全量扫描兜底丢失的通知。符号链接
-不同步也不解引用。
-
 ## 安装
+
+Linux（任意发行版）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
+```
 
 macOS：
 
@@ -43,21 +42,7 @@ scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
 scoop install local-mirror
 ```
 
-Linux（任意发行版；macOS 不想用 Homebrew 也能用）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
-```
-
-脚本会识别系统与 CPU 架构、校验 checksum、把二进制放到 PATH 上。
-加 `WITH_SERVICE=1` 可以顺带把系统服务也装好。
-
-想手动装就去 [releases 页面](https://github.com/xwvike/local-mirror/releases) 下压缩包——
-它是**无依赖的单个静态二进制**，任何 Linux（glibc 或 musl：Debian、Alpine、
-Arch、OpenWrt……）、macOS、Windows 都能直接跑，只需要选对 CPU 架构。
-
-
-或从源码构建：
+从源码构建：
 
 ```bash
 git clone https://github.com/xwvike/local-mirror && cd local-mirror
@@ -92,26 +77,6 @@ local-mirror --send --connect a.example.net:52345 -p /path/to/source
 local-mirror ./path/to/source @vps.example.net:52345
 ```
 
-启动后打印状态横幅：实际监听端口、同步目录、日志位置：
-
-```
-█   █▀█ █▀▀ █▀█ █     █▄ ▄█ ▀█▀ █▀█ █▀█ █▀█ █▀█
-█   █ █ █   █▀█ █  ▀▀ █ ▀ █  █  █▀▄ █▀▄ █ █ █▀▄
-▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀ ▀▀▀   ▀   ▀ ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀
-
-────────────────────────────────────────────────
-  Local Mirror 2.1.1  ·  reality (server)
-────────────────────────────────────────────────
-  Sync root  /path/to/source
-  Ignores    .local-mirror, .git, .DS_Store
-  Listen     :52345 (IPv4 + IPv6)
-  Encryption on (Noise NNpsk0, fp 3f9a…c71e)
-  Instance   3b7b81ee
-  PID        62289
-  Log        .local-mirror/logs/error.log (level warn)
-────────────────────────────────────────────────
-```
-
 
 ## 参数
 
@@ -139,8 +104,6 @@ local-mirror ./path/to/source @vps.example.net:52345
 
 完整说明见 `local-mirror --help`。
 
-另有一个子命令 `local-mirror service <install|uninstall|status>`，
-见[服务化运行](#服务化运行)。
 
 ### 方向与传输
 
@@ -291,8 +254,7 @@ SIGTERM 统一停全部。同机服务端任务共享 52345–52354 端口段，
 
 ## 服务化运行
 
-`service install` 会替你写好服务描述文件、建好配置目录与空白配置——
-不需要手工编辑 unit 或 plist：
+`service install` 会安装服务描述文件
 
 ```bash
 local-mirror service install     # Linux 默认 --system，macOS 默认 --user
@@ -301,8 +263,6 @@ sudo systemctl enable --now local-mirror                    # Linux
 launchctl kickstart -k gui/$(id -u)/com.xwvike.local-mirror # macOS
 ```
 
-它**不会**顺手启动服务（配置还空着，起来必然失败），也**绝不覆盖**已有配置，
-所以为了刷新生成的服务文件而重跑它是安全的。
 
 ```bash
 local-mirror service status      # 配置与服务各在哪、是否已注册
@@ -311,18 +271,14 @@ local-mirror service install --dry-run   # 只打印将写入什么、将执行�
 ```
 
 配置文件位置：系统级服务在 `/etc/local-mirror/config.yml`，用户级在
-`~/.config/local-mirror/config.yml`。生成的 `ExecStart` 会**显式写出这个路径**，
-所以 `systemctl cat local-mirror` 一眼就能看到用的是哪份配置。
+`~/.config/local-mirror/config.yml`。
 
 Linux 上服务以**调用者的身份**运行（而非 root——否则新同步下来的文件会变成
-root 属主）。用 `--run-as <用户>` 可以指定别人；重装时会**沿用已安装的身份**，
-不会在你背后改掉。配置会被 chown 给该用户（权限仍保持 0600）以便服务读取。
+root 属主）。用 `--run-as <用户>` 可以指定其他用户；重装时会**沿用已安装的身份**，
 
 它认识三种 init 系统并自动选对：**systemd**（多数 Linux 发行版）、
 **launchd**（macOS）、**procd**（OpenWrt——init 脚本落在
-`/etc/init.d/local-mirror`，输出进 `logread`）。procd 没有降权能力、
-也没有 `ProtectSystem` 的对应物，所以那边服务以 root 运行、只加
-`no_new_privs`，不承诺做不到的事。
+`/etc/init.d/local-mirror`，输出进 `logread`）
 
 口令写在配置的 `secret:` 字段（0600）或 `.local-mirror/key` 文件里，
 不要放在 `-k` 参数上——命令行在 `ps` 里是可见的。
@@ -330,8 +286,7 @@ root 属主）。用 `--run-as <用户>` 可以指定别人；重装时会**沿�
 ## 查看监听分级
 
 源端按活跃度给每个目录打分：热门目录实时监听，冷门目录低频轮询；事件会给
-目录加分，沉寂则逐步衰减。用 `--heat` 读取（独立的只读命令，和 `--status`
-一个套路）；源端只在你观测时才把这张表写到 `.local-mirror/heat.json`：
+目录加分，沉寂则逐步衰减。
 
 ```bash
 local-mirror --heat -p /path/to/source   # 或 --heat --all 看全机所有源
@@ -346,7 +301,7 @@ local-mirror --heat -p /path/to/source   # 或 --heat --all 看全机所有源
     3.20    tier2  12       docs
 ```
 
-目录按分数降序列出，带层级和事件计数——可以直观确认你正在干活的目录有没有
+目录按分数降序列出，带层级和事件计数——可以直观确认正在活跃的目录有没有
 拿到实时监听。汇端不会构建这张表。
 
 ## 运行时产物

@@ -21,17 +21,13 @@ through relays chained A → B → C.
  watches the fs                             pulls, stays in sync
 ```
 
-Data direction and transport direction are independent: **either end can be
-the one that dials or the one that listens**.
-
-The sink is additive by default: deletion requires an explicit flag at
-startup. Files are compared by blake3 hash, transferred in chunks and moved
-into place atomically; interrupted downloads resume. Changes normally arrive
-within a couple of seconds, and a full rescan (every 30 minutes by default)
-catches anything a lost notification might have missed. Symlinks are neither
-synced nor dereferenced.
-
 ## Install
+
+Linux (any distro):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
+```
 
 macOS:
 
@@ -47,21 +43,7 @@ scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
 scoop install local-mirror
 ```
 
-Linux (any distro; also works on macOS without Homebrew):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
-```
-
-The script detects your OS and CPU architecture, verifies the checksum and
-drops the binary somewhere on your PATH. Pass `WITH_SERVICE=1` to have it
-install the system service too. Prebuilt archives for every platform are on the
-[releases page](https://github.com/xwvike/local-mirror/releases) if you would
-rather do it by hand — it is a single static binary with no dependencies, so
-it runs on any Linux (glibc or musl: Debian, Alpine, Arch, OpenWrt …), macOS
-and Windows.
-
-Or build from source:
+Build from source:
 
 ```bash
 git clone https://github.com/xwvike/local-mirror && cd local-mirror
@@ -97,27 +79,6 @@ local-mirror --send --connect a.example.net:52345 -p /path/to/source
 local-mirror ./path/to/source @vps.example.net:52345
 ```
 
-On startup it prints a banner with the actual listen port, sync directory
-and log location:
-
-```
-█   █▀█ █▀▀ █▀█ █     █▄ ▄█ ▀█▀ █▀█ █▀█ █▀█ █▀█
-█   █ █ █   █▀█ █  ▀▀ █ ▀ █  █  █▀▄ █▀▄ █ █ █▀▄
-▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀ ▀▀▀   ▀   ▀ ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀
-
-────────────────────────────────────────────────
-  Local Mirror 2.1.1  ·  reality (server)
-────────────────────────────────────────────────
-  Sync root  /path/to/source
-  Ignores    .local-mirror, .git, .DS_Store
-  Listen     :52345 (IPv4 + IPv6)
-  Encryption on (Noise NNpsk0, fp 3f9a…c71e)
-  Instance   3b7b81ee
-  PID        62289
-  Log        .local-mirror/logs/error.log (level warn)
-────────────────────────────────────────────────
-```
-
 ## Flags
 
 | Flag | Description | Default |
@@ -143,9 +104,6 @@ and log location:
 | `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
 
 `local-mirror --help` has the long version.
-
-There is one subcommand, `local-mirror service <install|uninstall|status>`,
-covered under [Running as a service](#running-as-a-service).
 
 ### Direction and transport
 
@@ -318,8 +276,7 @@ local-mirror refuses to load such a config rather than leak it.
 
 ## Running as a service
 
-`service install` writes the service description file for you and creates a
-blank config to fill in — no hand-editing unit files or plists:
+`service install` installs the service description file:
 
 ```bash
 local-mirror service install     # --system on Linux, --user on macOS by default
@@ -328,10 +285,6 @@ sudo systemctl enable --now local-mirror                    # Linux
 launchctl kickstart -k gui/$(id -u)/com.xwvike.local-mirror # macOS
 ```
 
-It never starts the service (the config is blank, so it would only fail) and
-never overwrites an existing config, so re-running it to refresh the generated
-file is safe.
-
 ```bash
 local-mirror service status      # where the config and service live, and whether it is registered
 local-mirror service uninstall   # deregister and remove the service file; the config is kept
@@ -339,22 +292,15 @@ local-mirror service install --dry-run   # print what it would write and run, an
 ```
 
 The config lives at `/etc/local-mirror/config.yml` for a system service and
-`~/.config/local-mirror/config.yml` for a per-user one, and the generated
-`ExecStart` points at it explicitly, so `systemctl cat local-mirror` tells you
-exactly which file is in play.
+`~/.config/local-mirror/config.yml` for a per-user one.
 
 On Linux the service runs as the invoking user (not root — otherwise newly
-synced files would land as root). Pass `--run-as <user>` to choose someone
-else; reinstalling keeps whoever is already installed, so it never changes
-behind your back. The config is chowned to that user (still mode 0600) so the
-service can read it.
+synced files would land as root). Pass `--run-as <user>` to pick a different
+one; reinstalling keeps whoever is already installed.
 
 It knows three init systems and picks the right one automatically: **systemd**
 (most Linux distros), **launchd** (macOS) and **procd** (OpenWrt — the init
 script lands at `/etc/init.d/local-mirror` and its output goes to `logread`).
-procd has no way to drop privileges and no `ProtectSystem` equivalent, so
-there the service runs as root with `no_new_privs` and nothing is promised
-that cannot be delivered.
 
 Keep the passphrase in the config's `secret:` field (mode 0600) or in a
 `.local-mirror/key` file, never in a `-k` argument — command lines are visible
@@ -364,9 +310,7 @@ in `ps`.
 
 A source scores every directory by activity and watches the hot ones in real
 time while polling the cold ones lazily; events raise a directory's score and
-idleness decays it. Read the table with `--heat` (a separate, read-only
-command, like `--status`); the source publishes it to `.local-mirror/heat.json`
-only while you're watching:
+idleness decays it.
 
 ```bash
 local-mirror --heat -p /path/to/source   # or --heat --all for every source
@@ -382,7 +326,7 @@ local-mirror --heat -p /path/to/source   # or --heat --all for every source
 ```
 
 Directories are listed hottest first with their score, tier and event count —
-handy for checking whether the directories you actually work in got real-time
+handy for checking whether the directories that are active got real-time
 watches. A sink builds no such table.
 
 ## Files it creates
