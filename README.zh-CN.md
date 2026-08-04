@@ -274,11 +274,11 @@ local-mirror service install --dry-run   # 只打印将写入什么、将执行�
 `~/.config/local-mirror/config.yml`。
 
 Linux 上服务以**调用者的身份**运行（而非 root——否则新同步下来的文件会变成
-root 属主）。用 `--run-as <用户>` 可以指定其他用户；重装时会**沿用已安装的身份**，
+root 属主）。用 `--run-as <用户>` 可以指定其他用户；重装时会**沿用已安装的身份**。
 
 它认识三种 init 系统并自动选对：**systemd**（多数 Linux 发行版）、
 **launchd**（macOS）、**procd**（OpenWrt——init 脚本落在
-`/etc/init.d/local-mirror`，输出进 `logread`）
+`/etc/init.d/local-mirror`，输出进 `logread`）。
 
 口令写在配置的 `secret:` 字段（0600）或 `.local-mirror/key` 文件里，
 不要放在 `-k` 参数上——命令行在 `ps` 里是可见的。
