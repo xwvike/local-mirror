@@ -200,6 +200,15 @@ func BuildFileTree(path string) error {
 			return nil
 		}
 
+		// 跳过 socket / FIFO / 设备节点等非普通文件：它们没有可复制的字节内容，
+		// 打开只会报 "operation not supported"。若放进树，每次重建都记一条 error，
+		// 还会被登记进不可读列表由恢复循环反复重试——而这类文件永远不会变成可读，
+		// 条目就此永久滞留（实测 git fsmonitor 的 .git/fsmonitor--daemon.ipc）
+		if !d.IsDir() && !d.Type().IsRegular() {
+			log.Debugf("skipping non-regular file (not synced): %s", relPath)
+			return nil
+		}
+
 		// 获取文件信息
 		info, err := d.Info()
 		if err != nil {

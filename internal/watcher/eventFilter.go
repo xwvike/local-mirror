@@ -79,6 +79,12 @@ func eventFilter(event fsnotify.Event) {
 			log.Warnf("skipping symlink (not synced): %s", relPath)
 			return
 		}
+		// 与 buildFileTree 一致：socket / FIFO / 设备节点没有可复制的内容，
+		// 入树只会换来一条永远无法恢复的"不可读"登记
+		if !linfo.IsDir() && !linfo.Mode().IsRegular() {
+			log.Debugf("skipping non-regular file (not synced): %s", relPath)
+			return
+		}
 		if !linfo.IsDir() {
 			// 文件：防抖后在定时器 goroutine 里哈希落库，不阻塞事件主循环
 			scheduleFileChange(event.Name)
@@ -175,6 +181,14 @@ func recoverUnreadable(ctx context.Context) {
 			return
 		case <-ticker.C:
 			for _, p := range tree.UnreadableSnapshot() {
+				// 非普通文件（socket/FIFO/设备节点）永远不会变成可读，
+				// 留在表里只会被无休止地重试；直接摘牌。正常情况下它们
+				// 已被树遍历与 watcher 挡在门外，这里兜住其余登记入口
+				if linfo, lerr := os.Lstat(p); lerr == nil &&
+					!linfo.IsDir() && !linfo.Mode().IsRegular() {
+					tree.UnmarkUnreadable(p)
+					continue
+				}
 				f, err := os.Open(p)
 				if err != nil {
 					if os.IsNotExist(err) {
