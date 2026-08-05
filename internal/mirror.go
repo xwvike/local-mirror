@@ -257,6 +257,22 @@ func applyModTime(v DiffResult) {
 // 若本值更大，目录会在文件被拉黑之前先耗尽重试预算被整体放弃。
 const maxItemRetries = 3
 
+// errDirGone 源端树里已经没有这个目录了。变更日志推来的路径可能在客户端
+// 来访之前就被删掉（创建后又删除是开发中的常态），全量扫描逐层下钻时也会
+// 撞上同样的竞态。这不是故障：本地副本的清理由父目录的 diff 负责，
+// 静默跳过即可，按 error 记只会把常规操作刷成满屏告警
+var errDirGone = errors.New("directory no longer exists on the source")
+
+// dirGone 判定服务端的目录列表应答是不是"该目录已不存在"，是则转成 errDirGone，
+// 否则返回 nil 表示不属此类、交给调用方按其他错误处理
+func dirGone(err error, path string) error {
+	var re *network.RealityError
+	if errors.As(err, &re) && re.Code == network.ErrCodeNotFound {
+		return fmt.Errorf("%w: %s", errDirGone, path)
+	}
+	return nil
+}
+
 // getDirectory 同步单个目录：拉取服务端目录列表、执行差异处理，
 // 并把需要继续下钻的子目录压入 NextLevel。
 // recurseAll 为 true 时所有子目录都下钻（全量扫描的安全网语义）；
@@ -274,6 +290,9 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 	// 返回的节点路径已是本机分隔符格式
 	realityNodes, err := fileClient.GetRealityTree(path)
 	if err != nil {
+		if gone := dirGone(err, path); gone != nil {
+			return gone
+		}
 		return handleConnectionError(err, fileClient)
 	}
 
@@ -473,6 +492,10 @@ func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 		blacklistBefore := len(blacklist)
 		err := getDirectory(fileClient, v.Path, recurseAll, itemFailures, blacklist)
 		if err == nil {
+			continue
+		}
+		if errors.Is(err, errDirGone) {
+			log.Debugf("source no longer has %s, skipping", v.Path)
 			continue
 		}
 
@@ -690,6 +713,10 @@ func TrackingChanges(fileClient *network.FileClient) error {
 		log.Infof("Processing change: %v", v)
 		err := getDirectory(fileClient, v, false, itemFailures, blacklist)
 		if err == nil {
+			continue
+		}
+		if errors.Is(err, errDirGone) {
+			log.Debugf("source no longer has %s, skipping", v)
 			continue
 		}
 		log.Errorf("Error processing directory %s: %v", v, err)

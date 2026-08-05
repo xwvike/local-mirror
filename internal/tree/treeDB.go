@@ -632,6 +632,10 @@ func GetAllDirNodes() ([]*Node, error) {
 	return dirNodes, err
 }
 
+// ChangedDirRetention changed_dirs 的保留窗口。写入与读取两侧都按它设限：
+// 清理只能在写入事务里做，而源端空闲时根本没有写入，桶里的记录会无限期停留
+const ChangedDirRetention = time.Hour
+
 // addChangedDir 把一批变更目录写入 changed_dirs 桶。
 // 必须以落库时刻做 key：若用事件发生时间，节流延迟会让记录"出现在过去"，
 // 客户端按时间窗游标查询时正好跳过它们
@@ -643,10 +647,10 @@ func addChangedDir(paths []string) error {
 			return os.ErrNotExist
 		}
 
-		oneHourAgo := uint64(time.Now().Add(-1 * time.Hour).Unix())
+		horizon := uint64(time.Now().Add(-ChangedDirRetention).Unix())
 		c := changedDirsBucket.Cursor()
 		for k, _ := c.First(); k != nil; k, _ = c.Next() {
-			if binary.BigEndian.Uint64(k) < oneHourAgo {
+			if binary.BigEndian.Uint64(k) < horizon {
 				if err := changedDirsBucket.Delete(k); err != nil {
 					log.Warnf("Failed to delete old changed dir record: %v", err)
 				}
@@ -675,7 +679,16 @@ func addChangedDir(paths []string) error {
 	return err
 }
 
+// GetChangedDirs 取 [start, end] 内落库的变更目录。
+// start 会被抬到保留窗口下沿：清理只发生在写入事务里，源端一旦空闲就不再有
+// 写入，过期记录会永久留在桶中。而客户端每做一次全量扫描就把游标归 0，
+// 下一轮变更追踪便会把整桶陈旧路径重放一遍——其中已被删除的目录每轮报一次
+// "directory not found"，源端空闲整夜就刷屏整夜（生产实测 17 小时、每 35 分钟一轮）。
+// 完整性不依赖这里：客户端连接时、唤醒后、以及每个冷却周期都会全量扫描兜底
 func GetChangedDirs(start int64, end int64) ([]string, error) {
+	if floor := time.Now().Add(-ChangedDirRetention).Unix(); start < floor {
+		start = floor
+	}
 	var dirs []string
 	err := DB.View(func(tx *bolt.Tx) error {
 		changedDirsBucket := tx.Bucket([]byte("changed_dirs"))

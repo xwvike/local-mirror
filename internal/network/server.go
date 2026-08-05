@@ -436,7 +436,15 @@ func (s *fileServer) dispatchError(conn net.Conn, c *client, err error) (closed 
 	if err == nil {
 		return false
 	}
-	log.Error(err)
+	var we *wireError
+	isWire := errors.As(err, &we)
+	// "查不到"是对查询的正常应答而非故障：客户端按变更日志或分页快照来访时，
+	// 目录/文件可能已被删除。按 error 记会把常规的创建后删除刷成满屏告警
+	if isWire && we.Code == ErrCodeNotFound {
+		log.Debug(err)
+	} else {
+		log.Error(err)
+	}
 	if errors.Is(err, appError.ErrConnection) {
 		conn.Close()
 		s.removeClientIfCurrent(c.ID, c)
@@ -445,8 +453,7 @@ func (s *fileServer) dispatchError(conn net.Conn, c *client, err error) (closed 
 		return true
 	}
 	msg := ErrorMessage{Code: ErrCodeInternal, Message: err.Error()}
-	var we *wireError
-	if errors.As(err, &we) {
+	if isWire {
 		msg = ErrorMessage{Code: we.Code, Path: we.Path, Message: we.Message}
 	}
 	if serr := sendMessage(conn, MsgTypeError, encodeErrorMessage(msg)); serr != nil {
