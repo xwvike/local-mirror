@@ -352,7 +352,10 @@ func DeleteNodes(nodePaths []string) error {
 			// 获取要删除的节点ID
 			nodeID := pathIndexBucket.Get([]byte(nodePath))
 			if nodeID == nil {
-				log.Warnf("node not found: %s", nodePath)
+				// 删一个从没进过树的路径是常态：短命文件（编辑器原子保存的临时文件、
+				// git 的 index.lock 等）在防抖窗口内建了又删，落库前就已消失，
+				// 删除批次里自然找不到它。要删的东西本就不在，即是想要的结果
+				log.Debugf("node not in tree, nothing to delete: %s", nodePath)
 				continue
 			}
 

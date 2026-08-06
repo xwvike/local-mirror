@@ -212,7 +212,13 @@ func BuildFileTree(path string) error {
 		// 获取文件信息
 		info, err := d.Info()
 		if err != nil {
-			log.Warnf("Error getting file info for %s: %v", fullPath, err)
+			// 同 watcher：目录项被读出到取 Info 之间文件可能已被删除，
+			// 长时间的全量遍历撞上这个窗口是常态，不必按异常记
+			if os.IsNotExist(err) {
+				log.Debugf("path vanished during walk, skipping: %s", relPath)
+			} else {
+				log.Warnf("Error getting file info for %s: %v", fullPath, err)
+			}
 			return nil
 		}
 

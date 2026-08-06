@@ -72,7 +72,14 @@ func eventFilter(event fsnotify.Event) {
 		// （与 buildFileTree 一致，防止解引用泄露链接目标内容）
 		linfo, err := os.Lstat(event.Name)
 		if err != nil {
-			log.Error("Error getting file info:", err)
+			// 事件到手时文件已消失是常态而非故障：编辑器的原子保存、git 的
+			// index.lock/HEAD.lock、构建工具的临时文件都在毫秒内建了又删。
+			// 这类路径本就不该进树，静默跳过；其余 stat 失败（权限等）才是真问题
+			if os.IsNotExist(err) {
+				log.Debugf("path vanished before it could be stat'ed, skipping: %s", relPath)
+			} else {
+				log.Error("Error getting file info:", err)
+			}
 			return
 		}
 		if linfo.Mode()&os.ModeSymlink != 0 {
