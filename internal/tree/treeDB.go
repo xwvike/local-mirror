@@ -379,9 +379,10 @@ func DeleteNodes(nodePaths []string) error {
 				parentUpdates[rootNode.ParentID] = append(parentUpdates[rootNode.ParentID], string(nodeID))
 			}
 
-			// 收集所有需要删除的节点（包括子节点）
+			// 收集所有需要删除的节点（包括子节点）。计数不在这里做——同一批次若同时传入
+			// 父目录与其子节点，子树会被重复遍历，按此计数会把 dir_count/file_count 减过头
+			// （DB-01）。改到下面对唯一节点集合去重后再计数。
 			var nodesToDelete []string
-			var dirCount, fileCount uint64
 
 			if rootNode.IsDir {
 				// 使用队列进行迭代遍历，收集所有需要删除的节点
@@ -399,20 +400,6 @@ func DeleteNodes(nodePaths []string) error {
 
 					nodesToDelete = append(nodesToDelete, currentID)
 
-					// 获取当前节点信息用于计数
-					currentNodeData := nodesBucket.Get([]byte(currentID))
-					if currentNodeData != nil {
-						var currentNode Node
-						if err := json.Unmarshal(currentNodeData, &currentNode); err != nil {
-							return err
-						}
-						if currentNode.IsDir {
-							dirCount++
-						} else {
-							fileCount++
-						}
-					}
-
 					// 获取子节点
 					childrenData := childrenBucket.Get([]byte(currentID))
 					if childrenData != nil {
@@ -427,12 +414,9 @@ func DeleteNodes(nodePaths []string) error {
 			} else {
 				// 如果是文件，直接删除
 				nodesToDelete = append(nodesToDelete, string(nodeID))
-				fileCount = 1
 			}
 
 			allNodesToDelete = append(allNodesToDelete, nodesToDelete...)
-			totalDirCount += dirCount
-			totalFileCount += fileCount
 		}
 
 		if len(allNodesToDelete) == 0 {
@@ -445,14 +429,20 @@ func DeleteNodes(nodePaths []string) error {
 			uniqueNodesToDelete[nodeID] = true
 		}
 
-		// 批量删除所有收集到的节点
+		// 批量删除所有收集到的节点，并在此对唯一节点计数（DB-01：去重后再计数，
+		// 避免父目录与子节点同批次时子树被重复计数、把元数据计数减过头或卡成陈旧）
 		for deleteID := range uniqueNodesToDelete {
-			// 获取节点信息用于删除路径索引
+			// 获取节点信息用于删除路径索引与类型计数
 			nodeData := nodesBucket.Get([]byte(deleteID))
 			if nodeData != nil {
 				var node Node
 				if err := json.Unmarshal(nodeData, &node); err != nil {
 					return err
+				}
+				if node.IsDir {
+					totalDirCount++
+				} else {
+					totalFileCount++
 				}
 				// 删除路径索引
 				pathIndexBucket.Delete([]byte(node.Path))

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +16,10 @@ import (
 )
 
 var (
-	recentChangedDirs    []string
+	// recentChangedDirs 批次内的变更目录集合。用 map 而非 slice 去重：2 秒批窗内
+	// 大批量目录变更（代码生成/解压/批量移动）时，slice + slices.Contains 追加第 N 项
+	// 要线扫前 N-1 项，总成本 O(N²)；map 键去重是 O(1)，落库时再转 slice（PERF-02）
+	recentChangedDirs    = make(map[string]struct{})
 	mu                   sync.Mutex
 	addChangeTimerActive bool
 )
@@ -52,9 +54,7 @@ func AddRecentChangedDir(dirPath string) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if !slices.Contains(recentChangedDirs, dirPath) {
-		recentChangedDirs = append(recentChangedDirs, dirPath)
-	}
+	recentChangedDirs[dirPath] = struct{}{}
 
 	if addChangeTimerActive {
 		return
@@ -62,8 +62,11 @@ func AddRecentChangedDir(dirPath string) {
 	time.AfterFunc(2*time.Second, func() {
 		// 回调运行在独立 goroutine，取快照后再落库，避免与并发的 Add 竞争
 		mu.Lock()
-		batch := recentChangedDirs
-		recentChangedDirs = nil
+		batch := make([]string, 0, len(recentChangedDirs))
+		for d := range recentChangedDirs {
+			batch = append(batch, d)
+		}
+		recentChangedDirs = make(map[string]struct{})
 		addChangeTimerActive = false
 		mu.Unlock()
 

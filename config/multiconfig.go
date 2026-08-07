@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -61,7 +64,14 @@ func LoadMultiConfig(path string) (*MultiConfig, error) {
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 	var cfg MultiConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// KnownFields(true)：拒绝未知字段（CFG-02）。此前 yaml.Unmarshal 会静默忽略拼错的键，
+	// 把 secret 拼成 secrect 之类会让任务照常启动却退化成明文；allow_delete/listen/connect
+	// 拼错同理与预期背离。启用后拼错的敏感配置在启动时就硬报错，而非事后才暴露。
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	// io.EOF = 文档为空（全是注释的空白模板即如此）：不是解析错误，放过后由下面的
+	// 「no tasks」兜住，与旧 yaml.Unmarshal 对空输入返回 nil 的行为对齐
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
 	if len(cfg.Tasks) == 0 {
@@ -123,6 +133,17 @@ func LoadMultiConfig(path string) (*MultiConfig, error) {
 			default:
 				return nil, fmt.Errorf("task %q: invalid log level %q", t.Name, t.LogLevel)
 			}
+		}
+
+		// 数值范围 fail-fast（CFG-01）：父进程在此拒绝越界值，不必等子进程起来才报错。
+		// YAML 里 0 = "沿用默认"（监督进程省略该旗、子进程回落内置默认），故 filebuffersize
+		// 只校验非零值；cooldown 只拒负数（0 同样是"用默认"）
+		if t.FileBufferSize != 0 && (t.FileBufferSize < MinFileBufferSize || t.FileBufferSize > MaxFileBufferSize) {
+			return nil, fmt.Errorf("task %q: filebuffersize must be between %d and %d bytes, got %d",
+				t.Name, MinFileBufferSize, MaxFileBufferSize, t.FileBufferSize)
+		}
+		if t.CoolDown < 0 {
+			return nil, fmt.Errorf("task %q: cooldown must not be negative, got %d", t.Name, t.CoolDown)
 		}
 	}
 	return &cfg, nil

@@ -41,6 +41,11 @@ const maxConcurrentConnections = 256
 // 续页游标分多次请求，消除超大目录的确定性失败
 const treePageMaxEntries = 20000
 
+// localMirrorStateDir 每根状态目录名（cache.db / key / status.json / backups / partial）。
+// 文件服务对它独立硬拒（SEC-02 ①），不依赖可配置忽略列表。与 config.forcedIgnores
+// 的首项同值，这里独立定义以免 network 反向依赖 config 的未导出常量
+const localMirrorStateDir = ".local-mirror"
+
 // changeFullResyncThreshold 变更响应降级阈值。单次区间查询命中的变更目录
 // 超过此数时不再下发列表，改为 FullResync 信号让客户端全量对账——
 // 既避免响应逼近消息体上限（此前是确定性失败 + 最长 1 小时的重连活锁），
@@ -521,6 +526,27 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 	return nil
 }
 
+// authorizeServeFile 判定一个（已通过词法根检查的）相对路径 rel 是否允许作为文件下发。
+// 返回非 nil 即拒绝，统一 ErrCodeNotFound——不区分「忽略/不在树/是目录/不存在」，
+// 免得把磁盘上究竟存不存在泄露给探测者。三道闸（SEC-02）：
+//
+//	① .local-mirror 状态目录独立硬拒，不依赖可配置忽略列表（key/cache.db/status/backups…）；
+//	② 命中生效忽略列表即拒（与建树同一个 rel + IsIgnored，语义一致）；
+//	③ 必须存在于共享目录树、且为哈希非空的普通文件（目录、软链、哈希失败项都不提供）。
+func authorizeServeFile(rel, reportPath string) *wireError {
+	notFound := &wireError{Code: ErrCodeNotFound, Path: reportPath, Message: "file not found"}
+	if rel == localMirrorStateDir || strings.HasPrefix(rel, localMirrorStateDir+string(filepath.Separator)) {
+		return notFound
+	}
+	if utils.IsIgnored(rel, config.IgnoreFileList) {
+		return notFound
+	}
+	if node, err := tree.GetNodeByPath(rel); err != nil || node == nil || node.IsDir || node.Hash == "" {
+		return notFound
+	}
+	return nil
+}
+
 func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 	_client, ok := s.clientMap.Load(ID)
 	if !ok {
@@ -534,8 +560,16 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 	log.Debugf("Received file request: %s, offset: %d", fileRequest.FilePath, fileRequest.Offset)
 	fullPath := filepath.Join(config.StartPath, fileRequest.FilePath)
 	// 防止路径穿越：请求路径解析后必须仍位于同步根目录内
-	if rel, err := filepath.Rel(config.StartPath, fullPath); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	rel, relErr := filepath.Rel(config.StartPath, fullPath)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return &wireError{Code: ErrCodeOutOfRoot, Path: fileRequest.FilePath, Message: "illegal file path (escapes sync root)"}
+	}
+	// 授权闸门（SEC-02）：文件服务只提供「公开目录树里、哈希非空的普通文件」。词法根检查
+	// 只保证「没逃出根」，但已握手的对端仍能绕过树枚举、直接点名根内任意路径。策略抽到
+	// authorizeServeFile 便于单测；rel 复用上面根检查算出的同一个值，与 tree/IsIgnored 的
+	// 键形态（OS 分隔符、根为 "."）一致。
+	if werr := authorizeServeFile(rel, fileRequest.FilePath); werr != nil {
+		return werr
 	}
 	// 纵深防御：即使目录树里不该出现符号链接，也拒绝对符号链接的请求，
 	// 杜绝解引用读取同步根目录之外的文件（Lstat 不追踪链接本身）

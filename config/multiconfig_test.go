@@ -67,6 +67,12 @@ func TestLoadMultiConfigErrors(t *testing.T) {
 		"dup name":     {"tasks:\n  - name: n\n    mode: reality\n    path: /tmp/x1\n  - name: n\n    mode: reality\n    path: /tmp/x2", "duplicate task name"},
 		"bad loglevel": {"tasks:\n  - mode: reality\n    path: /tmp/x\n    loglevel: verbose", "invalid log level"},
 		"bad yaml":     {"tasks: [<<<", "failed to parse YAML"},
+		// CFG-02：未知字段必须硬报错，不能静默忽略
+		"typo sensitive field": {"tasks:\n  - mode: reality\n    path: /tmp/x\n    secrect: abc", "secrect"},
+		"unknown top-level":     {"tasks:\n  - mode: reality\n    path: /tmp/x\nunknownkey: 1", "unknownkey"},
+		// CFG-01：数值越界 fail-fast（非零 filebuffersize 出界、cooldown 负数）
+		"filebuffersize too small": {"tasks:\n  - mode: reality\n    path: /tmp/x\n    filebuffersize: 100", "filebuffersize must be between"},
+		"negative cooldown":        {"tasks:\n  - mode: reality\n    path: /tmp/x\n    cooldown: -5", "cooldown must not be negative"},
 	}
 	for name, c := range cases {
 		_, err := LoadMultiConfig(writeYAML(t, c.yml))

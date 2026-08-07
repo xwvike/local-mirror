@@ -453,6 +453,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "local-mirror: invalid log level %q (valid: debug, info, warn, error)\n", *config.LogLevel)
 		os.Exit(2)
 	}
+	// 数值旗子统一校验（CFG-01）：-f 0 会让发送循环空转、-c 0 会把低频安全网退化成
+	// 每轮全量扫描。放在解析层而非监督层，直连 CLI/单任务/多任务子进程都覆盖到
+	if err := config.ValidateRuntimeNumbers(); err != nil {
+		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+		os.Exit(2)
+	}
 	root, err := resolveSyncRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)

@@ -353,6 +353,29 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  local-mirror --send -i \"node_modules,*.log\"\n")
 }
 
+// filebuffersize 传输分块大小的合法区间（CFG-01）。0 会让发送循环空转——零长度
+// Read 恒返回 (0, nil)，既不发数据也不到 EOF，CPU 空转且永久卡住；过大则可能生成
+// 超过协议消息体上限的分块、或放大内存。4 KiB~4 MiB 兼顾吞吐与安全，编码后远低于
+// MaxBodyLength。校验在启动时统一做（见 ValidateRuntimeNumbers）
+const (
+	MinFileBufferSize = 4 << 10 // 4 KiB
+	MaxFileBufferSize = 4 << 20 // 4 MiB
+)
+
+// ValidateRuntimeNumbers 校验驱动运行时行为的数值旗子落在合法区间。
+// 覆盖直连 CLI、单任务（applySingleTask 落回同一主流程）、多任务子进程（各自 main）；
+// 多任务父进程不经过这里，由 LoadMultiConfig 对 YAML 值另做 fail-fast 校验。
+func ValidateRuntimeNumbers() error {
+	if *FileBufferSize < MinFileBufferSize || *FileBufferSize > MaxFileBufferSize {
+		return fmt.Errorf("filebuffersize (-f) must be between %d and %d bytes, got %d",
+			MinFileBufferSize, MaxFileBufferSize, *FileBufferSize)
+	}
+	if *CoolDown <= 0 {
+		return fmt.Errorf("cooldown (-c) must be a positive number of seconds, got %d", *CoolDown)
+	}
+	return nil
+}
+
 func init() {
 	// flag 包在解析出错时调用 Usage：属于用法错误，输出到 stderr
 	flag.Usage = func() {

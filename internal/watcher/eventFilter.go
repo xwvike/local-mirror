@@ -40,6 +40,28 @@ var (
 	pendingHashes = make(map[string]*time.Timer) // key: 事件的绝对路径
 )
 
+// syncableEntry 判定一个磁盘条目是否会真正进入同步（即 eventFilter 对它不会丢弃）。
+// 判据与建树 / eventFilter 的接受逻辑一致：非忽略、非符号链接、目录或普通文件。
+// 供冷目录轮询（hasDirectoryChanged）在置 changed=true 前预判——忽略项与特殊文件
+// 永不进 DB，若把它们也算作"变化"，tier2 退避会被永不消失的"新增"反复打回最短间隔
+// （PERF-03）。这里独立 Lstat，与 eventFilter 内的 Lstat 是两次调用但互不影响正确性。
+func syncableEntry(relPath, fullPath string) bool {
+	if utils.IsIgnored(relPath, config.IgnoreFileList) {
+		return false
+	}
+	linfo, err := os.Lstat(fullPath)
+	if err != nil {
+		return false
+	}
+	if linfo.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	if !linfo.IsDir() && !linfo.Mode().IsRegular() {
+		return false
+	}
+	return true
+}
+
 func eventFilter(event fsnotify.Event) {
 	relPath := utils.RelPath(config.StartPath, event.Name)
 	if utils.IsIgnored(relPath, config.IgnoreFileList) {

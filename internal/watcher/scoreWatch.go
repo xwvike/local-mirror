@@ -269,7 +269,12 @@ func (sw *ScoreWatch) performScan() {
 			usedWatches++
 		}
 		if err := sw.Watcher.Add(fullPath); err != nil {
-			log.Warnf("Failed to watch directory %s: %v", fullPath, err)
+			// 注册失败（inotify/kqueue 限额耗尽、per-user 限额被多任务争用、单个大目录
+			// 使 fd 预算超限等）不能让该目录从两级监控里凭空消失——它没进 newTier1，若直接
+			// continue 也不会进 newTier2，其变更将长期不进源端树，而汇端全量扫描读的又是
+			// 源端缓存树、无从补救。降级进 tier2 轮询兜底（COR-04）。
+			log.Warnf("Failed to watch directory %s, falling back to tier2 polling: %v", fullPath, err)
+			newTier2 = append(newTier2, heat)
 			continue
 		}
 		newTier1 = append(newTier1, heat)
@@ -384,8 +389,15 @@ func hasDirectoryChanged(path string) (bool, error) {
 		newNodes[nodePath] = entry
 		oldNode, exists := oldNodes[nodePath]
 		if !exists {
+			// 只有会被同步的条目才算「变化」（PERF-03）。忽略项/符号链接/非普通文件
+			// 永远不会进 DB，若无条件置 changed=true，tier2 自适应退避会被这些
+			// 「永不消失的新增」每轮打回最短间隔。过滤规则与建树/eventFilter 一致。
+			entryFull := filepath.Join(fullPath, entry.Name())
+			if !syncableEntry(nodePath, entryFull) {
+				continue
+			}
 			eventFilter(fsnotify.Event{
-				Name: filepath.Join(fullPath, entry.Name()),
+				Name: entryFull,
 				Op:   fsnotify.Create,
 			})
 			changed = true
@@ -445,12 +457,19 @@ func (sw *ScoreWatch) addHeat(path string, node *tree.Node) {
 
 	sw.mu.Lock()
 	sw.heatMap[path] = heatScore
-	sw.tier1 = append(sw.tier1, heatScore)
 	sw.mu.Unlock()
 
-	if err := sw.Watcher.Add(filepath.Join(config.StartPath, path)); err != nil {
-		log.Warnf("Failed to watch new directory %s: %v", path, err)
+	// 只有 Watcher.Add 成功才进 tier1 实时监听；失败则降级进 tier2 轮询，而不是以为在
+	// 实时 watch、实则漏掉该目录的所有事件（COR-04）。Add 放在锁外（可能有 IO/阻塞）。
+	err := sw.Watcher.Add(filepath.Join(config.StartPath, path))
+	sw.mu.Lock()
+	if err != nil {
+		log.Warnf("Failed to watch new directory %s, falling back to tier2 polling: %v", path, err)
+		sw.tier2 = append(sw.tier2, heatScore)
+	} else {
+		sw.tier1 = append(sw.tier1, heatScore)
 	}
+	sw.mu.Unlock()
 }
 
 // recordEvent 把一次文件系统事件反馈进所属目录的热度：事件计数递增、
