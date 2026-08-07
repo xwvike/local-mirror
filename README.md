@@ -67,16 +67,18 @@ local-mirror --send --receive --connect 192.168.1.100 -p /path/to/relay
 ```
 
 Reverse who listens to push across the public internet: a server with a
-public IP is the sink, the source dials out to it:
+public IP is the sink, the source dials out to it. **The listener must set a
+key** — a plaintext listener refuses to start (it binds all interfaces, see
+Encryption):
 
 ```bash
-# machine A (public IP)
-local-mirror --receive --listen -p /srv/backup --allow-delete
-# machine B (no public IP)
-local-mirror --send --connect a.example.net:52345 -p /path/to/source
+# machine A (public IP): generate and print a key the first time
+local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key
+# machine B (no public IP): connect with the printed key (it self-saves a copy afterwards)
+local-mirror --send --connect a.example.net:52345 -p /path/to/source -k <printed-key>
 
 # same thing, rsync-style positional sugar (./dir @host = push)
-local-mirror ./path/to/source @vps.example.net:52345
+local-mirror ./path/to/source @vps.example.net:52345 -k <printed-key>
 ```
 
 ## Flags
@@ -128,8 +130,9 @@ key learns nothing.
 
 Ignore patterns (from `-i` or a `.local-mirror/ignore` file, one per line,
 `#` comments) are matched per path segment at any depth and support `* ? []`
-globs. On the server a match means the entry is never scanned or served; on
-the client it means never downloaded and never deleted. `.local-mirror` (the
+globs. On the server a match means the entry is never scanned or served (both
+directory enumeration and direct file requests are refused); on the client it
+means never downloaded and never deleted. `.local-mirror` (the
 tool's own state dir) is always excluded and cannot be un-ignored; `.git` and
 `.DS_Store` are excluded by default but removable — prefix a pattern with `!`
 to sync it (e.g. `-i '!.git'`). Note `.git` is a live database: replicate
@@ -156,10 +159,14 @@ wrong directory. There are three levels:
 
 ## Encryption
 
-Optional, via the Noise protocol (NNpsk0). Give both ends the same passphrase
-with `-k` for mutual authentication and forward secrecy; a wrong passphrase,
-or a peer speaking plaintext, fails the handshake. On anything but a trusted
-LAN, set `-k` explicitly.
+Via the Noise protocol (NNpsk0). Give both ends the same passphrase with `-k`
+for mutual authentication and forward secrecy; a wrong passphrase, or a peer
+speaking plaintext, fails the handshake.
+
+**A listener binds all interfaces, so a plaintext listener refuses to start** —
+any public or non-loopback listener must set a key (`--gen-key` / `-k`); to
+insist on plaintext (trusted LAN only) pass `--no-encrypt` explicitly. Dialers
+don't listen and are unaffected.
 
 Use a long random string for `-k` (e.g. `openssl rand -base64 24`).
 

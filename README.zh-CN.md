@@ -65,16 +65,17 @@ local-mirror --receive -p /path/to/replica
 local-mirror --send --receive --connect 192.168.1.100 -p /path/to/relay
 ```
 
-支持反转监听，即有公网IP的服务器充当接受端（汇端），发送端（源端）主动连接：
+支持反转监听，即有公网IP的服务器充当接受端（汇端），发送端（源端）主动连接。
+**监听端必须设密钥**——明文监听会被拒绝启动（监听固定绑所有网卡，见「加密」）：
 
 ```bash
-# 设备A（有公网IP）
-local-mirror --receive --listen -p /srv/backup --allow-delete
-# 设备B（无公网IP）
-local-mirror --send --connect a.example.net:52345 -p /path/to/source
+# 设备A（有公网IP）：首次用 --gen-key 生成并打印密钥
+local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key
+# 设备B（无公网IP）：用打印出的密钥连接（之后自存一份，可省略 -k）
+local-mirror --send --connect a.example.net:52345 -p /path/to/source -k <生成的密钥>
 
 # 同样效果，rsync 风格的位置参数糖（./dir @host = 推送）
-local-mirror ./path/to/source @vps.example.net:52345
+local-mirror ./path/to/source @vps.example.net:52345 -k <生成的密钥>
 ```
 
 
@@ -123,8 +124,8 @@ local-mirror ./path/to/source @vps.example.net:52345
 什么也拿不到。
 
 忽略模式（来自 `-i` 或 `.local-mirror/ignore` 文件，每行一条，`#` 注释）
-按路径段在任意深度匹配，支持 `* ? []` 通配符。服务端命中即不扫描不提供；
-客户端命中即不下载也不删除。`.local-mirror`（工具自己的状态目录）强制排除、
+按路径段在任意深度匹配，支持 `* ? []` 通配符。服务端命中即不扫描不提供（目录枚举
+与直接的文件请求都会被拒）；客户端命中即不下载也不删除。`.local-mirror`（工具自己的状态目录）强制排除、
 不可取消；`.git` 与 `.DS_Store` 默认排除但可取消——模式前加 `!` 即让它参与
 同步（如 `-i '!.git'`）。注意 `.git` 是活的数据库，仓库该用 git 自己复制
 （push/fetch）而非文件镜像。`node_modules` 之类的请自行添加。
@@ -145,8 +146,12 @@ local-mirror ./path/to/source @vps.example.net:52345
 
 ## 加密
 
-可选，走 Noise 协议（NNpsk0）。两端用 `-k` 配同一个口令即可获得双向认证
-和前向保密；口令不对或对端设置明文，握手失败。非可信局域网，建议`-k` 显式指定。
+走 Noise 协议（NNpsk0）。两端用 `-k` 配同一个口令即可获得双向认证
+和前向保密；口令不对或对端设置明文，握手失败。
+
+**监听端固定绑所有网卡，因此明文监听会被拒绝启动**——面向公网或任何非回环监听都必须
+设密钥（`--gen-key` / `-k`）；确需明文（仅限可信局域网）须显式 `--no-encrypt` 确认。
+拨号端不监听，明文不受此限。
 
 `-k` 建议长随机串（比如 `openssl rand -base64 24`）
 

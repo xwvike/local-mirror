@@ -16,11 +16,15 @@
 #   重启再扫;多台是配置歧义,exit 2 判永久错误
 # - secret 经 stdin 传给子进程,既不出现在 ps 的命令行里、也不进环境变量;
 #   也可以不写,改在各任务的同步根下放密钥文件(--gen-key 生成 .local-mirror/key)
+# - 监听任务必须有密钥:任何"监听端"任务(listen: true,或 send 不带 connect 即
+#   默认监听)在明文下会拒绝启动(监听固定绑所有网卡)。用 defaults.secret 或
+#   per-task secret 给它一个密钥,或在同步根放 .local-mirror/key。拨号任务不受此限。
 
 # 各任务字段留空时的回退值(可选;name/direction/path 不参与回退)
 defaults:
   loglevel: info
-  # secret: change-me
+  # 下面的 photos/docs 是监听源,必须有密钥;所有任务共享这一个(改成你自己的强随机串)
+  secret: change-me-to-a-strong-random-key
 
 tasks:
   # 源:共享照片目录,忽略 RAW 缓存与日志
