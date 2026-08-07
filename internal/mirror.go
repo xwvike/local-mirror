@@ -106,7 +106,7 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 			log.Debugf("skipping deletion (--allow-delete off): %s", v.Path)
 			return nil
 		}
-		full, err := safety.SafeJoin(config.StartPath, v.Path)
+		full, err := safety.SafeResolve(config.StartPath, v.Path)
 		if err != nil {
 			log.Errorf("refusing to delete out-of-root path: %v", err)
 			return nil
@@ -126,7 +126,7 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 			warnRetypeOnce(v.Path)
 			return nil
 		}
-		full, err := safety.SafeJoin(config.StartPath, v.Path)
+		full, err := safety.SafeResolve(config.StartPath, v.Path)
 		if err != nil {
 			log.Errorf("refusing to retype out-of-root path: %v", err)
 			return nil
@@ -171,7 +171,7 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 
 func processDirectoryDiff(v DiffResult) error {
 	// v.Path 来自服务端，必须校验拼接后仍在同步根内，防止 ".." 越界建目录
-	fullPath, err := safety.SafeJoin(config.StartPath, v.Path)
+	fullPath, err := safety.SafeResolve(config.StartPath, v.Path)
 	if err != nil {
 		log.Errorf("refusing to create out-of-root directory: %v", err)
 		return nil
@@ -278,7 +278,7 @@ func applyModTime(v DiffResult) {
 	if v.ModTime.IsZero() {
 		return
 	}
-	full, err := safety.SafeJoin(config.StartPath, v.Path)
+	full, err := safety.SafeResolve(config.StartPath, v.Path)
 	if err != nil {
 		log.Errorf("refusing to set mtime on out-of-root path: %v", err)
 		return
@@ -485,12 +485,12 @@ func detectRenames(diffs []DiffResult) []DiffResult {
 
 // applyRename 执行一次就地重命名：本地移动文件、对齐 mtime、更新数据库
 func applyRename(oldDiff, newDiff DiffResult) error {
-	oldFull, err := safety.SafeJoin(config.StartPath, oldDiff.Path)
+	oldFull, err := safety.SafeResolve(config.StartPath, oldDiff.Path)
 	if err != nil {
 		log.Errorf("refusing to rename from out-of-root path: %v", err)
 		return nil
 	}
-	newFull, err := safety.SafeJoin(config.StartPath, newDiff.Path)
+	newFull, err := safety.SafeResolve(config.StartPath, newDiff.Path)
 	if err != nil {
 		log.Errorf("refusing to rename to out-of-root path: %v", err)
 		return nil
@@ -717,6 +717,18 @@ func runMirrorTasks(fileClient *network.FileClient) error {
 
 func fullScan(fileClient *network.FileClient) error {
 	startTime := time.Now()
+
+	// COR-01：纯汇端没有 fsnotify watcher，运行期本地漂移（备份目录被外部改/删/增）不会
+	// 进树；而差异比对读的是 bbolt 缓存树、不是磁盘现状，漂移到重启前都不会被发现或修复。
+	// 全量扫描是低频安全网，正好在此按磁盘现状重建一次本地树（BuildFileTree 的校准模式：
+	// size+mtime 未变复用哈希、变了重算、磁盘已不存在的节点剔除），再与上游树比对，
+	// 本地漂移即被纠正。仅限纯汇端：中继/源端由 source 侧 watcher 维护树，且并发重建会与
+	// 之竞争同一棵树，故用 !ServesDownstream() 圈定
+	if !config.ServesDownstream() {
+		if err := tree.BuildFileTree(config.StartPath); err != nil {
+			log.Warnf("full scan: local disk re-calibration failed, proceeding with cached tree: %v", err)
+		}
+	}
 
 	NextLevel.Clear()
 	NextLevel.Push(DiffResult{

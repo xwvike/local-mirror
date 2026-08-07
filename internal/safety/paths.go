@@ -38,6 +38,56 @@ func SafeJoin(root, rel string) (string, error) {
 	return joined, nil
 }
 
+// VerifyNoSymlinkComponents 校验 rel 在 root 下的每一级路径组件都不是符号链接（SEC-03/04）。
+// SafeJoin 只做词法清洗，挡不住「中间某级目录是指向根外的符号链接」——即便最终路径词法在根内，
+// create/open/rename/mkdir 也会解引用中间符号链接、落到同步根之外（源端读到 /etc/passwd、
+// 汇端写进 /tmp/other）。这里从 root 向下逐级 Lstat，任一级是符号链接即拒绝。
+//
+// rel 须已过 SafeJoin（词法在根内）。root 自身如何解析不影响判定（只查 rel 部分）——
+// 只 Lstat root 之下的组件，故 macOS 上 /etc→/private/etc 这类 root 前缀符号链接不会误伤。
+// 某级尚不存在（即将创建的新目录/文件）时其下不可能再有符号链接父，视为安全。
+//
+// ⚠️ 逐级检查存在 TOCTOU 窗口（检查与随后操作之间，某级可能被换成符号链接）。对「攻击者
+// 须已能写入同步根」的威胁模型足够；TOCTOU-proof 的做法是 Linux openat2
+// (RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS) 或各平台的目录句柄相对操作，作为后续增强。
+func VerifyNoSymlinkComponents(root, rel string) error {
+	cur := filepath.Clean(root)
+	rel = filepath.Clean(rel)
+	if rel == "." || rel == "" {
+		return nil
+	}
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+		if seg == "" || seg == "." {
+			continue
+		}
+		cur = filepath.Join(cur, seg)
+		fi, err := os.Lstat(cur)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // 该级尚不存在，其下不可能有符号链接父，安全
+			}
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component %q is a symlink; refusing to follow it out of the sync root", cur)
+		}
+	}
+	return nil
+}
+
+// SafeResolve = SafeJoin（词法在根内）+ VerifyNoSymlinkComponents（无符号链接父目录逃逸）。
+// 汇端所有会落盘的操作（建目录/替换/删除/改名）都应经它，而非仅 SafeJoin。
+func SafeResolve(root, rel string) (string, error) {
+	full, err := SafeJoin(root, rel)
+	if err != nil {
+		return "", err
+	}
+	if err := VerifyNoSymlinkComponents(root, rel); err != nil {
+		return "", err
+	}
+	return full, nil
+}
+
 // 关键路径分两类，语义不同：
 //
 // criticalSubtrees：系统管理的目录树，**其内部任意子目录**都算关键路径。

@@ -537,6 +537,11 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	}
 
 	fullPath := filepath.Join(config.StartPath, filePath)
+	// SEC-04：建目录前逐级校验无符号链接父目录逃逸（入口 484 的 SafeJoin 只做词法根检查，
+	// 挡不住中间某级是指向根外的符号链接——MkdirAll 会解引用它、在根外造目录）
+	if err := safety.VerifyNoSymlinkComponents(config.StartPath, filePath); err != nil {
+		return "", fmt.Errorf("refusing to write %s: %w", filePath, err)
+	}
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory for file: %w", err)
 	}
@@ -634,6 +639,10 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				if err := safety.SnapshotBeforeOverwrite(config.StartPath, filePath, fullPath); err != nil {
 					return "", fmt.Errorf("%w: backing up the original failed, skipping overwrite of %s: %v", appError.ErrConnection, filePath, err)
 				}
+			}
+			// SEC-04：数据传输期间某级父目录可能被换成符号链接，替换落盘前再校验一次（缩小 TOCTOU）
+			if err := safety.VerifyNoSymlinkComponents(config.StartPath, filePath); err != nil {
+				return "", fmt.Errorf("refusing to write %s: %w", filePath, err)
 			}
 			if err := os.Rename(partialPath, fullPath); err != nil {
 				return "", fmt.Errorf("error renaming partial file to %s: %w", fullPath, err)

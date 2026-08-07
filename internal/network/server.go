@@ -7,6 +7,7 @@ import (
 	"io"
 	"local-mirror/config"
 	"local-mirror/internal/appError"
+	"local-mirror/internal/safety"
 	"local-mirror/internal/status"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
@@ -186,16 +187,30 @@ type session struct {
 }
 
 type client struct {
-	ID             uint32    // 客户端ID
-	Alias          string    // 客户端别名
-	Addr           string    // 客户端地址
-	Role           uint8     // 客户端角色
-	LastActiveTime time.Time // 最后一次通讯时间
-	Version        uint16    // 客户端协议版本
-	Connected      bool      // 当前是否已连接
-	Conn           net.Conn  // 客户端连接
-	SessionMap     sync.Map  // 活跃的会话列表
+	ID             uint32       // 客户端ID
+	Alias          string       // 客户端别名
+	Addr           string       // 客户端地址
+	Role           uint8        // 客户端角色
+	LastActiveTime time.Time    // 最后一次通讯时间
+	Version        uint16       // 客户端协议版本
+	Connected      bool         // 当前是否已连接
+	Conn           net.Conn     // 客户端连接
+	SessionMap     sync.Map     // 活跃的会话列表
+	dirCache       *dirSnapshot // 分页遍历的已排序目录快照（PERF-01），仅本客户端消息循环访问
 }
+
+// dirSnapshot 一次分页遍历的稳定目录快照（PERF-01）：首页时加载并排序一次，续页复用，
+// 避免超大目录每页都全量反序列化 + 排序（N 条目/页 P 条要重复约 N/P 次全量排序）。
+// 带 TTL 防陈旧；每客户端只缓存最近一个目录（分页是逐目录走完再走下一个，size=1 足够）
+type dirSnapshot struct {
+	rootPath string
+	nodes    []tree.Node // 已按 Path 升序
+	expiry   time.Time
+}
+
+// dirSnapshotTTL 分页快照有效期。一次分页遍历远快于此；超时即视为可能陈旧、重新加载。
+// 窗口内目录若有增删，个别条目可能漏过一页——与既有的页间容错（变更推送 + 全量扫描）一致
+const dirSnapshotTTL = 30 * time.Second
 
 func (c *client) UpdateLastActiveTime() {
 	c.LastActiveTime = time.Now()
@@ -467,12 +482,16 @@ func (s *fileServer) dispatchError(conn net.Conn, c *client, err error) (closed 
 	return false
 }
 
-// pageTreeEntries 对目录条目按路径排序后取一页。continueFrom 为空取首页，
+// sortNodesByPath 按 Path 升序原地排序，供分页前建立稳定顺序
+func sortNodesByPath(entries []tree.Node) {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+}
+
+// pageSortedEntries 从**已按 Path 排序**的条目里取一页。continueFrom 为空取首页，
 // 否则从严格大于 continueFrom 的条目开始；next 非空表示还有后续页。
 // 页间目录内容可能变化（条目增删导致个别条目漏过一页），由变更推送与
 // 全量扫描安全网兜底，与 diff 引擎的既有容错一致
-func pageTreeEntries(entries []tree.Node, continueFrom string, limit int) (page []tree.Node, next string) {
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+func pageSortedEntries(entries []tree.Node, continueFrom string, limit int) (page []tree.Node, next string) {
 	start := 0
 	if continueFrom != "" {
 		start = sort.Search(len(entries), func(i int) bool { return entries[i].Path > continueFrom })
@@ -482,6 +501,27 @@ func pageTreeEntries(entries []tree.Node, continueFrom string, limit int) (page 
 		return entries[start:], ""
 	}
 	return entries[start:end], entries[end-1].Path
+}
+
+// pageTreeEntries 排序后取一页（薄封装：非缓存路径与单测用）
+func pageTreeEntries(entries []tree.Node, continueFrom string, limit int) (page []tree.Node, next string) {
+	sortNodesByPath(entries)
+	return pageSortedEntries(entries, continueFrom, limit)
+}
+
+// wirePageCopy 返回 page 的线格式副本：清空 ID/ParentID、Path 转 "/"。必须在**副本**上做——
+// page 可能是缓存目录快照（dirSnapshot）的子切片，原地改会把 ID 清零、Path 改成 "/" 形式
+// 写回缓存，污染后续页的游标比较。Node 无指针字段，浅拷贝即安全（PERF-01 关键正确性点）
+func wirePageCopy(page []tree.Node) []tree.Node {
+	out := make([]tree.Node, len(page))
+	copy(out, page)
+	for i := range out {
+		out[i].ID = ""
+		out[i].ParentID = ""
+		// 节点路径随 JSON 进入线格式，统一转为 "/"（见 protocol.go 线格式约定）
+		out[i].Path = filepath.ToSlash(out[i].Path)
+	}
+	return out
 }
 
 func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
@@ -496,19 +536,25 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 	}
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Received tree request from %s for path: %s (cursor %q)", clientAddr, treeRequest.RootPath, treeRequest.ContinueFrom)
-	treeLeaf, err := tree.GetDirContents(treeRequest.RootPath)
-	if err != nil {
-		return &wireError{Code: ErrCodeNotFound, Path: treeRequest.RootPath,
-			Message: fmt.Sprintf("error getting tree contents: %v", err)}
+
+	// PERF-01：续页复用首页建立的已排序快照，避免超大目录每页都全量加载 + 排序。
+	// handleTreeRequest 在该客户端唯一的消息循环 goroutine 内串行执行，dirCache 无需加锁
+	c := _client.(*client)
+	var entries []tree.Node
+	if snap := c.dirCache; snap != nil && treeRequest.ContinueFrom != "" &&
+		snap.rootPath == treeRequest.RootPath && time.Now().Before(snap.expiry) {
+		entries = snap.nodes
+	} else {
+		entries, err = tree.GetDirContents(treeRequest.RootPath)
+		if err != nil {
+			return &wireError{Code: ErrCodeNotFound, Path: treeRequest.RootPath,
+				Message: fmt.Sprintf("error getting tree contents: %v", err)}
+		}
+		sortNodesByPath(entries)
+		c.dirCache = &dirSnapshot{rootPath: treeRequest.RootPath, nodes: entries, expiry: time.Now().Add(dirSnapshotTTL)}
 	}
-	page, next := pageTreeEntries(treeLeaf, treeRequest.ContinueFrom, treePageMaxEntries)
-	for i := range page {
-		page[i].ID = ""
-		page[i].ParentID = ""
-		// 节点路径随 JSON 进入线格式，统一转为 "/"（见 protocol.go 线格式约定）
-		page[i].Path = filepath.ToSlash(page[i].Path)
-	}
-	treeData, err := json.Marshal(page)
+	page, next := pageSortedEntries(entries, treeRequest.ContinueFrom, treePageMaxEntries)
+	treeData, err := json.Marshal(wirePageCopy(page))
 	if err != nil {
 		return fmt.Errorf("error marshalling tree leaf for path %s: %v", treeRequest.RootPath, err)
 	}
@@ -571,10 +617,12 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 	if werr := authorizeServeFile(rel, fileRequest.FilePath); werr != nil {
 		return werr
 	}
-	// 纵深防御：即使目录树里不该出现符号链接，也拒绝对符号链接的请求，
-	// 杜绝解引用读取同步根目录之外的文件（Lstat 不追踪链接本身）
-	if linfo, lerr := os.Lstat(fullPath); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
-		return &wireError{Code: ErrCodeOutOfRoot, Path: fileRequest.FilePath, Message: "refusing to serve symlink"}
+	// SEC-03：逐级校验请求路径的每一级组件都不是符号链接。只查末段（原 Lstat）挡不住
+	// 「中间某级目录是指向根外的符号链接」——后续 Stat/Open 会解引用它，读到同步根之外的
+	// 文件（outside→/etc，请求 outside/passwd）。SEC-02 的树成员校验已基本关掉此路（建树跳过
+	// 符号链接，故这类路径不在树里），这里作纵深防御 + 收 TOCTOU
+	if err := safety.VerifyNoSymlinkComponents(config.StartPath, rel); err != nil {
+		return &wireError{Code: ErrCodeOutOfRoot, Path: fileRequest.FilePath, Message: "refusing to serve symlinked path"}
 	}
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
