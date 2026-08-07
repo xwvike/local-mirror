@@ -13,6 +13,15 @@
 > 这是一份质量很高的审计。校对痕迹以 `> **✅ Claude 校对**` 区块直接嵌在每条发现下方，
 > 总览表新增「校对」列给出一句话结论。
 >
+> ### ✅ 修复进度：16/16 全部完成（2026-08-07）
+>
+> 全部 16 条已在分支 `fix/codex-audit` 修复，每条均带回归测试；六平台交叉编译、
+> `go test`、`go test -race`、`go vet`、`gofmt` 全绿。分 4 笔提交（详见文末 §11 追踪表）：
+> docs 校对 + batch 1（8 条）+ batch 2（4 条）+ batch 3（4 条）。
+> **两个部署注意点**：① CFG-02 起 YAML 未知/拼错字段会拒绝启动，升级前须确认两端生产配置
+> 无未知字段；② SEC-03/04 落的是可移植的逐级符号链接防护（够挡实际攻击、有 TOCTOU 窗口），
+> Linux openat2 的 TOCTOU-proof 强化列为后续增强，见 §11 备注。
+>
 > **两点需要在读严重度时记住：**
 >
 > 1. **行号有系统性漂移**：Codex 给的部分 `file:line` 对不上（例如 `FindDifferences`
@@ -835,6 +844,42 @@ git diff --check
 
 ---
 
+## 11. 修复落地追踪（2026-08-07，分支 `fix/codex-audit`）
+
+16 条全部修复，均带回归测试。提交分组：
+- `docs(audit)`：本文校对 + docs 清理
+- `fix(audit) batch 1`：ENG-01 / SEC-02 / CFG-01 / CFG-02 / PERF-02 / PERF-03 / DB-01 / COR-04
+- `fix(audit) batch 2`：SVC-01 / COR-03 / COR-02 / SEC-01
+- `fix(audit) batch 3`：SEC-03/04 / COR-01 / PERF-01
+
+| 编号 | 状态 | 关键改动 | 回归测试 |
+|---|---|---|---|
+| SEC-01 | ✅ 已修复 | `config.PlaintextListenBlocked`：监听+明文+未显式 --no-encrypt → 启动拒绝 | `config.TestPlaintextListenBlocked` |
+| SEC-02 | ✅ 已修复 | `authorizeServeFile`：.local-mirror 硬拒 + 忽略 + 必须树中普通文件 | `network.TestAuthorizeServeFileSEC02` |
+| SEC-03 | ✅ 已修复 | 源端读接入 `VerifyNoSymlinkComponents`（叠加 SEC-02 已关主攻击面） | `safety.TestVerifyNoSymlinkComponents` |
+| SEC-04 | ✅ 已修复 | 汇端落盘全部 `SafeJoin→SafeResolve`；client 建目录/替换前逐级校验 | `safety.TestVerifyNoSymlinkComponents` |
+| COR-01 | ✅ 已修复 | 纯汇端 fullScan 前 `BuildFileTree` 按磁盘重建，纠正本地漂移 | `tree.TestBuildFileTreeRecalibratesLocalDrift` |
+| COR-02 | ✅ 已修复 | rename 优化仅 --allow-delete 下启用；rename 前重验本地旧文件哈希 | `internal.TestRenameOptimizationGatedByAllowDelete` / `...RejectsDriftedLocalFile` |
+| COR-03 | ✅ 已修复 | `FindDifferences` 先比 IsDir，类型互换独立 retype 动作 | `internal.TestFindDifferencesTypeSwap` |
+| COR-04 | ✅ 已修复 | watcher 注册失败降级 tier2（performScan + addHeat） | `watcher.TestAddHeatWatchFailureFallsBackToTier2` |
+| CFG-01 | ✅ 已修复 | `ValidateRuntimeNumbers` + YAML fail-fast（-f/-c 数值域） | `config.TestValidateRuntimeNumbers` + LoadMultiConfig 用例 |
+| CFG-02 | ✅ 已修复 | YAML `KnownFields(true)`，拼错字段硬报错 | `config.TestLoadMultiConfigErrors`（secrect / 未知顶层） |
+| PERF-01 | ✅ 已修复 | 每客户端目录快照缓存（TTL）+ 改前拷贝，续页不再重排 | `network.TestDirSnapshotPagingNoCacheCorruption` |
+| PERF-02 | ✅ 已修复 | changed_dirs 去重 slice→map | 现有 tree 测试 |
+| PERF-03 | ✅ 已修复 | tier2 置 changed=true 前套用忽略/软链/非普通文件过滤 | 现有 watcher 测试 |
+| DB-01 | ✅ 已修复 | 删除计数改为去重后计算 | `tree.TestDeleteNodesCountsAfterDedup` |
+| SVC-01 | ✅ 已修复 | systemd 引号编码 / procd POSIX 单引号编码 | `main.TestServiceFilePathQuotingSVC01` |
+| ENG-01 | ✅ 已修复 | PR/main CI 加 `go test` + `go test -race` | — |
+
+**遗留增强（非本轮范围，建议后续专项）**：
+- SEC-03/04 的 TOCTOU-proof：现为可移植逐级 Lstat 校验（挡住实际攻击、存在检查-使用窗口）。
+  Linux 侧可升级为 `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`、darwin 侧逐组件目录句柄
+  相对操作，彻底消除 TOCTOU。
+- PERF-01 的会话快照为 size=1 的每客户端缓存；若未来出现大量并发多目录深分页，可扩为 LRU。
+- §6 四处 README/文档措辞尚未同步（本轮聚焦代码修复），建议随下次 README 改动一并订正。
+
+---
+
 本报告由 **Codex** 基于 `v2.2.3` 源码生成，未修改同步实现代码。
 Claude 已于 2026-08-07 对全部 16 条逐一校对并就地标注（`> **✅ Claude 校对**` 区块 + §10 排序），
-同样未改动任何实现代码。
+随后在分支 `fix/codex-audit` 上完成全部 16 条修复（§11），每条均带回归测试。
