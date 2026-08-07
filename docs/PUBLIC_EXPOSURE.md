@@ -1,12 +1,24 @@
 # 公网化设计 · v2.0.0 蜕变
 
-> 状态：**三支柱代码均已实现**（分支 feat/v2-public-exposure）——
-> C：`--gen-key`/`--show-key`/`--no-encrypt` + 密钥文件解析链（internal/keyfile）；
-> B：双栈监听（multiListener）+ JoinHostPort + host[:port]；
-> A：四象限（serveConn 剥离 / StartDial / MirrorListen / Role 方向校验）+
-> 方向优先 CLI（--send/--receive × --connect/--listen + 位置糖，-m 降级为别名）。
-> 未竟：README/YAML 任务的四象限词汇、v2.0.0 发版（见 §D）。
-> 目标是**摘掉对 WireGuard 的强依赖，让镜像链路能安全、优雅地跨公网直接跑**。
+> ## 📋 历史设计记录（ADR）— 已全部实现（v2.0.0）
+>
+> **状态（2026-08-07 复核）**：三支柱 A/B/C 均已在 **v2.0.0** 落地上线：
+> C：`--gen-key`/`--show-key`/`--no-encrypt` + 密钥文件解析链（`internal/keyfile`）；
+> B：双栈监听 + `JoinHostPort` + host[:port]；
+> A：四象限（`serveConn` 剥离 / `StartDial` / `MirrorListen` / `Role` 方向校验）+
+> 方向优先 CLI（`--send`/`--receive` × `--connect`/`--listen` + 位置糖，`-m` 降级为别名）。
+>
+> **⚠️ 这是设计决策记录，不是当前行为的权威描述**，判断现行为请以 **README + 源码**为准。
+> 各章节锚点（§A.5、§B.3、§C 等）被代码注释引用，文件名与编号保持不动。
+>
+> **重要安全提醒**：本文 C 章把「强随机 key」描述为公网化后的「唯一城墙」。这个故事在
+> **传输层**成立，但事后审计发现**应用层存在越权读取缺口**——已握手的对端可绕过忽略规则与目录树
+> 直接点名任意普通文件（`docs/CODEX_CODE_AUDIT.md` SEC-02），**key 挡不住这一条**。
+> 读本文的密钥安全论述时，务必叠加该审计一并理解。
+>
+> ---
+>
+> 原始目标：**摘掉对 WireGuard 的强依赖，让镜像链路能安全、优雅地跨公网直接跑**。
 
 ## 0. 三大支柱与顺序
 
