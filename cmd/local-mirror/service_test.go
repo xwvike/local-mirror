@@ -11,6 +11,37 @@ import (
 	"local-mirror/config"
 )
 
+// TestServiceFilePathQuotingSVC01 含空格/引号/分号/%/$ 的路径必须安全编码，
+// 否则 systemd 会拆断 ExecStart/截断 ReadWritePaths，procd 脚本存在 word-split 与
+// shell 注入面（SVC-01）。launchd 侧已 XML 转义，另有测试覆盖。
+func TestServiceFilePathQuotingSVC01(t *testing.T) {
+	spec := serviceSpec{
+		ExePath:    "/opt/my app/local-mirror",
+		ConfigPath: "/etc/x;y/c%2$.yml",
+		RWPaths:    []string{"/srv/a b", "/srv/o'reilly"},
+	}
+	unit := systemdUnitText(spec)
+	// ExecStart：双引号包裹，% → %%，$ → $$（命令行会做 specifier/变量展开）
+	if !strings.Contains(unit, `ExecStart="/opt/my app/local-mirror" --config "/etc/x;y/c%%2$$.yml"`) {
+		t.Errorf("systemd ExecStart 未安全编码含空格/%%/$ 的路径:\n%s", unit)
+	}
+	// ReadWritePaths：逐项双引号；不做变量展开，$ 不转义；单引号在双引号内是字面量
+	if !strings.Contains(unit, `ReadWritePaths="/srv/a b" "/srv/o'reilly"`) {
+		t.Errorf("systemd ReadWritePaths 未安全编码:\n%s", unit)
+	}
+
+	procd := procdInitScript(spec)
+	// procd：POSIX 单引号包裹，引号内 %/$/; 全是字面量
+	if !strings.Contains(procd, `procd_set_param command '/opt/my app/local-mirror' --config '/etc/x;y/c%2$.yml'`) {
+		t.Errorf("procd command 未做 POSIX 单引号编码:\n%s", procd)
+	}
+	// 单引号本身必须 '\'' 收尾-转义-续起
+	procd2 := procdInitScript(serviceSpec{ExePath: "/o'x/lm", ConfigPath: "/c.yml"})
+	if !strings.Contains(procd2, `command '/o'\''x/lm'`) {
+		t.Errorf("procd 未对路径里的单引号做 '\\'' 转义:\n%s", procd2)
+	}
+}
+
 // TestSystemdUnitExplicitConfigPath unit 的 ExecStart 必须显式写出配置路径：
 // 两个路径都是固定常量，每台机器生成的内容一致（通用模板），
 // 而显式写出让 systemctl cat 自解释——比零参数信息量更大（§P1.5 ①）
@@ -19,8 +50,8 @@ func TestSystemdUnitExplicitConfigPath(t *testing.T) {
 		ExePath: "/usr/bin/local-mirror", ConfigPath: "/etc/local-mirror/config.yml",
 		RunAsUser: "xwvike",
 	})
-	if !strings.Contains(out, "ExecStart=/usr/bin/local-mirror --config /etc/local-mirror/config.yml") {
-		t.Errorf("ExecStart 未显式带配置路径:\n%s", out)
+	if !strings.Contains(out, `ExecStart="/usr/bin/local-mirror" --config "/etc/local-mirror/config.yml"`) {
+		t.Errorf("ExecStart 未显式带配置路径（含 systemd 引号编码）:\n%s", out)
 	}
 	if !strings.Contains(out, "User=xwvike") {
 		t.Errorf("系统级 unit 应有 User=:\n%s", out)
@@ -54,8 +85,8 @@ func TestSystemdHardeningFollowsRWPaths(t *testing.T) {
 		RWPaths: []string{"/srv/a", "/srv/b"},
 	})
 	if !strings.Contains(with, "ProtectSystem=full") ||
-		!strings.Contains(with, "ReadWritePaths=/srv/a /srv/b") {
-		t.Errorf("有同步根时应写入加固:\n%s", with)
+		!strings.Contains(with, `ReadWritePaths="/srv/a" "/srv/b"`) {
+		t.Errorf("有同步根时应写入加固（含 systemd 引号编码）:\n%s", with)
 	}
 
 	without := systemdUnitText(serviceSpec{ExePath: "/usr/bin/local-mirror", ConfigPath: "/c.yml"})
@@ -309,7 +340,7 @@ func TestProcdInitScript(t *testing.T) {
 		"USE_PROCD=1",
 		"start_service()",
 		"procd_open_instance",
-		"procd_set_param command /usr/bin/local-mirror --config /etc/local-mirror/config.yml",
+		"procd_set_param command '/usr/bin/local-mirror' --config '/etc/local-mirror/config.yml'",
 		"procd_set_param respawn",
 		"procd_close_instance",
 	} {

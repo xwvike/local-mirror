@@ -42,6 +42,21 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 			})
 			continue
 		}
+		// 类型互换（文件↔目录，COR-03）：同一路径但 IsDir 不同，必须先删旧类型再建新类型，
+		// 不能当普通 modify——os.Rename 覆盖不了目录、MkdirAll 撞同名文件都会失败。独立成
+		// retype 动作，且优先于大小/哈希比较：否则大小碰巧相同、哈希又不可比时会完全漏掉
+		if nodeA.IsDir != nodeB.IsDir {
+			diffs = append(diffs, DiffResult{
+				Path:    nodeA.Path,
+				IsDir:   nodeA.IsDir, // 目标（新）类型
+				Action:  "retype",
+				Name:    nodeA.Name,
+				Size:    nodeA.Size,
+				Hash:    nodeA.Hash,
+				ModTime: nodeA.ModTime,
+			})
+			continue
+		}
 		// 大小不同肯定变了；哈希仅在两侧都算出来时才可比
 		if nodeA.Size != nodeB.Size ||
 			(nodeA.Hash != "" && nodeB.Hash != "" && nodeA.Hash != nodeB.Hash) {

@@ -208,6 +208,14 @@ func SyncsFromUpstream() bool {
 	return *Mode == "mirror" || *Mode == "relay"
 }
 
+// PlaintextListenBlocked 判定当前配置是否属于「明文 + 监听所有接口 + 未显式确认」——
+// SEC-01 据此在启动时拒绝：监听端固定绑所有接口，明文即对任何网络可达者敞开服务，
+// 未设密钥（-k / 密钥文件）又没显式 --no-encrypt 时必须拦下；设了密钥或显式 --no-encrypt 放行。
+// 须在 resolveSecret 之后调用（那时 Secret 已从密钥文件填充）
+func PlaintextListenBlocked() bool {
+	return TransportListens() && *Secret == "" && !*NoEncrypt
+}
+
 // TransportListens 本进程是否需要绑定监听端口：
 // 源默认监听（除非 SourceDials）、汇默认不监听（除非 SinkListens）、
 // relay 下游侧恒监听

@@ -540,6 +540,21 @@ func main() {
 		runDiscovery()
 	}
 
+	// SEC-01：监听端固定绑所有接口（无 --bind 选项），明文监听等于对任何网络可达者敞开
+	// 文件服务（源监听）或汇的目录控制（汇监听）。故「明文 + 监听」要求用户显式确认：
+	// 未设密钥（--gen-key / -k，或同步根里的密钥文件）又没显式 --no-encrypt 就拒绝启动，
+	// 挡住「照无密钥公网示例直接暴露端口」。设了密钥的部署完全不受影响。
+	if config.PlaintextListenBlocked() {
+		fmt.Fprintf(os.Stderr, "local-mirror: refusing to listen in plaintext on all interfaces with no key. "+
+			"Set a key (--gen-key on this listener, then -k on the dialer) for a private link, "+
+			"or pass --no-encrypt to accept plaintext explicitly (only sane on a trusted LAN).\n")
+		os.Exit(2)
+	}
+	// 显式选择明文监听：给一条醒目的启动告警（横幅里也有，但日志/journal 里要能一眼看到）
+	if config.TransportListens() && *config.NoEncrypt {
+		log.Warn("listening in PLAINTEXT on all interfaces (--no-encrypt): any network-reachable peer can read served files or drive this sink; use a key for anything beyond a trusted LAN")
+	}
+
 	// 监听的一方（源监听 = 经典 reality/relay 下游，或汇监听格）在打印横幅前
 	// 先绑定端口（从 DefaultPort 起自动探测），横幅里展示的才是真实监听端口；
 	// accept 循环稍后由 Reality / MirrorListen 启动

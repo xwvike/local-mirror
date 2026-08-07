@@ -118,6 +118,36 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 			return err
 		}
 
+	case "retype":
+		// 类型互换（文件↔目录，COR-03）：必须先移除旧类型再建新类型。移除本质是删除，
+		// 故仅在 --allow-delete（忠实镜像）下执行；默认增量模式不能删，只能拒绝并一次性
+		// 告警后跳过——不做任何操作也不无限重试（本地旧类型原样保留）
+		if !*config.AllowDelete {
+			warnRetypeOnce(v.Path)
+			return nil
+		}
+		full, err := safety.SafeJoin(config.StartPath, v.Path)
+		if err != nil {
+			log.Errorf("refusing to retype out-of-root path: %v", err)
+			return nil
+		}
+		// RemoveAll 对文件和目录（含子树）都适用；随后清掉本地树里的旧节点及其子树
+		if err := os.RemoveAll(full); err != nil {
+			return err
+		}
+		if err := tree.DeleteNode(v.Path); err != nil {
+			return err
+		}
+		// 建新类型：目录直接建，文件走正常下载（上游哈希缺失同 create 分支跳过）
+		if v.IsDir {
+			return processDirectoryDiff(v)
+		}
+		if v.Hash == "" {
+			warnUnreadableOnce(v.Path)
+			return nil
+		}
+		return processFileDiff(v, fileClient)
+
 	case "create", "modify":
 		if v.IsDir {
 			return processDirectoryDiff(v)
@@ -167,6 +197,16 @@ var unreadableWarned sync.Map
 func warnUnreadableOnce(path string) {
 	if _, loaded := unreadableWarned.LoadOrStore(path, struct{}{}); !loaded {
 		log.Errorf("upstream cannot read %s (server failed to hash it, usually a permission problem); skipping. Sync resumes automatically once fixed upstream", path)
+	}
+}
+
+// retypeWarned 已提示过的"类型互换但删除未开启"路径。默认增量模式下每轮全量扫描都会
+// 重新检出该 retype diff，每路径只提示一次，避免刷屏
+var retypeWarned sync.Map
+
+func warnRetypeOnce(path string) {
+	if _, loaded := retypeWarned.LoadOrStore(path, struct{}{}); !loaded {
+		log.Warnf("%s changed type (file<->directory) upstream; applying it requires removing the old one, which --allow-delete governs. Skipping (local copy kept as-is). Enable --allow-delete for a faithful mirror", path)
 	}
 }
 
@@ -306,8 +346,8 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 	// 忽略的条目由此对同步完全隐形（本地已有的副本也不会被碰）
 	diffs = filterIgnoredDiffs(diffs)
 
-	// 保真：就地重命名的文件走本地 rename，免整文件重新下载
-	diffs = detectRenames(diffs)
+	// 保真：就地重命名的文件走本地 rename，免整文件重新下载（COR-02，门控见 maybeDetectRenames）
+	diffs = maybeDetectRenames(diffs)
 
 	log.Infof("Diff count for %s: %d", path, len(diffs))
 	diffDirs := make(map[string]bool)
@@ -385,6 +425,16 @@ func filterIgnoredDiffs(diffs []DiffResult) []DiffResult {
 	return kept
 }
 
+// maybeDetectRenames 仅在 --allow-delete（忠实镜像）下启用重命名优化——rename 会移除
+// 旧路径，本质是删除；默认增量模式不删除，那里旧文件必须原样保留、新文件另行下载，
+// 否则「默认只同步不删」会被这条优化悄悄打破（COR-02）
+func maybeDetectRenames(diffs []DiffResult) []DiffResult {
+	if !*config.AllowDelete {
+		return diffs
+	}
+	return detectRenames(diffs)
+}
+
 // detectRenames 在单个目录的 diff 内识别"就地重命名"：一个 delete 与一个
 // create 若指向哈希相同的文件（内容未变、仅换名），直接本地 rename，
 // 避免整文件重新下载。返回消化掉重命名对之后剩余的 diff。
@@ -444,6 +494,17 @@ func applyRename(oldDiff, newDiff DiffResult) error {
 	if err != nil {
 		log.Errorf("refusing to rename to out-of-root path: %v", err)
 		return nil
+	}
+	// COR-02：rename 前重验本地旧文件，不信任数据库里的旧哈希。若本地已漂移（内容被
+	// 外部改动而 DB 未更新、被换成目录/软链、或已消失），把「错内容」搬到新路径并登记成
+	// 上游哈希会造成静默损坏。校验不过就返回错误——detectRenames 会据此放弃这对配对，
+	// 回落到正常的 delete+download，取到的是上游的正确内容
+	linfo, lerr := os.Lstat(oldFull)
+	if lerr != nil || !linfo.Mode().IsRegular() {
+		return fmt.Errorf("local source not a regular file (drifted or gone): %s", oldDiff.Path)
+	}
+	if h, herr := utils.CalcBlake3(oldFull); herr != nil || fmt.Sprintf("%x", h) != oldDiff.Hash {
+		return fmt.Errorf("local source hash mismatch (drifted): %s", oldDiff.Path)
 	}
 	if err := os.MkdirAll(filepath.Dir(newFull), 0755); err != nil {
 		return err

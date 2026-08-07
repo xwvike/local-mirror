@@ -52,6 +52,28 @@ type serviceSpec struct {
 // 不如明确地不加固。见 docs/CONFIG_AND_SERVICE.md §P4.3
 func (s serviceSpec) Harden() bool { return len(s.RWPaths) > 0 }
 
+// systemdQuote 把一个字面量编码成 systemd 设置里安全的单个 token（SVC-01）。
+// systemd 会按空白切分参数、对 % 做 specifier 展开；命令行还会对 $ 做变量展开。
+// 含空格/引号/反斜杠/%/$ 的路径若不编码，会拆断 ExecStart、截断 ReadWritePaths、
+// 或被误当作 specifier/变量。统一双引号包裹并转义。escapeDollar 仅命令行（ExecStart）
+// 需要——ReadWritePaths 不做变量展开，传 false 以免把字面 $ 变成 $$。
+func systemdQuote(s string, escapeDollar bool) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "%", "%%")
+	if escapeDollar {
+		s = strings.ReplaceAll(s, "$", "$$")
+	}
+	return `"` + s + `"`
+}
+
+// shSingleQuote 用 POSIX 单引号安全包裹一个字面量，供写进 procd 的 sh 脚本（SVC-01）。
+// 单引号内除单引号外一切都是字面量；单引号本身用 '\” 收尾-转义-续起。不这样处理，
+// 含空格的路径会 word-split 成多参数，含 ;/$()/反引号 的路径存在 shell 注入面。
+func shSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // systemdUnitText 生成 systemd unit。ExecStart 里两个路径都是固定常量，
 // 每台机器生成的内容一致，是真正的通用模板
 func systemdUnitText(s serviceSpec) string {
@@ -66,13 +88,17 @@ func systemdUnitText(s serviceSpec) string {
 	if !s.UserScope && s.RunAsUser != "" {
 		fmt.Fprintf(&b, "User=%s\n", s.RunAsUser)
 	}
-	fmt.Fprintf(&b, "ExecStart=%s --config %s\n", s.ExePath, s.ConfigPath)
+	fmt.Fprintf(&b, "ExecStart=%s --config %s\n", systemdQuote(s.ExePath, true), systemdQuote(s.ConfigPath, true))
 	b.WriteString("Restart=on-failure\n")
 	b.WriteString("RestartSec=5s\n")
 	b.WriteString("NoNewPrivileges=true\n")
 	if s.Harden() {
 		b.WriteString("ProtectSystem=full\n")
-		fmt.Fprintf(&b, "ReadWritePaths=%s\n", strings.Join(s.RWPaths, " "))
+		quoted := make([]string, len(s.RWPaths))
+		for i, p := range s.RWPaths {
+			quoted[i] = systemdQuote(p, false)
+		}
+		fmt.Fprintf(&b, "ReadWritePaths=%s\n", strings.Join(quoted, " "))
 	}
 	b.WriteString("\n[Install]\n")
 	if s.UserScope {
@@ -155,7 +181,7 @@ func procdInitScript(s serviceSpec) string {
 	b.WriteString("USE_PROCD=1\n\n")
 	b.WriteString("start_service() {\n")
 	b.WriteString("\tprocd_open_instance\n")
-	fmt.Fprintf(&b, "\tprocd_set_param command %s --config %s\n", s.ExePath, s.ConfigPath)
+	fmt.Fprintf(&b, "\tprocd_set_param command %s --config %s\n", shSingleQuote(s.ExePath), shSingleQuote(s.ConfigPath))
 	b.WriteString("\tprocd_set_param respawn\n")
 	// 让横幅与错误进 logread，OpenWrt 上没有 journalctl
 	b.WriteString("\tprocd_set_param stdout 1\n")
