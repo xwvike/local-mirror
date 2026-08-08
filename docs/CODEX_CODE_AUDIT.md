@@ -650,8 +650,8 @@ go test -race ./...
 > **✅ Claude 校对（§5 整节，2026-08-08 补）— 逐条去向如下**
 >
 > 坦白：§5 这 7 条不是本轮 16 条编号发现的一部分（是工程债务/设计权衡），最初只被顺带处理，
-> 未逐条交代。现补齐。**其中 5.1 / 5.3 / 5.4 / 5.7 已修；5.2 为设计权衡；5.5 / 5.6 待决重构，
-> 且 5.2/5.5/5.6 被本轮外科手术式的补丁轻微加重**——如实记录：
+> 未逐条交代。现补齐。**其中 5.1 / 5.3 / 5.4 / 5.6 / 5.7 已修；5.2 为设计权衡；仅 5.5（去全局化）
+> 留作待决重构**——如实记录：
 >
 > | 条 | 状态 | 说明 |
 > |---|---|---|
@@ -660,7 +660,7 @@ go test -race ./...
 > | **5.3** 启动建树 O(N) | ✅ **已修** | COR-01 让纯汇端**每次全量扫描都重跑 O(N) 建树**，cooldown 低时会周期性吃 CPU/内存。已加节流 `localRebuildMinInterval`（距上次重建够久才做）+ `SuspectLocalDrift()`（休眠唤醒等漂移信号强制重建、无视节流）。见 `internal/mirror.go` / `internal.TestShouldRebuildLocalTree` |
 > | **5.4** 缺全局 I/O 限流 | ✅ **已修** | 除 SEC-01 堵住「未认证监听被当放大器」外，新增全局文件服务信号量 `fileServeSlots`（容量 `min(max(NumCPU,4),16)`，与连接上限 256 解耦）：handleFileRequest 在预哈希前获取、跨「哈希→传输」整段持有，出函数释放；轻量交互（握手/目录树/长轮询）不受限。见 `internal/network/server.go` / `network.TestFileServeSlotBounded` |
 > | **5.5** 大量包级全局状态 | ⏳ 延后·略加重 | 属实。本轮新增 `retypeWarned`、`lastLocalRebuild`/`driftSuspected` 全局（PERF-01 的目录快照是**每客户端**、未进全局）。去全局化=库化重构，需单独立项 |
-> | **5.6** 单文件职责过重 | ⏳ 延后·略加重 | 属实。本轮往 `main.go`/`server.go`/`mirror.go` 这几个大文件**又加了代码**（补丁式追加而非拆分）。按 cli/bootstrap/status/discovery 拆分是独立重构 |
+> | **5.6** 单文件职责过重 | ✅ **已修** | 4 个大文件按职责拆分（纯移动、同包、零行为变化，编译器+全测试+六平台交叉编译兜底）：`main.go` 1351→286（+cli/banner/format/statusview/heatview）；`mirror.go` 907→380（+diffapply/diffscan）；`server.go` 893→396（+listen/fileserve/changes）；`service.go` 792→280（+servicegen/servicehelp）。每源文件一提交 |
 > | **5.7** 文档混手册与历史 | ✅ **已处理** | 照它做了 docs 清理：`CONFIG_AND_SERVICE.md`/`PUBLIC_EXPOSURE.md` 重标为 ADR + 新增 `docs/README.md` 索引分类 |
 >
 > **5.1 / 5.5 / 5.6 是重构类债务**（错误语义梳理、去全局化、拆大文件），不该塞进审计修复顺手做，
@@ -895,10 +895,9 @@ git diff --check
   Linux 侧可升级为 `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`、darwin 侧逐组件目录句柄
   相对操作，彻底消除 TOCTOU。
 - PERF-01 的会话快照为 size=1 的每客户端缓存；若未来出现大量并发多目录深分页，可扩为 LRU。
-- **§5 工程债务**（逐条去向见 §5 顶部评估块）：5.1 已修（错误可见化：非连接错误上抛/计入
-  RecordError，保留跳过坏目录的韧性）、5.3 已修（重建节流 + 漂移强制触发）、5.4 已修（全局文件
-  服务信号量）、5.7 已处理（docs ADR 化）；**5.5（去全局化/库化）/ 5.6（拆大文件）登记为待决重构**，
-  动手前需单独立项。5.2（多次哈希）为设计权衡。
+- **§5 工程债务**（逐条去向见 §5 顶部评估块）：5.1 已修（错误可见化）、5.3 已修（重建节流 +
+  漂移强制触发）、5.4 已修（全局文件服务信号量）、5.6 已修（4 个大文件按职责拆分）、5.7 已处理
+  （docs ADR 化）；**仅 5.5（去全局化/库化）登记为待决重构**，动手前需单独立项。5.2（多次哈希）为设计权衡。
 - §6 四处 README 措辞已订正（`docs(readme)` 提交，两份 README 同步）。
 
 ---
