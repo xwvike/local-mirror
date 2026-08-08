@@ -84,14 +84,19 @@ func executeTaskWithClient(taskName string, fileClient *network.FileClient, task
 	log.Infof("task started: %s", taskName)
 	startTime := time.Now()
 
-	if err := taskFunc(fileClient); err != nil {
-		log.Errorf("task failed %s: %v", taskName, err)
+	err := taskFunc(fileClient)
+	duration := time.Since(startTime)
+	if err != nil {
+		log.Errorf("task failed %s after %v: %v", taskName, duration, err)
 		if errors.Is(err, appError.ErrConnection) {
 			return fmt.Errorf("client became deprecated during task: %w", err)
 		}
+		// §5.1：非连接类错误此前被吞成 nil，会把 DB/初始扫描等真实的任务级失败在上层当成
+		// 成功。taskFunc 内部已消化「可跳过的单项/单目录错误」（getDirectory 循环逐项
+		// log+continue），能冒到这里的是任务级失败——如实上抛并计入错误统计
+		status.RecordError()
+		return err
 	}
-
-	duration := time.Since(startTime)
 	log.Infof("task done: %s, took %v", taskName, duration)
 	return nil
 }
@@ -581,6 +586,10 @@ func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 			// 退避后再重试：给持续性错误留出恢复窗口，也避免忙循环
 			time.Sleep(time.Duration(retries[v.Path]) * time.Second)
 			NextLevel.Push(v)
+		} else {
+			// §5.1：非连接错误（Diff/DB 等）跳过该目录、继续同步其余目录（一个坏目录不该
+			// 拖垮整轮），但计入错误统计——别让「某目录本轮没同步成」静默地当成成功
+			status.RecordError()
 		}
 	}
 	return nil
@@ -831,6 +840,9 @@ func TrackingChanges(fileClient *network.FileClient) error {
 			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
 				return err
 			}
+		} else {
+			// §5.1：非连接错误跳过该目录但计入统计，不静默当成功
+			status.RecordError()
 		}
 	}
 	// 变更中新出现的子目录需要继续下钻，否则要等下次全量扫描才能同步到
