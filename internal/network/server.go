@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -36,6 +37,23 @@ const ClientIdleTimeout = 90 * time.Second
 // 达上限后新连接直接拒绝（关闭），已有连接不受影响。局域网多客户端
 // 场景 256 足够宽裕
 const maxConcurrentConnections = 256
+
+// maxConcurrentFileServes 全局并发文件服务（预哈希 + 传输）上限，与连接数上限解耦（5.4）。
+// 整文件预哈希是 CPU 密集、传输是磁盘读密集，且二者对同一文件是两次全盘读；256 连接各自
+// 触发大文件会放大成磁盘/CPU 打满（未认证监听时尤甚——SEC-01 已要求监听端带密钥堵住该最坏面，
+// 这里再加全局并发上限兜底）。取 NumCPU 兼顾 CPU 侧，夹在 [4,16]：小机器不过低、大机器不过度
+// 并发读拖垮磁盘（尤其机械盘）。轻量交互（握手/目录树/变更长轮询）不受此限
+var maxConcurrentFileServes = min(max(runtime.NumCPU(), 4), 16)
+
+// fileServeSlots 全局文件服务信号量，容量即上限。handleFileRequest 在预哈希前获取、出函数释放
+var fileServeSlots = make(chan struct{}, maxConcurrentFileServes)
+
+// acquireFileServeSlot 获取一个全局文件服务槽（阻塞至有空位），返回释放函数（5.4）。
+// 调用方 `release := acquireFileServeSlot(); defer release()`，跨哈希+传输整段持有
+func acquireFileServeSlot() (release func()) {
+	fileServeSlots <- struct{}{}
+	return func() { <-fileServeSlots }
+}
 
 // treePageMaxEntries 目录树响应单页条目上限。每条目 JSON 约 250 字节，
 // 两万条约 5 MB，远低于消息体上限（64 MB）；超出的条目经 ContinueFrom
@@ -632,6 +650,14 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 		return fmt.Errorf("error getting file info: %s :%v", fileRequest.FilePath, err)
 
 	} else {
+		// 5.4 全局限流：整文件预哈希 + 传输是两次全盘读，256 连接各自触发大文件会把磁盘/CPU
+		// 打爆。在此获取全局服务槽（容量远小于连接上限），跨「哈希 → 传输」整段持有、出函数即释放。
+		// 阻塞发生在该连接自己的消息循环 goroutine 内——只是排队等槽，不影响其它连接的握手/目录树/
+		// 变更长轮询等轻量交互。所有廉价校验（越权/忽略/不在树/不存在/软链）都在获取槽之前完成，
+		// 被拒的请求不占槽
+		release := acquireFileServeSlot()
+		defer release()
+
 		// 错误带上系统级原因（如 permission denied），它会随结构化错误应答
 		// 发给客户端——对端日志里能直接看到失败根因，不用两头对日志；
 		// 权限类失败带 ErrCodePermissionDenied，客户端据此跳过而非反复重试。
