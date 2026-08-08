@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -676,6 +677,33 @@ func MirrorListen() {
 // 墙钟跳变远超此值即判定刚从系统休眠中醒来
 const sleepDetectThreshold = 3 * time.Minute
 
+// localRebuildMinInterval 纯汇端从磁盘重建本地树的最小间隔（§5.3）。COR-01 的重建走
+// BuildFileTree 全量遍历（O(N) 时间 + 瞬时内存），若每次全量扫描都做（cooldown 可低至
+// 几十秒），大树会周期性吃 CPU/内存。故加节流：距上次重建不足此值就跳过——除非
+// driftSuspected 置位（如休眠唤醒）时强制重建、无视节流
+const localRebuildMinInterval = 10 * time.Minute
+
+var (
+	lastLocalRebuild time.Time   // 上次从磁盘重建本地树的时刻（仅纯汇端）
+	driftSuspected   atomic.Bool // 置位表示本地可能已漂移，下次全量扫描强制重建
+)
+
+// SuspectLocalDrift 标记「本地磁盘可能已漂移」，令下一次全量扫描无视节流、立即从磁盘
+// 重建本地树（§5.3 补充触发）。目前由休眠唤醒调用——睡眠期间本地可能被外部改动；
+// 将来其它漂移信号（如落盘时发现磁盘状态与树不符）可复用本入口
+func SuspectLocalDrift() { driftSuspected.Store(true) }
+
+// shouldRebuildLocalTree 判定本次全量扫描是否要从磁盘重建本地树（§5.3）。
+// 中继/源端由 source 侧 watcher 维护树，不在此重建；纯汇端满足「距上次重建够久（标准节流）」
+// 或「driftSuspected 置位（补充触发，无视节流）」才重建。driftSuspected 以 Swap 读并清零，
+// 故本函数有副作用，每次全量扫描只调一次
+func shouldRebuildLocalTree() bool {
+	if config.ServesDownstream() {
+		return false
+	}
+	return driftSuspected.Swap(false) || time.Since(lastLocalRebuild) >= localRebuildMinInterval
+}
+
 func runMirrorTasks(fileClient *network.FileClient) error {
 	// 连接后先全量对账；重连（含休眠后 socket 断开）都会重新走到这里
 	if err := executeTaskWithClient("initial full scan", fileClient, fullScan); err != nil {
@@ -698,6 +726,8 @@ func runMirrorTasks(fileClient *network.FileClient) error {
 		// 服务端 changed_dirs 只保留 1 小时，睡久了增量窗口不可信，强制全量对账
 		if elapsed := time.Since(beforePoll); elapsed > sleepDetectThreshold {
 			log.Warnf("long sleep detected (%v), forcing a full reconciliation", elapsed.Round(time.Second))
+			// 休眠期间本地可能被外部改动，强制从磁盘重建本地树、无视节流（§5.3 补充触发）
+			SuspectLocalDrift()
 			if err := executeTaskWithClient("post-wake full scan", fileClient, fullScan); err != nil {
 				return err
 			}
@@ -724,9 +754,13 @@ func fullScan(fileClient *network.FileClient) error {
 	// size+mtime 未变复用哈希、变了重算、磁盘已不存在的节点剔除），再与上游树比对，
 	// 本地漂移即被纠正。仅限纯汇端：中继/源端由 source 侧 watcher 维护树，且并发重建会与
 	// 之竞争同一棵树，故用 !ServesDownstream() 圈定
-	if !config.ServesDownstream() {
+	// §5.3 节流：不是每次全量扫描都重建（判定见 shouldRebuildLocalTree）——距上次重建够久
+	// 才做，或 driftSuspected 置位时强制做
+	if shouldRebuildLocalTree() {
 		if err := tree.BuildFileTree(config.StartPath); err != nil {
 			log.Warnf("full scan: local disk re-calibration failed, proceeding with cached tree: %v", err)
+		} else {
+			lastLocalRebuild = time.Now()
 		}
 	}
 
