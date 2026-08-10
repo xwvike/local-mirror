@@ -1,6 +1,7 @@
 package network
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/zeebo/blake3"
 )
 
 // treePageMaxEntries 目录树响应单页条目上限。每条目 JSON 约 250 字节，
@@ -33,8 +35,8 @@ type session struct {
 	ID       [16]byte // 会话ID
 	FilePath string   // 文件路径
 	FileSize uint64   // 文件大小
+	Offset   uint64   // 续传起始偏移（5.2：sendFileData 据此先把前缀 [0,offset) 喂入流式哈希）
 	file     *os.File // 文件句柄
-	fileHash [32]byte // 文件哈希值
 }
 
 // dirSnapshot 一次分页遍历的稳定目录快照（PERF-01）：首页时加载并排序一次，续页复用，
@@ -147,18 +149,39 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 //	① .local-mirror 状态目录独立硬拒，不依赖可配置忽略列表（key/cache.db/status/backups…）；
 //	② 命中生效忽略列表即拒（与建树同一个 rel + IsIgnored，语义一致）；
 //	③ 必须存在于共享目录树、且为哈希非空的普通文件（目录、软链、哈希失败项都不提供）。
-func authorizeServeFile(rel, reportPath string) *wireError {
+//
+// 放行时返回命中的树节点（供 handleFileRequest 做 5.2 的 meta-trust：size+mtime 一致就复用
+// node.Hash 作为起始哈希，免全量预读）。
+func authorizeServeFile(rel, reportPath string) (*tree.Node, *wireError) {
 	notFound := &wireError{Code: ErrCodeNotFound, Path: reportPath, Message: "file not found"}
 	if rel == localMirrorStateDir || strings.HasPrefix(rel, localMirrorStateDir+string(filepath.Separator)) {
-		return notFound
+		return nil, notFound
 	}
 	if utils.IsIgnored(rel, config.IgnoreFileList) {
-		return notFound
+		return nil, notFound
 	}
-	if node, err := tree.GetNodeByPath(rel); err != nil || node == nil || node.IsDir || node.Hash == "" {
-		return notFound
+	node, err := tree.GetNodeByPath(rel)
+	if err != nil || node == nil || node.IsDir || node.Hash == "" {
+		return nil, notFound
 	}
-	return nil
+	return node, nil
+}
+
+// trustedServeHash 尝试免全量重读地取文件哈希（5.2 meta-trust）：磁盘 size+mtime 与树节点记录
+// 一致时，信树里存的哈希，ok=true。ok=false 表示文件自建树后变过（或哈希不可解），调用方回退
+// 全量重算。注意：这仅用于 FileResponse 的起始哈希（续传提示）；FileComplete 的权威哈希由
+// sendFileData 按实际发送字节流式算出，故此处偶尔陈旧也不会导致完整性误判或活锁
+func trustedServeHash(node *tree.Node, fi os.FileInfo) ([32]byte, bool) {
+	var h [32]byte
+	if node == nil || node.Hash == "" || uint64(fi.Size()) != node.Size || !fi.ModTime().Equal(node.ModTime) {
+		return h, false
+	}
+	b, err := hex.DecodeString(node.Hash)
+	if err != nil || len(b) != 32 {
+		return h, false
+	}
+	copy(h[:], b)
+	return h, true
 }
 
 func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
@@ -182,7 +205,8 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 	// 只保证「没逃出根」，但已握手的对端仍能绕过树枚举、直接点名根内任意路径。策略抽到
 	// authorizeServeFile 便于单测；rel 复用上面根检查算出的同一个值，与 tree/IsIgnored 的
 	// 键形态（OS 分隔符、根为 "."）一致。
-	if werr := authorizeServeFile(rel, fileRequest.FilePath); werr != nil {
+	node, werr := authorizeServeFile(rel, fileRequest.FilePath)
+	if werr != nil {
 		return werr
 	}
 	// SEC-03：逐级校验请求路径的每一级组件都不是符号链接。只查末段（原 Lstat）挡不住
@@ -208,23 +232,28 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 		release := acquireFileServeSlot()
 		defer release()
 
-		// 错误带上系统级原因（如 permission denied），它会随结构化错误应答
-		// 发给客户端——对端日志里能直接看到失败根因，不用两头对日志；
-		// 权限类失败带 ErrCodePermissionDenied，客户端据此跳过而非反复重试。
-		// 读取失败同时登记进不可读列表，恢复可读后由 watcher 恢复循环补哈希
-		fileHash, err := utils.CalcBlake3(fullPath)
-		if err != nil {
-			tree.MarkUnreadable(fullPath)
-			if os.IsPermission(err) {
-				return &wireError{Code: ErrCodePermissionDenied, Path: fileRequest.FilePath,
-					Message: fmt.Sprintf("error calculating file hash: %v", err)}
+		// 起始哈希（写入 FileResponse，仅作续传提示）：5.2 meta-trust——磁盘 size+mtime 与树
+		// 节点一致就直接复用 node.Hash，免这一遍全量预读；不一致（文件自建树后变过）才回退
+		// 全量重算。权威的完整性哈希由 sendFileData 按实际字节流式算出并写入 FileComplete
+		fileHash, ok := trustedServeHash(node, fileInfo)
+		if !ok {
+			var herr error
+			fileHash, herr = utils.CalcBlake3(fullPath)
+			if herr != nil {
+				tree.MarkUnreadable(fullPath)
+				if os.IsPermission(herr) {
+					return &wireError{Code: ErrCodePermissionDenied, Path: fileRequest.FilePath,
+						Message: fmt.Sprintf("error calculating file hash: %v", herr)}
+				}
+				return fmt.Errorf("error calculating file hash for %s: %v", fileRequest.FilePath, herr)
 			}
-			return fmt.Errorf("error calculating file hash for %s: %v", fileRequest.FilePath, err)
 		}
 
 		file, err := os.Open(fullPath)
 		if err != nil {
+			// meta-trust 跳过了预读，读不了要在这里登记不可读（原先由 CalcBlake3 失败登记）
 			if os.IsPermission(err) {
+				tree.MarkUnreadable(fullPath)
 				return &wireError{Code: ErrCodePermissionDenied, Path: fileRequest.FilePath,
 					Message: fmt.Sprintf("error opening file: %v", err)}
 			}
@@ -248,8 +277,8 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 			ID:       sessionBytes,
 			FilePath: fullPath,
 			FileSize: uint64(fileInfo.Size()),
+			Offset:   fileRequest.Offset,
 			file:     file,
-			fileHash: fileHash,
 		}
 
 		_client.(*client).SessionMap.Store(session.ID, session)
@@ -281,12 +310,31 @@ func (s *fileServer) sendFileData(ID uint32, session *session) error {
 	// session.file 由 handleFileRequest 中的 defer 统一关闭，这里不重复 Close
 	defer _client.(*client).SessionMap.Delete(session.ID)
 
-	fileBuf := make([]byte, *config.FileBufferSize)
 	rel := strings.Replace(session.FilePath, config.StartPath, ".", 1)
+
+	// 5.2 流式哈希：FileComplete 的权威完整性哈希由「实际发送的字节」流式算出，而不是 serve
+	// 入口那个（可能被 meta-trust 复用的）起始哈希。这样即便起始哈希偶尔陈旧，收到的字节与
+	// 这里算出的哈希也永远自洽——汇端必匹配，杜绝「陈旧哈希→汇端拒收→重试」的活锁。
+	// 续传：文件已 Seek 到 offset，先回读前缀 [0,offset) 喂入 hasher，保证覆盖整文件
+	hasher := blake3.New()
+	if session.Offset > 0 {
+		if _, err := session.file.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("error seeking to hash resume prefix of %s", rel)
+		}
+		if _, err := io.CopyN(hasher, session.file, int64(session.Offset)); err != nil {
+			return fmt.Errorf("error hashing resume prefix of %s: %v", rel, err)
+		}
+		if _, err := session.file.Seek(int64(session.Offset), io.SeekStart); err != nil {
+			return fmt.Errorf("error seeking back after prefix hash of %s", rel)
+		}
+	}
+
+	fileBuf := make([]byte, *config.FileBufferSize)
 	var sent uint64
 	for {
 		n, err := session.file.Read(fileBuf)
 		if n > 0 {
+			hasher.Write(fileBuf[:n]) // 5.2：边发边喂哈希（在 fileBuf 被下轮 Read 覆盖前）
 			dataMsg := FileDataMessage{
 				SessionID:  session.ID,
 				DataLength: uint32(n),
@@ -306,9 +354,11 @@ func (s *fileServer) sendFileData(ID uint32, session *session) error {
 			return fmt.Errorf("error reading file %s", strings.Replace(session.FilePath, config.StartPath, ".", 1))
 		}
 	}
+	var completeHash [32]byte
+	copy(completeHash[:], hasher.Sum(nil))
 	completeMsg := FileCompleteMessage{
 		SessionID: session.ID,
-		FileHash:  session.fileHash,
+		FileHash:  completeHash,
 	}
 
 	completeBytes := encodeFileComplete(completeMsg)

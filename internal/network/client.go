@@ -3,6 +3,7 @@ package network
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"local-mirror/config"
 	"local-mirror/internal/appError"
 	"local-mirror/internal/safety"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/zeebo/blake3"
 )
 
 // localHandshake 构造本端握手消息（客户端首次握手与重连重验证共用）。
@@ -566,6 +568,22 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 	// 只负责关闭；分片文件在传输失败时保留，供下次续传
 	defer file.Close()
 
+	// 5.2 流式哈希：边收边喂进 hasher，收完直接得整文件内容哈希，省掉「收完再全量回读」那一遍。
+	// 续传时先把已有前缀 [0,offset) 读进 hasher，再流式收剩余——仍比「写盘 + 全量回读」少一遍。
+	// 最终比对的仍是整文件哈希（完整性校验一点不打折）
+	hasher := blake3.New()
+	if resume {
+		pf, perr := os.Open(partialPath)
+		if perr != nil {
+			return "", fmt.Errorf("error opening partial for resume hashing %s: %w", filePath, perr)
+		}
+		if _, cerr := io.CopyN(hasher, pf, int64(offset)); cerr != nil {
+			pf.Close()
+			return "", fmt.Errorf("error hashing resume prefix of %s: %w", filePath, cerr)
+		}
+		pf.Close()
+	}
+
 	sessionID := fileResponse.SessionID
 	receivedSize := offset
 	startTime := time.Now()
@@ -599,6 +617,7 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				}
 				return "", fmt.Errorf("%w: error writing file data: %v", appError.ErrConnection, err)
 			}
+			hasher.Write(dataMsg.Data) // 5.2：边写盘边喂哈希（blake3.Hasher.Write 从不报错）
 			// 不逐块回发 Acknowledge：服务端流式发送期间不读取 socket，
 			// 大文件的确认消息会填满对端接收缓冲，造成双向阻塞死锁；
 			// 续传依据本地分片大小，不需要确认机制
@@ -622,11 +641,10 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 				return "", fmt.Errorf("error closing file: %w", err)
 			}
 
-			// 无论是否续传，都对拼装后的整个文件做完整性校验
-			fileHash, err := utils.CalcBlake3(partialPath)
-			if err != nil {
-				return "", fmt.Errorf("error calculating file hash: %w", err)
-			}
+			// 无论是否续传，都对拼装后的整个文件做完整性校验。哈希来自流式累积（前缀 +
+			// 收到的所有分片），等价于对整文件重算，但省掉了那一遍全量回读（5.2）
+			var fileHash [32]byte
+			copy(fileHash[:], hasher.Sum(nil))
 			if fileHash != completeMsg.FileHash {
 				// 分片已被证明损坏，保留只会反复失败
 				discardPartial(partialPath, metaPath)

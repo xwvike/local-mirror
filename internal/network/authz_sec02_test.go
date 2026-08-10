@@ -39,7 +39,7 @@ func TestAuthorizeServeFileSEC02(t *testing.T) {
 		t.Fatalf("BuildFileTree: %v", err)
 	}
 
-	allowed := func(rel string) bool { return authorizeServeFile(rel, rel) == nil }
+	allowed := func(rel string) bool { _, werr := authorizeServeFile(rel, rel); return werr == nil }
 
 	// 正常普通文件：放行
 	if !allowed("foo.txt") {
