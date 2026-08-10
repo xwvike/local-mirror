@@ -9,9 +9,9 @@
 
 English | [简体中文](README.zh-CN.md)
 
-One-way directory mirroring over TCP. One end is the **source** (`--send`),
-the other keeps a live replica as the **sink** (`--receive`), optionally
-through relays chained A → B → C.
+One-way directory mirror over TCP. One end is the **source** (`--send`), the
+other keeps a live replica as the **sink** (`--receive`). Give one process both
+flags to relay (A → B → C).
 
 ```
 ┌─────────────┐   tree / changes / files   ┌─────────────┐
@@ -23,62 +23,44 @@ through relays chained A → B → C.
 
 ## Install
 
-Linux (any distro):
-
 ```bash
+# Linux (any distro)
 curl -fsSL https://raw.githubusercontent.com/xwvike/local-mirror/main/install.sh | sh
-```
 
-macOS:
-
-```bash
+# macOS
 brew install xwvike/tap/local-mirror
-```
 
-Windows, via [Scoop](https://scoop.sh) (no Scoop yet? `irm get.scoop.sh | iex`
-installs it):
-
-```powershell
+# Windows (Scoop; `irm get.scoop.sh | iex` first if you don't have Scoop)
 scoop bucket add xwvike https://github.com/xwvike/scoop-bucket
 scoop install local-mirror
-```
 
-Build from source:
-
-```bash
-git clone https://github.com/xwvike/local-mirror && cd local-mirror
+# from source
 go build -o local-mirror ./cmd/local-mirror
 ```
 
-## Quick start
+## Recipes
 
 ```bash
 # serve a directory (-p defaults to the current working directory)
 local-mirror --send -p /path/to/source
 
-# replicate it on another machine
+# replicate it from another machine, dialing a known host
 local-mirror --receive --connect 192.168.1.100 -p /path/to/replica
 
-# leave out --connect to discover sources on the LAN and pick one interactively
+# replicate over the LAN with zero config: no --connect/--listen → scan for
+# sources and pick one interactively
 local-mirror --receive -p /path/to/replica
 
-# relay: receive from upstream and serve downstream at the same time
+# relay: pull from upstream and serve downstream in one process
 local-mirror --send --receive --connect 192.168.1.100 -p /path/to/relay
-```
 
-Reverse who listens to push across the public internet: a server with a
-public IP is the sink, the source dials out to it. **The listener must set a
-key** — a plaintext listener refuses to start (it binds all interfaces, see
-Encryption):
-
-```bash
-# machine A (public IP): generate and print a key the first time
-local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key
-# machine B (no public IP): connect with the printed key (it self-saves a copy afterwards)
+# push across the public internet: the reachable end is the sink and listens,
+# the source dials out. A listening end MUST set a key (see Encryption).
+local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key   # prints a key
 local-mirror --send --connect a.example.net:52345 -p /path/to/source -k <printed-key>
 
-# same thing, rsync-style positional sugar (./dir @host = push)
-local-mirror ./path/to/source @vps.example.net:52345 -k <printed-key>
+# same push, rsync-style positional form (./dir @host = push)
+local-mirror ./path/to/source @a.example.net:52345 -k <printed-key>
 ```
 
 ## Flags
@@ -92,11 +74,11 @@ local-mirror ./path/to/source @vps.example.net:52345 -k <printed-key>
 | `-p, --path` | sync root; state lives in `.local-mirror/` beneath it | working dir |
 | `-a, --alias` | instance name shown in discovery lists | hostname |
 | `-i, --ignore` | extra ignore patterns, comma-separated | |
-| `--config` | YAML config file (excludes the other flags) | |
-| `--allow-delete` | delete extra files on the sink that no longer exist upstream | off |
+| `--config` | YAML config file (mutually exclusive with the other flags) | |
+| `--allow-delete` | delete sink files that no longer exist upstream | off |
 | `--allow-critical` | allow syncing on critical paths, with overwrite backups | off |
 | `-k, --secret` | transport encryption key (or `secret:` in the YAML config) | |
-| `--gen-key` | generate a random key into `.local-mirror/key`, print it, exit | |
+| `--gen-key` | write a random key to `.local-mirror/key`, print it, exit | |
 | `--show-key` | print the existing key file and exit | |
 | `--no-encrypt` | force plaintext even when a key file exists | |
 | `--status` | print a running instance's status and exit (`--all` for every one) | |
@@ -105,150 +87,91 @@ local-mirror ./path/to/source @vps.example.net:52345 -k <printed-key>
 | `-f, --filebuffersize` | transfer chunk size in bytes, source side | `65536` |
 | `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
 
-`local-mirror --help` has the long version.
 
-### Direction and transport
+## Direction & transport
 
 Two independent axes: **direction** (`--send` / `--receive`) and **transport**
-(`--connect` / `--listen`). Combine them freely: `--receive --listen` on a
-reachable server, `--send --connect` from behind NAT. `--connect` takes a
-domain name, an IPv4, or an IPv6 literal (`--connect [2001:db8::1]:52345`);
-listeners bind both IPv4 and IPv6. Domain names are re-resolved on every
-reconnect, so DDNS just works. Give both `--send` and `--receive` to relay.
+(`--connect` / `--listen`). Combine freely.
 
-### LAN discovery
+- `--connect` takes a domain, IPv4, or IPv6 literal (`local-mirror --connect [2001:db8::1]:52345`);
+- `--receive` → LAN discovery: scan over UDP, pick a source interactively (`local-mirror --receive`).
 
-A `--receive` with neither `--connect` nor `--listen` scans the local network
-for sources over UDP and, if several answer, lets you pick one interactively.
-It is the zero-config path for two machines on the same LAN — no address to
-type, no port to remember. It only kicks in in that exact case: give
-`--connect` and you dial a known host directly; give `--listen` and you wait
-to be dialed. Discovery stays on the local segment and does not cross VPNs,
-subnets or firewalls — reach across those with `--connect <host>` instead. If
-a key is set, probes and replies are authenticated so a scanner without the
-key learns nothing.
+## Ignore patterns
 
-Ignore patterns (from `-i` or a `.local-mirror/ignore` file, one per line,
-`#` comments) are matched per path segment at any depth and support `* ? []`
-globs. On the server a match means the entry is never scanned or served (both
-directory enumeration and direct file requests are refused); on the client it
-means never downloaded and never deleted. `.local-mirror` (the
-tool's own state dir) is always excluded and cannot be un-ignored; `.git` and
-`.DS_Store` are excluded by default but removable — prefix a pattern with `!`
-to sync it (e.g. `-i '!.git'`). Note `.git` is a live database: replicate
-repositories with git itself (push/fetch), not a file-level mirror. Add things
-like `node_modules` yourself if you want them skipped.
+Patterns come from `-i` and/or a `.local-mirror/ignore` file (one per line, `#`
+comments). Matched per path segment at any depth; `* ? []` globs supported.
+
+- On the source, a match is never scanned or served (enumeration and direct file
+  requests both refused). On the sink, never downloaded and never deleted.
+- `.local-mirror` (own state dir) is always excluded and cannot be un-ignored.
+- `.git` and `.DS_Store` are excluded by default but removable — prefix `!` to
+  sync (e.g. `-i '!.git'`). For `.git`, prefer git push/fetch over a file-level
+  mirror.
 
 ## Deletion safety
 
-Syncing overwrites existing files, and `--allow-delete` removes extra ones,
-so the failure mode worth designing against is pointing the tool at the
-wrong directory. There are three levels:
+Syncing overwrites existing files; `--allow-delete` removes extra ones. Three
+levels, by sync root:
 
-1. **Default** — sync only, no deletion. Critical paths are refused
-   outright: the home directory, filesystem roots, and system trees such as
-   `/etc` or `/usr` including their subdirectories. Paths are resolved
-   through symlinks before the check. Ordinary directories inside your home
-   are not restricted.
-2. **`--allow-critical`** — unlocks syncing on critical paths, still without
-   deletion. Before an existing file is first overwritten, the original is
-   copied to `.local-mirror/backups/<relative path>`.
-3. **`--allow-delete`** — enables deletion. On critical paths it only works
-   combined with `--allow-critical`; on normal paths it is enough on its
-   own.
+| Root | no flag | `--allow-critical` | `--allow-critical` + `--allow-delete` | `--allow-delete` only |
+|---|---|---|---|---|
+| normal | sync, no delete | same | sync + delete | sync + delete |
+| **critical** | **refused** | sync + overwrite backup | sync + delete + overwrite backup | **refused** |
+
+Critical = home directory, filesystem roots, system trees (`/etc`, `/usr`, …)
+including subdirectories; resolved through symlinks first. Backups land in
+`.local-mirror/backups/<relative path>` before the first overwrite.
 
 ## Encryption
 
-Via the Noise protocol (NNpsk0). Give both ends the same passphrase with `-k`
-for mutual authentication and forward secrecy; a wrong passphrase, or a peer
-speaking plaintext, fails the handshake.
+Noise protocol (NNpsk0). Same `-k` passphrase on both ends → mutual auth and
+forward secrecy; a wrong key or a plaintext peer fails the handshake.
 
-**A listener binds all interfaces, so a plaintext listener refuses to start** —
-any public or non-loopback listener must set a key (`--gen-key` / `-k`); to
-insist on plaintext (trusted LAN only) pass `--no-encrypt` explicitly. Dialers
-don't listen and are unaffected.
+- **A listener binds all interfaces, so a plaintext listener refuses to start.**
+  Any non-loopback listener must set a key, or pass `--no-encrypt` to insist on
+  plaintext (trusted LAN only). Dialers are unaffected.
+- `--gen-key` writes a strong random key to `.local-mirror/key` (mode 600),
+  prints it once, and (with run flags) starts in the same command. Use a long
+  random string if you supply your own (`openssl rand -base64 24`).
+- Resolution order: explicit `-k` (or `secret:` in YAML) > `.local-mirror/key`
+  file > plaintext. The dialing end saves its own copy after the first connect.
+- `--show-key` prints the file; `--gen-key --force` regenerates. Regenerating on
+  the listening end disconnects every connected dialer.
 
-Use a long random string for `-k` (e.g. `openssl rand -base64 24`).
+## Observe: `--status` / `--heat`
 
-To skip inventing one, let the tool generate it. `--gen-key` writes a strong
-random key to `.local-mirror/key` (mode 600), prints it once and exits; add
-run flags to generate and start in the same command. A key file is loaded
-automatically when `-k` is omitted, so the listening end generates it and the
-dialing end passes it in with `-k` just once (the dialer then saves its own
-copy):
-
-```bash
-# on the listening end
-local-mirror --gen-key --send            # prints the key, then serves
-# on the dialing end, first connection only
-local-mirror --receive --connect vps.example.net -k <generated-key>
-```
-
-Resolution order is explicit `-k` (or `secret:` in the YAML config) >
-`.local-mirror/key` file > plaintext. `--show-key` prints the existing file, `--no-encrypt` forces
-plaintext even when one is present, and `--gen-key --force` regenerates. Don't
-delete the key file on the listening side while dialers are connected —
-regenerating it disconnects every one of them.
-
-## Watching a running instance
-
-`--status` is a separate, read-only command. It works on demand: while a
-`--status` is watching, the daemon writes its state to
-`.local-mirror/status.json` once a second and the command renders it; when no
-one is watching, the daemon writes nothing, so observing is free to leave off.
-Point it at a sync root with `-p` (or run it from inside one).
+Read-only, on-demand commands run against a live instance (point `-p` at its sync
+root, or run from inside one). The daemon only writes `status.json` / `heat.json`
+while one of these is watching.
 
 ```bash
-local-mirror --status -p /path/to/source
+local-mirror --status -p /path/to/source     # add --all for every process
+local-mirror --heat   -p /path/to/source     # source only; sinks have no heat table
 ```
 
 ```
 ──────────────────────────────────────────────────────
   Status      ● running   pid 62289 · up 3h12m
-──────────────────────────────────────────────────────
   Direction   send · source   (listen)
-  Peer        inbound
   Link        ● serving 192.168.1.50:54012
   Encryption  on (Noise NNpsk0)
-  Sync root   /path/to/source
-──────────────────────────────────────────────────────
-  Transfer    ▶ docs/report.pdf
-              ██████████░░░░░░░░░░  4.2 MB / 8.1 MB   5.3 MB/s
-  Totals      1.2 GB / 3841 files   · last 2s ago (docs/report.pdf)
-  Errors      0
-──────────────────────────────────────────────────────
-  CPU         1.4%
-  Memory      31 MB rss   (8.1 MB heap · 22 MB sys)
-  FDs         14
-  Goroutines  27
+  Transfer    ▶ docs/report.pdf  ██████████░░░░░░  4.2 MB / 8.1 MB  5.3 MB/s
+  Totals      1.2 GB / 3841 files    Errors 0
 ──────────────────────────────────────────────────────
 ```
 
-Add `--all` to find running `local-mirror` processes from the process table
-and print one row each (`--config` deployments get the same table keyed by
-task name):
-
-```bash
-local-mirror --status --all
-```
-
-```
-  NAME             DIR    LINK  RATE        FILES   LAST      CPU    MEM
-  proj/src         send   ●     5.3 MB/s    3841    2s        1.4%   31 MB
-  srv/backup       recv   ●     —           912     1m        0.2%   18 MB
-  media/photos     send   ○     —           220     14m       0.0%   12 MB
-```
+`--heat`: a source scores each directory by activity, watches hot ones in real
+time (tier1) and polls cold ones lazily (tier2). The table lists directories
+hottest first — useful to confirm active directories got real-time watches.
 
 ## Multiple tasks (YAML)
 
-One machine sharing several directories, or serving one and backing up
-another, can run everything from a single YAML file
-(example: [deploy/local-mirror.example.yml](deploy/local-mirror.example.yml)):
+Run several directories from one file (example:
+[deploy/local-mirror.example.yml](deploy/local-mirror.example.yml)):
 
 ```yaml
 defaults:
   loglevel: info
-
 tasks:
   - name: photos          # task name = discovery alias = log prefix
     send: true
@@ -261,102 +184,65 @@ tasks:
     allow_delete: true
 ```
 
-Each task takes the same `--send` / `--receive` / `--connect` / `--listen`
-direction as the command line: `send: true` serves, `receive:` replicates,
-`connect:` dials a host, `listen: true` waits to be dialed, both `send` and
-`receive` relay.
-
 ```bash
 local-mirror --config /etc/local-mirror.yml
 ```
 
-A config holding a single task runs directly in that one process. With two or
-more, each task gets its own child process: crashed tasks restart with backoff,
-configuration errors (exit code 2) stop only the affected task, and a SIGTERM
-to the parent shuts down everything. Server tasks on one machine share the
-52345–52354 port range, so ten at most. `secret` reaches children over their
-stdin, so it shows up neither in `ps` nor in the environment.
+Each task takes the same direction keys as the CLI (`send` / `receive` /
+`connect` / `listen`; both `send` and `receive` = relay). One task runs in-process;
+two or more each get a child process (crash → restart with backoff; config error
+= exit 2, stops only that task; SIGTERM to the parent stops all). Server tasks
+share ports 52345–52354 (ten max). `secret` reaches children over stdin — not in
+`ps`, not in the environment. **The config file must not live inside any task's
+sync root** (it would be mirrored out, secret and all); local-mirror refuses such
+a config.
 
-The config file must not live inside any task's sync root — that root gets
-mirrored to the peer, which would copy the config and its secret out with it.
-local-mirror refuses to load such a config rather than leak it.
-
-## Running as a service
-
-`service install` installs the service description file:
+## Run as a service
 
 ```bash
 local-mirror service install     # --system on Linux, --user on macOS by default
-# it prints the config path; fill in your tasks there, then:
-sudo systemctl enable --now local-mirror                    # Linux
-launchctl kickstart -k gui/$(id -u)/com.xwvike.local-mirror # macOS
+# prints the config path; fill in tasks, then:
+sudo systemctl enable --now local-mirror                    # Linux (systemd)
+launchctl kickstart -k gui/$(id -u)/com.xwvike.local-mirror # macOS (launchd)
+
+local-mirror service status      # where config + service live, and registration state
+local-mirror service uninstall   # deregister + remove service file; config kept
+local-mirror service install --dry-run   # print what it would write/run, touch nothing
 ```
 
-```bash
-local-mirror service status      # where the config and service live, and whether it is registered
-local-mirror service uninstall   # deregister and remove the service file; the config is kept
-local-mirror service install --dry-run   # print what it would write and run, and touch nothing
-```
+- Config path: `/etc/local-mirror/config.yml` (system) or
+  `~/.config/local-mirror/config.yml` (user).
+- Init systems auto-detected: **systemd**, **launchd**, **procd** (OpenWrt →
+  `/etc/init.d/local-mirror`, output to `logread`).
+- On Linux the service runs as the invoking user (not root, so synced files
+  aren't owned by root); `--run-as <user>` picks another. Keep the passphrase in
+  the config's `secret:` (mode 0600) or a `.local-mirror/key` file, never in
+  `-k` (visible in `ps`).
 
-The config lives at `/etc/local-mirror/config.yml` for a system service and
-`~/.config/local-mirror/config.yml` for a per-user one.
+## Files under `.local-mirror/`
 
-On Linux the service runs as the invoking user (not root — otherwise newly
-synced files would land as root). Pass `--run-as <user>` to pick a different
-one; reinstalling keeps whoever is already installed.
+In the sync root, excluded from syncing and from git:
 
-It knows three init systems and picks the right one automatically: **systemd**
-(most Linux distros), **launchd** (macOS) and **procd** (OpenWrt — the init
-script lands at `/etc/init.d/local-mirror` and its output goes to `logread`).
-
-Keep the passphrase in the config's `secret:` field (mode 0600) or in a
-`.local-mirror/key` file, never in a `-k` argument — command lines are visible
-in `ps`.
-
-## Peeking at the watch tiers
-
-A source scores every directory by activity and watches the hot ones in real
-time while polling the cold ones lazily; events raise a directory's score and
-idleness decays it.
-
-```bash
-local-mirror --heat -p /path/to/source   # or --heat --all for every source
-```
-
-```
-  heat   /path/to/source
-  tier1 (real-time watch) 3/512 · tier2 (lazy poll) 40 · 43 dirs
-  SCORE     TIER   EVENTS   DIRECTORY
-  128.45    tier1  3410     assets/img
-   42.10    tier1  890      src
-    3.20    tier2  12       docs
-```
-
-Directories are listed hottest first with their score, tier and event count —
-handy for checking whether the directories that are active got real-time
-watches. A sink builds no such table.
-
-## Files it creates
-
-Everything lives under `.local-mirror/` in the sync root (excluded from
-syncing and from git):
-
-- `cache.db` — the persisted directory tree; restarts skip unchanged files
-- `key` — self-managed transport key (mode 600), auto-loaded when `-k` is
-  omitted; never synced (`--gen-key` writes it, `--show-key` prints it)
-- `status.json` — live runtime status, written only while `--status` watches; discardable
-- `heat.json` — directory heat table, written only while `--heat` watches (source side); discardable
-- `logs/error.log` — runtime log, rotated at 10 MB keeping the last 3 files
-- `partial/` — chunks of interrupted downloads awaiting resume
-- `backups/` — pre-overwrite copies, only with `--allow-critical`
-- `ignore` — optional ignore patterns, merged with `-i` (restart to apply)
+| File | Purpose |
+|---|---|
+| `cache.db` | persisted directory tree; restarts skip unchanged files |
+| `key` | self-managed transport key (mode 600), auto-loaded when `-k` omitted |
+| `status.json` | live status, written only while `--status` watches; discardable |
+| `heat.json` | heat table, written only while `--heat` watches (source); discardable |
+| `logs/error.log` | runtime log, rotated at 10 MB, keeps last 3 |
+| `partial/` | chunks of interrupted downloads awaiting resume |
+| `backups/` | pre-overwrite copies, only with `--allow-critical` |
+| `ignore` | optional ignore patterns, merged with `-i` (restart to apply) |
 
 ## Development
 
-`go build ./...` and `go test ./...` are all there is to it. Releases are
-cut by pushing a `v*` tag: CI runs goreleaser, which publishes the archives,
-the Homebrew cask and the Scoop manifest in one go
-(`goreleaser release --snapshot --clean` builds everything locally without
-publishing).
+```bash
+go build ./...
+go test ./...
+```
+
+Releases are cut by pushing a `v*` tag: CI runs goreleaser, publishing the
+archives, the Homebrew cask and the Scoop manifest in one go
+(`goreleaser release --snapshot --clean` builds locally without publishing).
 
 MIT licensed.

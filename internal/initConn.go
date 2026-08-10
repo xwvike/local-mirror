@@ -17,8 +17,7 @@ import (
 // 单轮探测失败直接返回错误，重试交给 Mirror 主循环的退避逻辑。
 func InitConn() (*network.FileClient, error) {
 	// -r/--connect 收 host[:port]：IPv4 / IPv6 字面量 / 域名，端口可选。
-	// 域名交给 Dial 每次重新解析（DDNS 友好，不缓存 IP——见
-	// docs/PUBLIC_EXPOSURE.md §B.3）
+	// 域名交给 Dial 每次重新解析（DDNS 友好，不缓存 IP）。
 	ip, exactPort := network.SplitPeer(*config.RealityIP)
 	exactAddr := ""
 	if ip == "" {

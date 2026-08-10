@@ -138,7 +138,7 @@ func superviseTask(ctx context.Context, exe string, t config.TaskConfig, ref *ch
 func runTaskOnce(ctx context.Context, exe string, t config.TaskConfig, ref *childRef) (int, error) {
 	args := taskArgs(t)
 	// 口令既不进 argv（ps 可见）也不进环境变量（/proc/<pid>/environ 可见），
-	// 改由父进程写进子进程 stdin 的第一行。见 docs/CONFIG_AND_SERVICE.md §P2.3
+	// 改由父进程写进子进程 stdin 的第一行。
 	if t.Secret != "" {
 		args = append(args, "--secret-stdin")
 	}

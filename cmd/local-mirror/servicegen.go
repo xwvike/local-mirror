@@ -35,7 +35,7 @@ type serviceSpec struct {
 //
 // 没有可授权路径时（配置还空着、或某个任务的根落在关键路径上）一律不加固：
 // 与其生成 ReadWritePaths=/ 这种把加固削成零、看起来却像有加固的规则，
-// 不如明确地不加固。见 docs/CONFIG_AND_SERVICE.md §P4.3
+// 不如明确地不加固。
 func (s serviceSpec) Harden() bool { return len(s.RWPaths) > 0 }
 
 // systemdQuote 把一个字面量编码成 systemd 设置里安全的单个 token（SVC-01）。

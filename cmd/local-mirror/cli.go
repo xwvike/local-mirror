@@ -52,7 +52,7 @@ func cliFlagsSet() map[string]bool {
 	return set
 }
 
-// resolveDirection 落实方向优先 CLI（公网化支柱 A，docs/PUBLIC_EXPOSURE.md §A.5）。
+// resolveDirection 落实方向优先 CLI（公网化支柱 A）。
 // 两个正交轴：数据方向 --send/--receive × 传输 --connect/--listen；位置糖
 // `local-mirror ./dir @peer`（推）/ `local-mirror @peer ./dir`（拉）覆盖拨号常态。
 // 解析结果落进既有内部状态（Mode/RealityIP）+ 两个新格（SourceDials/SinkListens）；
@@ -125,7 +125,7 @@ func resolveDirection() error {
 	return nil
 }
 
-// resolveSecret 落实密钥自管理（公网化支柱 C，docs/PUBLIC_EXPOSURE.md）。
+// resolveSecret 落实密钥自管理（公网化支柱 C）。
 // 解析优先级：显式 -k（或内部的 --secret-stdin）＞ 密钥文件 ＞ 明文；
 // --no-encrypt 强制明文（逃生门）。--show-key / --gen-key 是子命令式旗子：
 // 前者打印后退出；后者生成后退出，除非还带了运行旗子（如 --send）才继续启动。

@@ -419,7 +419,7 @@ func init() {
 
 	// --secret-stdin 是监督进程与子进程之间的内部通道，不面向用户，故不进 PrintUsage：
 	// 口令既不进 argv（ps 可见）也不进环境变量（/proc/<pid>/environ 可见），
-	// 由父进程写入子进程 stdin 的第一行。见 docs/CONFIG_AND_SERVICE.md §P2.3
+	// 由父进程写入子进程 stdin 的第一行。
 	SecretStdin = flag.Bool("secret-stdin", false, "read the transport key from the first line of stdin (internal: supervisor to child)")
 
 	// 密钥自管理（公网化支柱 C）：监听端生成强随机 key，消灭弱口令

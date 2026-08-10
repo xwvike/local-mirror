@@ -1,6 +1,5 @@
 // Package status 维护一份运行时状态快照并周期性写入
-// <同步根>/.local-mirror/status.json（公网化运维特性，见
-// docs/PUBLIC_EXPOSURE.md 与 v1.0 后方向讨论）。
+// <同步根>/.local-mirror/status.json（公网化运维特性）。
 //
 // 设计取「快照文件」而非控制 socket：常驻进程每 flushInterval 秒、以及每次
 // 状态变化时原子写盘；`local-mirror --status` 是**另一个进程**，只读这份文件

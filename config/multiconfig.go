@@ -53,7 +53,7 @@ type MultiConfig struct {
 // 返回的任务已完成 defaults 合并与 name 缺省填充；
 // 任何校验失败返回错误（调用方按用法错误处理，exit 2）
 func LoadMultiConfig(path string) (*MultiConfig, error) {
-	// R1（docs/CONFIG_AND_SERVICE.md §P1.4）：显式指定的配置文件读不到就直接失败，
+	// R1：显式指定的配置文件读不到就直接失败，
 	// 不做任何回落。静默改用别的配置是最难排查的一类故障——
 	// 你以为在跑 A，实际跑的是 B
 	data, err := os.ReadFile(path)
@@ -118,7 +118,7 @@ func LoadMultiConfig(path string) (*MultiConfig, error) {
 		seenPaths[abs] = t.Name
 		seenNames[t.Name] = true
 
-		// R4（docs/CONFIG_AND_SERVICE.md §P1.4 / §P2.4）：配置文件不得位于同步根内部。
+		// R4：配置文件不得位于同步根内部。
 		// 这是 local-mirror 独有的约束——同步根是要被复制到对端的，
 		// 落在里面的配置文件会连同其中的明文 secret 一起被镜像出去
 		if safety.IsInside(t.Path, path) {

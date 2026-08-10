@@ -97,7 +97,7 @@ func main() {
 		}
 		// 单任务不 fork：监督进程存在的意义是管理多个子进程的生命周期，
 		// 只有一个任务时那层父进程纯属开销（多一次调度、多一层信号转发，
-		// 还让 pgrep/pkill 多一个匹配目标）。见 docs/CONFIG_AND_SERVICE.md §P3
+		// 还让 pgrep/pkill 多一个匹配目标）。
 		if len(multiCfg.Tasks) == 1 {
 			applySingleTask(multiCfg.Tasks[0])
 			// 落回下方单实例主流程，与命令行直接给旗子完全同路

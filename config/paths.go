@@ -7,7 +7,7 @@ import (
 	"runtime"
 )
 
-// 配置文件的约定落点。见 docs/CONFIG_AND_SERVICE.md §P1。
+// 配置文件的约定落点。
 //
 // ⚠️ 这些**不是搜索路径**：local-mirror 不做配置自动发现，运行时只认显式 --config。
 // 它们的唯一用途是让 `service install` 知道该把配置建在哪、

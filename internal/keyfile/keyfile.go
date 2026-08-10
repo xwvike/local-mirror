@@ -1,5 +1,5 @@
-// Package keyfile 管理 <同步根>/.local-mirror/key 密钥文件（公网化支柱 C，
-// 见 docs/PUBLIC_EXPOSURE.md §C）。监听端 --gen-key 生成强随机 key，
+// Package keyfile 管理 <同步根>/.local-mirror/key 密钥文件（公网化支柱 C）。
+// 监听端 --gen-key 生成强随机 key，
 // 拨号端显式 -k 时对称落盘；解析优先级：显式 -k ＞ 密钥文件 ＞ 明文。
 // 放工作目录而非 ~/.config：.local-mirror 是强制忽略项（key 绝不会被同步）、
 // 不依赖 $HOME、每根一把 key = 每链独立身份。
