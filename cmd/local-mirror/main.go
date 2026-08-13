@@ -282,5 +282,6 @@ func main() {
 	go status.Run(stopStatus)
 
 	app.App()
-	close(stopStatus) // 收到退出信号后停止落盘（App 返回即已收到 SIGINT/SIGTERM）
+	close(stopStatus)      // 收到退出信号后停止落盘（App 返回即已收到 SIGINT/SIGTERM）
+	status.FlushLifetime() // 优雅退出前把终身累计的尾批增量落盘（stats.json）
 }

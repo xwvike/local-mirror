@@ -154,8 +154,15 @@ func renderSingle(root string) {
 		}
 		row("Transfer", fmt.Sprintf("%s%s%s", p.Dim, state, p.Reset))
 	}
-	row("Totals", fmt.Sprintf("%s / %d files   %s· last %s%s%s",
+	row("Session", fmt.Sprintf("%s / %d files   %s· last %s%s%s",
 		humanStatusBytes(snap.Bytes), snap.Files, p.Dim, humanSince(time.Unix(snap.LastSyncUnix, 0)), fileSuffix(snap.LastFile, p), p.Reset))
+	// 终身累计：跨重启续算的传输总量（源出 stats.json）。旧版快照无此字段
+	// （since==0）时不显示，避免误导成"从纪元开始"
+	if snap.LifetimeSinceUnix > 0 {
+		row("Lifetime", fmt.Sprintf("%s / %d files   %ssince %s (%s)%s",
+			humanStatusBytes(snap.LifetimeBytes), snap.LifetimeFiles, p.Dim,
+			humanDate(time.Unix(snap.LifetimeSinceUnix, 0)), humanUptime(snap.LifetimeSinceUnix), p.Reset))
+	}
 	if snap.Errors > 0 {
 		row("Errors", fmt.Sprintf("%s%d%s", p.Yellow, snap.Errors, p.Reset))
 	} else {

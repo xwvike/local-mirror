@@ -1,6 +1,7 @@
 package status
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,8 @@ func reset() {
 	observeDir = ""
 	observedWriters = nil
 	enabled = false
+	lifePath = ""
+	lifeFlushedBytes = 0
 	mu.Unlock()
 }
 
@@ -147,6 +150,78 @@ func TestCounters(t *testing.T) {
 	}
 }
 
+// TestLifetimePersists 终身累计跨"重启"续算：Init→传输→Flush 落 stats.json，
+// 再次 Init 同一根应载回累计值并在其上继续叠加；会话计数则重启归零，
+// SinceUnix 保持首次起算点不变
+func TestLifetimePersists(t *testing.T) {
+	reset()
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, ".local-mirror"), 0755)
+
+	first := time.Now().Add(-time.Hour).Unix()
+	Init(root, "v1", "aa", "send · source", "listen", "inbound", false, first)
+	if snap.LifetimeSinceUnix != first {
+		t.Fatalf("first run since = %d, want %d", snap.LifetimeSinceUnix, first)
+	}
+	RecordFile("a.txt", 100)
+	RecordFile("b.bin", 900)
+	FlushLifetime()
+
+	// 模拟重启：清空内存态，用一个更晚的 started 重新 Init 同一根（stats.json 仍在盘上）
+	reset()
+	Init(root, "v1", "aa", "send · source", "listen", "inbound", false, time.Now().Unix())
+	if snap.LifetimeFiles != 2 || snap.LifetimeBytes != 1000 {
+		t.Fatalf("lifetime not restored: %d files / %d bytes", snap.LifetimeFiles, snap.LifetimeBytes)
+	}
+	if snap.LifetimeSinceUnix != first {
+		t.Fatalf("since should persist across restart: got %d, want %d", snap.LifetimeSinceUnix, first)
+	}
+	if snap.Files != 0 || snap.Bytes != 0 {
+		t.Fatalf("session counters should reset on restart: %d/%d", snap.Files, snap.Bytes)
+	}
+
+	// 续算：再传一个，终身在恢复值上叠加，会话只计本轮
+	RecordFile("c.dat", 500)
+	if snap.LifetimeFiles != 3 || snap.LifetimeBytes != 1500 {
+		t.Fatalf("lifetime should keep accumulating: %d files / %d bytes", snap.LifetimeFiles, snap.LifetimeBytes)
+	}
+	if snap.Files != 1 || snap.Bytes != 500 {
+		t.Fatalf("session should count only this run: %d/%d", snap.Files, snap.Bytes)
+	}
+}
+
+// TestLifetimeAutoFlushByBytes 落盘阈值以传输量为准而非文件数：累计不足阈值
+// 不落盘（stats.json 不存在），跨过阈值即自动落盘。文件数无关——一个大文件
+// 就能触发，上万个小文件也只在攒够字节时才落
+func TestLifetimeAutoFlushByBytes(t *testing.T) {
+	reset()
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, ".local-mirror"), 0755)
+	Init(root, "v1", "aa", "send · source", "listen", "inbound", false, time.Now().Unix())
+	statsPath := filepath.Join(root, ".local-mirror", "stats.json")
+
+	// 不足 1 MiB：多个文件但字节没攒够 → 不自动落盘
+	RecordFile("a", 200*1024)
+	RecordFile("b", 300*1024)
+	if _, err := os.Stat(statsPath); !os.IsNotExist(err) {
+		t.Fatalf("under threshold should not auto-flush, but stats.json exists")
+	}
+
+	// 一个大文件一步跨过阈值 → 自动落盘，且落的是含它的累计值
+	RecordFile("big", 2*1024*1024)
+	data, err := os.ReadFile(statsPath)
+	if err != nil {
+		t.Fatalf("crossing threshold should auto-flush stats.json: %v", err)
+	}
+	var ls lifetimeState
+	if err := json.Unmarshal(data, &ls); err != nil {
+		t.Fatalf("stats.json unparsable: %v", err)
+	}
+	if ls.Files != 3 || ls.Bytes != 200*1024+300*1024+2*1024*1024 {
+		t.Fatalf("flushed totals wrong: %d files / %d bytes", ls.Files, ls.Bytes)
+	}
+}
+
 // TestSessionBalance up/down 平衡后 Connected 归 false，Detail 清空
 func TestSessionBalance(t *testing.T) {
 	reset()
@@ -232,8 +307,8 @@ func TestResourceSampling(t *testing.T) {
 	if s.Goroutines <= 0 {
 		t.Fatalf("goroutines should be positive, got %d", s.Goroutines)
 	}
-	if s.Schema != 2 {
-		t.Fatalf("schema should be 2, got %d", s.Schema)
+	if s.Schema != SchemaVersion {
+		t.Fatalf("schema should be %d, got %d", SchemaVersion, s.Schema)
 	}
 }
 

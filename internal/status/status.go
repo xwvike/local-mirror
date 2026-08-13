@@ -24,7 +24,8 @@ import (
 
 // SchemaVersion status.json 的结构版本，读端据此容错跨版本字段变化。
 // v2：新增进行中传输（current_*）、速率、自采资源（cpu/rss/fd/heap）
-const SchemaVersion = 2
+// v3：新增终身累计传输量（lifetime_*），跨重启续算，真凭落 stats.json
+const SchemaVersion = 3
 
 // idleInterval/activeInterval 落盘节奏：连接活跃时 1s（供 --status 实时刷新
 // 看到速率/进度/资源），空闲时 5s。读端以 3×idleInterval 为陈旧判据
@@ -60,9 +61,15 @@ type Snapshot struct {
 	Detail       string `json:"detail"`         // 人读的连接细节
 	LastSyncUnix int64  `json:"last_sync_unix"` // 最近一次文件传输完成时刻
 	LastFile     string `json:"last_file"`      // 最近传输完成的文件（相对路径）
-	Files        uint64 `json:"files"`          // 累计传输文件数
-	Bytes        uint64 `json:"bytes"`          // 累计传输字节数
+	Files        uint64 `json:"files"`          // 累计传输文件数（本次会话，重启归零）
+	Bytes        uint64 `json:"bytes"`          // 累计传输字节数（本次会话，重启归零）
 	Errors       uint64 `json:"errors"`         // 累计连接级错误数
+
+	// 终身累计（跨重启续算）：Init 时从 .local-mirror/stats.json 载入，每次
+	// RecordFile 累加，满批量/优雅退出时回写。删了 stats.json = 从此刻重新计数
+	LifetimeFiles     uint64 `json:"lifetime_files"`
+	LifetimeBytes     uint64 `json:"lifetime_bytes"`
+	LifetimeSinceUnix int64  `json:"lifetime_since_unix"` // 首次开始计数的时刻
 
 	// 进行中的传输。收方下载严格串行（协议单飞行），故精确；
 	// 发方扇出多下游时为最后写入者（展示近似，不影响累计计数）
@@ -141,6 +148,18 @@ func Init(root, version, instance, direction, transport, peer string, encrypted 
 	path = filepath.Join(root, ".local-mirror", "status.json")
 	observeDir = filepath.Join(root, ".local-mirror", "observe")
 	_ = os.MkdirAll(observeDir, 0755)
+
+	// 载入终身累计（跨重启续算）；文件缺失或损坏 = 从本次启动时刻起算
+	lifePath = filepath.Join(root, ".local-mirror", "stats.json")
+	if ls := loadLifetimeFile(lifePath); ls != nil {
+		snap.LifetimeFiles = ls.Files
+		snap.LifetimeBytes = ls.Bytes
+		snap.LifetimeSinceUnix = ls.SinceUnix
+	} else {
+		snap.LifetimeSinceUnix = started
+	}
+	lifeFlushedBytes = snap.LifetimeBytes
+
 	enabled = true
 }
 
@@ -349,13 +368,22 @@ func RecordFile(relPath string, n uint64) {
 	mu.Lock()
 	snap.Files++
 	snap.Bytes += n
+	snap.LifetimeFiles++
+	snap.LifetimeBytes += n
 	snap.LastFile = relPath
 	snap.LastSyncUnix = time.Now().Unix()
 	snap.CurrentFile = ""
 	snap.CurrentDone = 0
 	snap.CurrentTotal = 0
 	addRateSampleLocked(time.Now(), snap.Bytes)
+	// 满传输量阈值落一次 stats.json：以字节而非文件数为准，大文件也不会让持久化
+	// 落后一大截；只在文件传完时判定，绝不切分在途大文件（见 lifeFlushEveryBytes）。
+	// 空闲期无 RecordFile 调用 → 零额外写盘，保住省电特性
+	needFlush := snap.LifetimeBytes-lifeFlushedBytes >= lifeFlushEveryBytes
 	mu.Unlock()
+	if needFlush {
+		flushLifetime()
+	}
 	signal()
 }
 

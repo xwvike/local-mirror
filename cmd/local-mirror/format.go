@@ -57,6 +57,18 @@ func humanUptime(started int64) string {
 	}
 }
 
+// humanDate 绝对日期，供终身累计的"since"起算点展示。今年内省略年份
+// （Aug 10 14:24），跨年带年份（2025 Dec 3）
+func humanDate(t time.Time) string {
+	if t.IsZero() || t.Unix() == 0 {
+		return "—"
+	}
+	if t.Year() == time.Now().Year() {
+		return t.Format("Jan 2 15:04")
+	}
+	return t.Format("2006 Jan 2")
+}
+
 func humanRate(bps float64) string {
 	switch {
 	case bps >= 1<<20:
