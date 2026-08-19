@@ -323,6 +323,9 @@ func AddNodes(nodes []*Node) error {
 		return nil
 	})
 	log.Debugf("Added %d directories and %d files to the database", dirCount, fileCount)
+	if _err == nil {
+		bumpTreeGen() // 树已变，令 DirHashes 的 rollup 缓存失效
+	}
 	return _err
 }
 
@@ -332,7 +335,7 @@ func DeleteNodes(nodePaths []string) error {
 		return nil
 	}
 
-	return DB.Update(func(tx *bolt.Tx) error {
+	err := DB.Update(func(tx *bolt.Tx) error {
 		nodesBucket := tx.Bucket([]byte("nodes"))
 		childrenBucket := tx.Bucket([]byte("children"))
 		pathIndexBucket := tx.Bucket([]byte("path_index"))
@@ -522,6 +525,10 @@ func DeleteNodes(nodePaths []string) error {
 		log.Debugf("Deleted %d directories and %d files from the database", totalDirCount, totalFileCount)
 		return nil
 	})
+	if err == nil {
+		bumpTreeGen() // 树已变，令 DirHashes 的 rollup 缓存失效
+	}
+	return err
 }
 
 // DeleteNode 保持向后兼容性

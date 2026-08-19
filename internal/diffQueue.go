@@ -57,9 +57,16 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 			})
 			continue
 		}
-		// 大小不同肯定变了；哈希仅在两侧都算出来时才可比
-		if nodeA.Size != nodeB.Size ||
-			(nodeA.Hash != "" && nodeB.Hash != "" && nodeA.Hash != nodeB.Hash) {
+		// 仅**文件**比大小/哈希判 modify。目录不参与：目录的 Size 是文件系统自报的目录项
+		// 大小，跨文件系统天然不同（源端 APFS vs 汇端 ext4，同名空目录 size 就不一样），
+		// 若据此判 modify，会让每个目录每轮全量扫描都被标记为变更——既让目录逐个空转
+		// processDirectoryDiff（MkdirAll + AddNodes 写库），又使目录走 diff 循环的下钻 push
+		// 绕过按 rollup 的 Merkle 剪枝，剪枝形同虚设。目录的结构变化（内部文件增删）由
+		// 下钻进该目录后比对其**内容**得出（那里文件才显示为 create/delete），不靠目录自身的
+		// size。目录只有 create/delete/retype 三种真实差异，没有 modify。
+		if !nodeA.IsDir &&
+			(nodeA.Size != nodeB.Size ||
+				(nodeA.Hash != "" && nodeB.Hash != "" && nodeA.Hash != nodeB.Hash)) {
 			diffs = append(diffs, DiffResult{
 				Path:    nodeA.Path,
 				IsDir:   nodeA.IsDir,

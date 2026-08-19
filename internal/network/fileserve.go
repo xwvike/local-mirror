@@ -124,7 +124,22 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 		c.dirCache = &dirSnapshot{rootPath: treeRequest.RootPath, nodes: entries, expiry: time.Now().Add(dirSnapshotTTL)}
 	}
 	page, next := pageSortedEntries(entries, treeRequest.ContinueFrom, treePageMaxEntries)
-	treeData, err := json.Marshal(wirePageCopy(page))
+	wire := wirePageCopy(page)
+	// Merkle rollup 注入：给目录条目填上其子树指纹（Node.Hash 对目录原本为空），
+	// 供汇端全量扫描据此剪枝未变子树。按原始 page[i].Path（本地分隔符）查表，写到
+	// 已转 "/" 的 wire[i]。DirHashes 出错则跳过——目录 Hash 留空，汇端老实全走一遍（兜底）。
+	if dirHashes, dhErr := tree.DirHashes(); dhErr == nil {
+		for i := range wire {
+			if page[i].IsDir {
+				if h, ok := dirHashes[page[i].Path]; ok {
+					wire[i].Hash = h
+				}
+			}
+		}
+	} else {
+		log.Warnf("dir rollup hashes unavailable, tree response omits them (client will full-walk): %v", dhErr)
+	}
+	treeData, err := json.Marshal(wire)
 	if err != nil {
 		return fmt.Errorf("error marshalling tree leaf for path %s: %v", treeRequest.RootPath, err)
 	}
@@ -219,6 +234,19 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// 幽灵节点自愈（#3）：该路径已通过 authorizeServeFile（说明它登记在源端树里、
+			// 哈希非空），磁盘上却不存在——树登记了给不出的文件。多因短命的生成文件
+			// （如 zz_*_test.go）建后即删、watcher 没来得及销账。若不剔除，它会在每轮
+			// 全量扫描里被反复 diff→下载→404，那棵子树的 rollup 永不与汇端收敛，
+			// 死循环白烧流量。就地从树里剔除，rollup 随即收敛、循环终止；文件若真回来，
+			// watcher 会重新登记。DeleteNode 对"本就不在树"的路径是安全 no-op。
+			if node != nil {
+				if derr := tree.DeleteNode(rel); derr != nil {
+					log.Warnf("failed to evict phantom tree node %s (advertised but missing on disk): %v", rel, derr)
+				} else {
+					log.Infof("evicted phantom tree node %s (advertised but missing on disk)", rel)
+				}
+			}
 			return &wireError{Code: ErrCodeNotFound, Path: fileRequest.FilePath, Message: "file not found"}
 		}
 		return fmt.Errorf("error getting file info: %s :%v", fileRequest.FilePath, err)

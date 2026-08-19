@@ -23,6 +23,13 @@ import (
 // NextLevel 存放待下钻的目录，由 drainNextLevel 消费
 var NextLevel = stack.NewStack[DiffResult]()
 
+// localDirHashes 是本次全量扫描起点的本地目录 rollup 快照（path→哈希）。
+// fullScan 开始时置为 tree.DirHashes() 的结果，getDirectory 的 recurseAll 分支据此剪枝：
+// 子目录源、汇 rollup 相等即整棵子树无 diff，不下钻。nil 表示不剪枝（拿不到快照 / 非全量扫描），
+// 退化为逐目录全走的老行为。仅全量扫描（recurseAll=true）读它，长轮询增量路径不受影响。
+// 任务由 taskMutex 串行，无需加锁。
+var localDirHashes map[string]string
+
 var taskMutex sync.Mutex // 确保任务串行执行
 
 // lastChangeCursor 记录变更查询已覆盖到的服务端时刻（unix 秒）。
@@ -253,6 +260,17 @@ func fullScan(fileClient *network.FileClient) error {
 		Action: "create",
 		Name:   "root",
 	})
+
+	// Merkle 剪枝快照：取本地各目录 rollup（此刻本地树已按需重建，反映磁盘现状）。
+	// getDirectory 会拿它和源端下发的目录 rollup 比对，相等的子树整棵跳过——静默期
+	// 全量扫描因此只拉一次根目录清单，而非把整棵 6 万文件的树逐目录搬回来（idle-traffic 根治）。
+	// 出错则置 nil：不剪枝，退回逐目录全走的老行为，正确性不打折。
+	if dh, err := tree.DirHashes(); err != nil {
+		log.Warnf("full scan: local dir rollup snapshot unavailable, pruning disabled this round: %v", err)
+		localDirHashes = nil
+	} else {
+		localDirHashes = dh
+	}
 
 	if err := drainNextLevel(fileClient, true); err != nil {
 		return err

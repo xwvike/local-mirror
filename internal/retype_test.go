@@ -37,3 +37,22 @@ func TestFindDifferencesTypeSwap(t *testing.T) {
 		t.Fatalf("同类型同内容不该产出 diff，实际 %+v", d)
 	}
 }
+
+// TestFindDifferencesDirSizeIgnored 守住 Merkle 剪枝的前提：同名目录即便 Size 不同（跨文件
+// 系统天然如此，源 APFS vs 汇 ext4），也不得产出 modify——否则每个目录每轮全量扫描都被标记
+// 变更，走 diff 循环的下钻 push 绕过 rollup 剪枝，剪枝失效、流量照烧。
+func TestFindDifferencesDirSizeIgnored(t *testing.T) {
+	// 同路径、都是目录、Size 不同（4096 vs 64，模拟不同文件系统的目录项大小）
+	a := []tree.Node{{Path: "d", IsDir: true, Size: 4096}}
+	b := []tree.Node{{Path: "d", IsDir: true, Size: 64}}
+	if d := FindDifferences(a, b); len(d) != 0 {
+		t.Fatalf("同名目录 Size 不同不应产出 diff（目录无 modify），实际 %+v", d)
+	}
+
+	// 对照：文件 Size 不同仍必须是 modify（Option B 只豁免目录，不动文件）
+	af := []tree.Node{{Path: "f", IsDir: false, Size: 20, Hash: "h2"}}
+	bf := []tree.Node{{Path: "f", IsDir: false, Size: 10, Hash: "h1"}}
+	if d := FindDifferences(af, bf); len(d) != 1 || d[0].Action != "modify" || d[0].IsDir {
+		t.Fatalf("文件 Size 变化仍应产出 modify，实际 %+v", d)
+	}
+}
