@@ -8,7 +8,7 @@
 #
 # tasks:
 #   - name: backup            # 实例别名，缺省取 path 的最后一段
-#     receive: true           # 本机是汇（数据流入）；源用 send: true
+#     receive: true           # 本机是接收端（数据流入）；发送端用 send: true
 #     listen: true            # 等对端拨入；主动拨出用 connect: host[:port]
 #     path: /srv/backup       # 同步根（必填）
 #     allow_delete: true      # 忠实镜像（含删除）；不给则只增不删

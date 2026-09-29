@@ -9,8 +9,8 @@
 
 [English](README.md) | 简体中文
 
-基于 TCP 的单向目录镜像。一端是**源**（`--send`），另一端保持它的实时副本、作为
-**汇**（`--receive`）。同一进程同时给两个旗子即为中继（A → B → C）。
+基于 TCP 的单向目录镜像。一端是**发送端**（`--send`），另一端作为**接收端**
+（`--receive`），保持它的实时副本。同一进程同时给两个旗子即为中继（A → B → C）。
 
 ```
 ┌─────────────┐   tree / changes / files   ┌─────────────┐
@@ -40,36 +40,37 @@ go build -o local-mirror ./cmd/local-mirror
 ## 常用命令
 
 ```bash
-# ── 1. 局域网：源监听，汇拨号 ─────────────────────────────────────────────────
-# 在 A（源）上：--gen-key 生成一把 key（已有则沿用），并打印对端该用的完整命令
+# ── 1. 局域网：发送端监听，接收端拨号 ─────────────────────────────────────────
+# 在 A（发送端）上：--gen-key 生成一把 key（已有则沿用），
+# 并打印对端该用的完整命令
 local-mirror --send -p /path/to/source --gen-key
-# 在 B（汇）上；192.168.1.100 是 A 的地址
+# 在 B（接收端）上；192.168.1.100 是 A 的地址
 local-mirror --receive --connect 192.168.1.100 -p /path/to/replica -k <printed-key>
 
-# ── 2. 局域网零配置：汇通过 UDP 自动发现源 ──────────────────────────────────
-# 在 A（源）上
+# ── 2. 局域网零配置：接收端通过 UDP 自动发现发送端 ────────────────────────────
+# 在 A（发送端）上
 local-mirror --send -p /path/to/source --gen-key
-# 在 B（汇）上：扫描局域网，选择 A
+# 在 B（接收端）上：扫描局域网，选择 A
 local-mirror --receive -p /path/to/replica -k <printed-key>
 
-# ── 3. 公网推送：可达的一端（汇）监听，源拨出去 ─────────────────────────────
-# 在 VPS（汇）上
+# ── 3. 公网推送：可达的一端（接收端）监听，发送端拨出去 ───────────────────────
+# 在 VPS（接收端）上
 local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key
-# 在家里（源）
+# 在家里（发送端）
 local-mirror --send --connect vps.example.net:52345 -p /path/to/source -k <printed-key>
 
-# ── 4. 同样的推送，rsync 风格位置写法（./dir @host = 推）──────────────────
-# 在 VPS（汇）上
+# ── 4. 同样的推送，rsync 风格位置写法（./dir @host = 推） ─────────────────────
+# 在 VPS（接收端）上
 local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key
-# 在家里（源）
+# 在家里（发送端）
 local-mirror -k <printed-key> ./path/to/source @vps.example.net:52345
 
-# ── 5. 中继 A → B → C：B 从 A 拉取，同时供给 C ───────────────────────────────
-# 在 A（源，192.168.1.100）上
+# ── 5. 中继 A → B → C：B 从 A 拉取，同时供给 C ────────────────────────────────
+# 在 A（发送端，192.168.1.100）上
 local-mirror --send -p /path/to/source --gen-key
 # 在 B（中继，192.168.1.101）上
 local-mirror --send --receive --connect 192.168.1.100 -p /path/to/relay -k <printed-key>
-# 在 C（汇）上
+# 在 C（接收端）上
 local-mirror --receive --connect 192.168.1.101 -p /path/to/replica -k <printed-key>
 ```
 
@@ -80,24 +81,24 @@ local-mirror --receive --connect 192.168.1.101 -p /path/to/replica -k <printed-k
 
 | 旗子 | 说明 | 默认 |
 |---|---|---|
-| `--send` | 本端是源：数据流出 | |
-| `--receive` | 本端是汇：数据流入（两个都给 = 中继） | |
+| `--send` | 本端是发送端：数据流出 | |
+| `--receive` | 本端是接收端：数据流入（两个都给 = 中继） | |
 | `--connect` | 拨号对端 `host[:port]`；对端须在监听 | |
 | `--listen` | 等待对端拨入 | |
 | `-p, --path` | 同步根；状态存在其下的 `.local-mirror/` | 工作目录 |
 | `-a, --alias` | 发现列表中显示的实例名 | 主机名 |
 | `-i, --ignore` | 额外忽略模式，逗号分隔 | |
 | `--config` | YAML 配置文件（与其他旗子互斥） | |
-| `--allow-delete` | 删除汇端上游已不存在的多余文件 | 关 |
+| `--allow-delete` | 接收端删除发送端已不存在的多余文件 | 关 |
 | `--allow-critical` | 允许在关键路径上同步，覆盖前备份原文件 | 关 |
 | `-k, --secret` | 传输加密密钥（或 YAML 里的 `secret:`） | |
 | `--gen-key` | 生成随机 key 写入 `.local-mirror/key`（已有则沿用）并打印；带运行 flag 时接着启动 | |
 | `--show-key` | 打印已有的 key 文件后退出 | |
 | `--no-encrypt` | 即使有 key 文件也强制明文 | |
 | `--status` | 打印运行中实例的状态后退出（`--all` 列全部） | |
-| `--heat` | 打印运行中源的目录热度表后退出 | |
-| `-c, --cooldown` | 汇端全量重扫间隔（秒） | `1800` |
-| `-f, --filebuffersize` | 源端传输分块大小（字节） | `65536` |
+| `--heat` | 打印运行中发送端的目录热度表后退出 | |
+| `-c, --cooldown` | 接收端全量重扫间隔（秒） | `1800` |
+| `-f, --filebuffersize` | 发送端传输分块大小（字节） | `65536` |
 | `-l, --loglevel` | `debug` / `info` / `warn` / `error` | `error` |
 
 
@@ -107,27 +108,27 @@ local-mirror --receive --connect 192.168.1.101 -p /path/to/replica -k <printed-k
 `--listen`），自由组合。
 
 - `--connect` 支持域名、IPv4、IPv6 字面量，端口可选（`--connect [2001:db8::1]:52345`）。
-- `--receive` 不给 `--connect` 也不给 `--listen` → 局域网发现：UDP 扫描、交互选源（见常用命令第 2 组）。
-- 监听的汇一次只服务一个源；会话进行中其他源拨入会被拒绝，并按退避重拨。
+- `--receive` 不给 `--connect` 也不给 `--listen` → 局域网发现：UDP 扫描、交互选择发送端（见常用命令第 2 组）。
+- 监听的接收端一次只服务一个发送端；会话进行中其他发送端拨入会被拒绝，并按退避重拨。
 
 ## 忽略模式
 
 模式来自 `-i` 和/或 `.local-mirror/ignore` 文件（一行一条，`#` 注释）。按路径分段、
 任意深度匹配，支持 `* ? []` 通配。
 
-- 源端命中即不扫描、不供给（目录枚举与直接文件请求都拒绝）；汇端命中即不下载、不删除。
+- 发送端命中即不扫描、不供给（目录枚举与直接文件请求都拒绝）；接收端命中即不下载、不删除。
 - `.local-mirror`（自身状态目录）永远排除，无法取消忽略。
 - `.git`、`.DS_Store` 默认排除但可移除——模式前缀 `!` 即同步（如 `-i '!.git'`）。
   `.git` 复制仓库优先用 git push/fetch，而非文件级镜像。
 
 ## 同步什么
 
-- 普通文件（内容与修改时间）和目录，以及两者的权限位（`rwx`）。汇端目录始终保留属主
+- 普通文件（内容与修改时间）和目录，以及两者的权限位（`rwx`）。接收端目录始终保留属主
   `rwx`。与 Windows 之间不同步权限。
 - 符号链接、socket、FIFO、设备文件不同步。
-- 源端读不了的内容（文件或整个目录）跳过，汇端副本原样保留，即便开了 `--allow-delete`；
+- 发送端读不了的内容（文件或整个目录）跳过，接收端副本原样保留，即便开了 `--allow-delete`；
   恢复可读后自动续上。
-- 汇端本地被改动的权限，会在其定期本地重扫时按源端改回。
+- 接收端本地被改动的权限，会在其定期本地重扫时按发送端改回。
 
 ## 删除保护
 
@@ -152,7 +153,7 @@ Noise 协议（NNpsk0）。两端同一个 `-k` 口令 → 双向认证 + 前向
   并给出对端配套的命令。key 文件已存在则沿用，重启时原样重跑同一条命令即可。
   带运行 flag 时同一条命令直接启动。自带口令请用长随机串（`openssl rand -base64 24`）。
 - 解析优先级：显式 `-k`（或 YAML 的 `secret:`）＞ `.local-mirror/key` 文件 ＞ 明文。
-  用 `-k` 启动的一端会把 key 存进自己的 key 文件（汇端，以及拨出的源端），之后可省 `-k`。
+  用 `-k` 启动的一端会把 key 存进自己的 key 文件（接收端，以及拨出的发送端），之后可省 `-k`。
 - `--show-key` 打印文件；`--gen-key --force` 重新生成。在监听端重新生成会断开所有已连
   拨号端。
 
@@ -163,7 +164,7 @@ Noise 协议（NNpsk0）。两端同一个 `-k` 口令 → 双向认证 + 前向
 
 ```bash
 local-mirror --status -p /path/to/source     # 加 --all 列出所有进程
-local-mirror --heat   -p /path/to/source     # 仅源端；汇端没有热度表
+local-mirror --heat   -p /path/to/source     # 仅发送端；接收端没有热度表
 ```
 
 `--all` 从进程表找出本机所有实例；macOS 上只能找到以绝对路径启动的实例。
@@ -179,7 +180,7 @@ local-mirror --heat   -p /path/to/source     # 仅源端；汇端没有热度表
 ──────────────────────────────────────────────────────
 ```
 
-`--heat`：源按活跃度给每个目录打分，热的实时监听（tier1）、冷的懒轮询（tier2）。表按
+`--heat`：发送端按活跃度给每个目录打分，热的实时监听（tier1）、冷的懒轮询（tier2）。表按
 热度从高到低列出——用来确认活跃目录拿到了实时监听。
 
 ## 多任务（YAML）
@@ -243,7 +244,7 @@ local-mirror service install --dry-run   # 只打印将写入/执行的内容，
 | `cache.db` | 持久化目录树；重启时跳过未变文件 |
 | `key` | 自管理传输 key（0600），省略 `-k` 时自动加载 |
 | `status.json` | 实时状态，仅 `--status` 观察时写；可丢 |
-| `heat.json` | 热度表，仅 `--heat` 观察时写（源端）；可丢 |
+| `heat.json` | 热度表，仅 `--heat` 观察时写（发送端）；可丢 |
 | `logs/error.log` | 运行日志，10 MB 轮转，保留最近 3 份 |
 | `partial/` | 中断下载的分块，等待续传 |
 | `backups/` | 覆盖前副本，仅 `--allow-critical` 时产生 |

@@ -12,7 +12,7 @@
 #   receive 拉取镜像、两者都给即中继
 # - 同一台机器里监听端口的任务共享 TCP 端口段 52345-52354,最多 10 个
 # - receive 任务建议显式写 connect;留空会走非交互自动发现,局域网里
-#   恰好一台源端时才能自动连接。零台(上游可能还没启动)exit 1 会被退避
+#   恰好一台发送端时才能自动连接。零台(上游可能还没启动)exit 1 会被退避
 #   重启再扫;多台是配置歧义,exit 2 判永久错误
 # - secret 经 stdin 传给子进程,既不出现在 ps 的命令行里、也不进环境变量;
 #   也可以不写,改在各任务的同步根下放密钥文件(--gen-key 生成 .local-mirror/key)
@@ -23,22 +23,22 @@
 # 各任务字段留空时的回退值(可选;name/direction/path 不参与回退)
 defaults:
   loglevel: info
-  # 下面的 photos/docs 是监听源,必须有密钥;所有任务共享这一个(改成你自己的强随机串)
+  # 下面的 photos/docs 是监听的发送端,必须有密钥;所有任务共享这一个(改成你自己的强随机串)
   secret: change-me-to-a-strong-random-key
 
 tasks:
-  # 源:共享照片目录,忽略 RAW 缓存与日志
+  # 发送端:共享照片目录,忽略 RAW 缓存与日志
   - name: photos
     send: true
     path: /srv/photos
     ignore: [cache, "*.log"]
 
-  # 源:共享文档目录
+  # 发送端:共享文档目录
   - name: docs
     send: true
     path: /srv/docs
 
-  # 汇:从 NAS 备份下来,完全忠实镜像(允许删除)
+  # 接收端:从 NAS 备份下来,完全忠实镜像(允许删除)
   - name: nas-backup
     receive: true
     connect: 192.168.1.100
@@ -46,7 +46,7 @@ tasks:
     allow_delete: true
     cooldown: 3600
 
-  # 汇:同步到关键路径(如 /etc)需显式解锁 allow_critical;
+  # 接收端:同步到关键路径(如 /etc)需显式解锁 allow_critical;
   # 默认这些路径连同步都拒绝,解锁后首次覆盖会备份原文件到 .local-mirror/backups
   # - name: etc-mirror
   #   receive: true
