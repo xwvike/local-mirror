@@ -182,16 +182,25 @@ func resolveSecret() error {
 		if *config.NoEncrypt {
 			return fmt.Errorf("--gen-key conflicts with --no-encrypt")
 		}
-		key, err := keyfile.Generate(root, *config.Force)
+		// 已有 key 且未 --force：沿用它。重启时照原命令（含 --gen-key）再跑一遍必须能起来；
+		// 换 key 会让所有持旧 key 的拨号端断开，只在显式 --force 时做
+		key, err := keyfile.Load(root)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("generated key file: %s (mode 600)\n", keyfile.Path(root))
+		if key != "" && !*config.Force {
+			fmt.Printf("key file exists, reusing it: %s (--force regenerates it and disconnects every dialer holding the old one)\n", keyfile.Path(root))
+		} else {
+			if key, err = keyfile.Generate(root, *config.Force); err != nil {
+				return err
+			}
+			fmt.Printf("generated key file: %s (mode 600)\n", keyfile.Path(root))
+		}
 		fmt.Printf("fingerprint:        %s\n", keyfile.Fingerprint(key))
 		if isTTY {
 			fmt.Printf("key:                %s\n\n", key)
-			fmt.Printf("on the dialing end (fill in this machine's address):\n")
-			fmt.Printf("  local-mirror --receive --connect <host> -p <dir> -k '%s'\n", key)
+			label, cmd := peerKeyHint(key)
+			fmt.Printf("%s\n  %s\n", label, cmd)
 		} else {
 			fmt.Printf("(key not shown: stdout is not a terminal; run --show-key in one)\n")
 		}
@@ -219,9 +228,9 @@ func resolveSecret() error {
 
 	if *config.Secret != "" {
 		// 显式最高优先（least surprise：文件优先会让 -k newvalue 被静默忽略）。
-		// 拨号端对称持有：把 key 落进自己的密钥文件，下次启动可省 -k；
+		// 汇端与拨出的源端对称持有：把 key 落进自己的密钥文件，下次启动可省 -k；
 		// 内容一致时静默跳过，落盘失败不致命（本次仍按 -k 跑）
-		if config.SyncsFromUpstream() {
+		if config.SyncsFromUpstream() || config.SourceDials {
 			written, err := keyfile.Save(root, *config.Secret)
 			if err != nil {
 				log.Warnf("failed to save the key file (still running with -k): %v", err)
@@ -243,6 +252,25 @@ func resolveSecret() error {
 		config.SecretFromKeyFile = true
 	}
 	return nil
+}
+
+// peerKeyHint 推出对端配套的启动命令：数据方向取反、传输方向互补。
+// 中继的 key 保护的是它自己的监听口，对端是拨进来的下游汇。
+// 单独 --gen-key 未给方向时本端将来是源是汇都有可能，不猜，只提示带上同一个 key
+func peerKeyHint(key string) (label, cmd string) {
+	set := cliFlagsSet()
+	if !*config.SendFlag && !*config.ReceiveFlag && !set["m"] && !set["mode"] {
+		return "on the other end, pass the same key:", fmt.Sprintf("local-mirror ... -k '%s'", key)
+	}
+	peerDir := "--send"
+	if config.ServesDownstream() {
+		peerDir = "--receive"
+	}
+	if config.TransportListens() {
+		return "on the dialing end (fill in this machine's address):",
+			fmt.Sprintf("local-mirror %s --connect <host> -p <dir> -k '%s'", peerDir, key)
+	}
+	return "on the listening end:", fmt.Sprintf("local-mirror %s --listen -p <dir> -k '%s'", peerDir, key)
 }
 
 // runDiscovery 扫描局域网服务端并确定上游地址，写入

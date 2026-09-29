@@ -131,9 +131,16 @@ func (s *fileServer) StartDial(addr string) {
 		}
 		msgType, body, err := receiveMessage(conn)
 		if err != nil {
-			log.Warnf("sink %s did not speak within %v (a healthy sink handshakes immediately; "+
-				"are both ends configured --send, or is this the wrong peer?): %v",
-				addr, dialFirstMessageTimeout, err)
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				// 汇端先关了连接：它在加密握手阶段就拒绝了我们（只有一端有 key、两端 key
+				// 不同），或者正忙于另一个会话
+				log.Warnf("sink %s closed the connection before handshaking: usually an encryption mismatch "+
+					"(a key on one end only, or different keys), or the sink is busy with another source: %v", addr, err)
+			} else {
+				log.Warnf("sink %s did not speak within %v (a healthy sink handshakes immediately; "+
+					"are both ends configured --send, or is this the wrong peer?): %v",
+					addr, dialFirstMessageTimeout, err)
+			}
 			conn.Close()
 			time.Sleep(delay)
 			delay = min(delay*2, maxDelay)

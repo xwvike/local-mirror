@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"time"
 
 	"github.com/flynn/noise"
@@ -162,6 +163,9 @@ func SecureConn(conn net.Conn, secret string, initiator bool) (net.Conn, error) 
 	// <- psk, e
 	first, err := readFrame(conn, noiseMaxHandshakeFrame)
 	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, fmt.Errorf("noise handshake recv: peer sent nothing within %v (is encryption enabled on the peer?): %w", noiseHandshakeTimeout, err)
+		}
 		return nil, fmt.Errorf("noise handshake recv: %w", err)
 	}
 	if _, _, _, err := hs.ReadMessage(nil, first); err != nil {
