@@ -154,7 +154,7 @@ func SecureConn(conn net.Conn, secret string, initiator bool) (net.Conn, error) 
 		}
 		_, cs0, cs1, err := hs.ReadMessage(nil, reply)
 		if err != nil {
-			return nil, fmt.Errorf("noise handshake failed (do the passphrases match?): %w", err)
+			return nil, fmt.Errorf("noise handshake failed (the passphrases may differ): %w", err)
 		}
 		// cs0 固定用于 发起方→响应方 方向
 		return &secureConn{Conn: conn, enc: cs0, dec: cs1}, nil
@@ -164,7 +164,7 @@ func SecureConn(conn net.Conn, secret string, initiator bool) (net.Conn, error) 
 	first, err := readFrame(conn, noiseMaxHandshakeFrame)
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			return nil, fmt.Errorf("noise handshake recv: peer sent nothing within %v (is encryption enabled on the peer?): %w", noiseHandshakeTimeout, err)
+			return nil, fmt.Errorf("noise handshake recv: peer sent nothing within %v (encryption may be disabled on the peer): %w", noiseHandshakeTimeout, err)
 		}
 		return nil, fmt.Errorf("noise handshake recv: %w", err)
 	}

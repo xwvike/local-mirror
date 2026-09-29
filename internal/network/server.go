@@ -138,7 +138,7 @@ func (s *fileServer) StartDial(addr string) {
 					"(a key on one end only, or different keys), or the sink is busy with another source: %v", addr, err)
 			} else {
 				log.Warnf("sink %s did not speak within %v (a healthy sink handshakes immediately; "+
-					"are both ends configured --send, or is this the wrong peer?): %v",
+					"both ends may be configured --send, or the address may belong to another program): %v",
 					addr, dialFirstMessageTimeout, err)
 			}
 			conn.Close()

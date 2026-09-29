@@ -246,12 +246,17 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  local-mirror @host[:port] ./dir      pull into ./dir from the listening source\n")
 	fmt.Fprintf(w, "  local-mirror service <action>        manage the system service (see below)\n\n")
 
-	fmt.Fprintf(w, "Service subcommand:\n")
-	fmt.Fprintf(w, "  local-mirror service install         create the config dir and a blank config,\n")
-	fmt.Fprintf(w, "                               write and register the service description file.\n")
-	fmt.Fprintf(w, "                               Never starts it, never overwrites an existing config\n")
-	fmt.Fprintf(w, "  local-mirror service uninstall       deregister and remove it; the config is kept\n")
-	fmt.Fprintf(w, "  local-mirror service status          where things are and whether it is registered\n")
+	fmt.Fprintf(w, "Service subcommand (runs a command continuously in the background; recommended):\n")
+	fmt.Fprintf(w, "  local-mirror service install <sync options>\n")
+	fmt.Fprintf(w, "                               install a verified command as a service that starts at\n")
+	fmt.Fprintf(w, "                               boot and restarts after a failure (sudo on Linux). The\n")
+	fmt.Fprintf(w, "                               options become a task in the service config; installing the\n")
+	fmt.Fprintf(w, "                               same directory again replaces its task, another directory adds one\n")
+	fmt.Fprintf(w, "  local-mirror service install         without options: create a blank config for manual editing\n")
+	fmt.Fprintf(w, "  local-mirror service status          config file, tasks, service state and management commands\n")
+	fmt.Fprintf(w, "  local-mirror service restart         apply a manually edited config (a config with errors is rejected)\n")
+	fmt.Fprintf(w, "  local-mirror service remove -p <dir> remove one directory's task and restart\n")
+	fmt.Fprintf(w, "  local-mirror service uninstall       stop and remove the service; the config is kept\n")
 	fmt.Fprintf(w, "                               Flags: --system / --user / --run-as / --config / --dry-run\n")
 	fmt.Fprintf(w, "                               Handles systemd, launchd and procd (OpenWrt) automatically\n\n")
 
@@ -271,7 +276,7 @@ func PrintUsage(w io.Writer) {
 
 	fmt.Fprintf(w, "LAN discovery:\n")
 	fmt.Fprintf(w, "  A --receive with neither --connect nor --listen scans the local network\n")
-	fmt.Fprintf(w, "  for sources over UDP and, if several answer, lets you pick one. It is the\n")
+	fmt.Fprintf(w, "  for sources over UDP and, if several answer, prompts for a selection. It is the\n")
 	fmt.Fprintf(w, "  zero-config path for two machines on the same LAN. Discovery does not cross\n")
 	fmt.Fprintf(w, "  VPNs, subnets or firewalls: reach those with --connect <host> instead.\n\n")
 
@@ -351,13 +356,18 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  home$  local-mirror --send --connect vps.example.net:%d -p ./proj -k <printed-key>\n", DefaultPort)
 	fmt.Fprintf(w, "  home$  local-mirror -k <printed-key> ./proj @vps.example.net:%d   # same, positional\n\n", DefaultPort)
 
+	fmt.Fprintf(w, "  # after verification in the foreground (stopped with Ctrl+C), both ends are\n")
+	fmt.Fprintf(w, "  # installed as services with the same options; sudo is required on the Linux vps\n")
+	fmt.Fprintf(w, "  vps$   sudo local-mirror service install --receive --listen -p /srv/backup --allow-delete --gen-key\n")
+	fmt.Fprintf(w, "  home$  local-mirror service install --send --connect vps.example.net:%d -p ./proj -k <printed-key>\n\n", DefaultPort)
+
 	fmt.Fprintf(w, "  # relay A -> B -> C (192.168.1.100 = A, 192.168.1.101 = B)\n")
 	fmt.Fprintf(w, "  A$ local-mirror --send -p /srv/data --gen-key\n")
 	fmt.Fprintf(w, "  B$ local-mirror --send --receive --connect 192.168.1.100 -p /srv/relay -k <printed-key>\n")
 	fmt.Fprintf(w, "  C$ local-mirror --receive --connect 192.168.1.101 -p /srv/replica -k <printed-key>\n\n")
 
-	fmt.Fprintf(w, "  # every end keeps the key in .local-mirror/key after its first run, so -k can\n")
-	fmt.Fprintf(w, "  # be dropped from then on; rerunning a --gen-key command reuses the key\n\n")
+	fmt.Fprintf(w, "  # each end stores the key in .local-mirror/key on its first run; -k can be omitted\n")
+	fmt.Fprintf(w, "  # afterwards, and running a --gen-key command again reuses the existing key\n\n")
 
 	fmt.Fprintf(w, "  # ignore node_modules and all .log files\n")
 	fmt.Fprintf(w, "  local-mirror --send -p /srv/data --gen-key -i \"node_modules,*.log\"\n")
