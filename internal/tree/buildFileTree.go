@@ -108,7 +108,7 @@ func restorePerm(fullPath, relPath string, isDir bool, disk, upstream uint32) {
 	}
 	if err != nil {
 		permRestoreFailed.Store(relPath, struct{}{})
-		log.Warnf("cannot restore permissions %o on %s (filesystem without Unix permissions?): %v", want, relPath, err)
+		log.Warnf("cannot restore permissions %o on %s (the filesystem may not support Unix permissions): %v", want, relPath, err)
 		return
 	}
 	log.Infof("restored permissions %o on %s (changed locally, was %o)", want, relPath, disk)
