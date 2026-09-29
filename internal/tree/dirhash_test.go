@@ -114,3 +114,82 @@ func TestDirHashesEmptyDir(t *testing.T) {
 		t.Fatal("two empty dirs should share the same rollup")
 	}
 }
+
+// v2.5.0 对 sampleTree 算出的 rollup（由 v2.5.0 源码独立生成）。线格式 Node.Hash 的口径
+// 必须与它逐字节一致，否则新版源端配旧版汇端时剪枝全部失效
+var legacyGolden = map[string]string{
+	".":   "4cd7d92fa1466fe0890f7513e852a1c2f400811c46f4fe8413570f279deed777",
+	"a":   "bd73b92f8b2c0213c24b12e3453f54b9225fe0ef0fd3b12ca6f1f8be0e9c78c2",
+	"a/b": "d9e079e1a7e2235d880530ac2db2ec0870915f4e3618de3f0499b4cec2f471fd",
+}
+
+func withModes(ns []*Node) []*Node {
+	for _, n := range ns {
+		if n.IsDir {
+			n.Mode = 0o755
+		} else {
+			n.Mode = 0o600
+		}
+	}
+	return ns
+}
+
+// 不含权限的口径与 v2.5.0 逐字节一致，且节点带不带权限都不影响它
+func TestDirHashesMatchV250(t *testing.T) {
+	for name, ns := range map[string][]*Node{"no modes": sampleTree(), "with modes": withModes(sampleTree())} {
+		h := computeDirHashes(nodesByPath(ns))
+		for dir, want := range legacyGolden {
+			if h[dir] != want {
+				t.Errorf("%s: legacy rollup of %q = %s, v2.5.0 had %s", name, dir, h[dir], want)
+			}
+		}
+	}
+}
+
+// 权限未知（0）时含权限口径与不含权限口径相同：Windows/旧版对端的节点不因口径分叉
+func TestPermRollupUnknownModeEqualsLegacy(t *testing.T) {
+	nodes := nodesByPath(sampleTree())
+	plain, perm := computeRollups(nodes, false), computeRollups(nodes, true)
+	for dir := range legacyGolden {
+		if plain[dir] != perm[dir] {
+			t.Errorf("dir %q: perm rollup %s differs from legacy %s with all modes unknown", dir, perm[dir], plain[dir])
+		}
+	}
+}
+
+// 仅权限变化：含权限口径沿祖先链传播，不含权限口径不动
+func TestPermRollupPropagatesModeChange(t *testing.T) {
+	base := withModes(sampleTree())
+	changed := withModes(sampleTree())
+	for _, n := range changed {
+		if n.Path == "a/b/f2" {
+			n.Mode = 0o644
+		}
+	}
+	permBase, permAfter := computeRollups(nodesByPath(base), true), computeRollups(nodesByPath(changed), true)
+	plainBase, plainAfter := computeRollups(nodesByPath(base), false), computeRollups(nodesByPath(changed), false)
+	for _, dir := range []string{"a/b", "a", "."} {
+		if permBase[dir] == permAfter[dir] {
+			t.Errorf("mode change did not propagate to perm rollup of %q", dir)
+		}
+		if plainBase[dir] != plainAfter[dir] {
+			t.Errorf("mode change altered legacy rollup of %q", dir)
+		}
+	}
+}
+
+// 目录按 EffectiveMode 计入：只差属主位（0555 vs 0755）的目录在汇端落地后相同，rollup 也须相同
+func TestPermRollupDirOwnerBitsIgnored(t *testing.T) {
+	src, dst := withModes(sampleTree()), withModes(sampleTree())
+	for _, n := range src {
+		if n.Path == "a/b" {
+			n.Mode = 0o555
+		}
+	}
+	a, b := computeRollups(nodesByPath(src), true), computeRollups(nodesByPath(dst), true)
+	for _, dir := range []string{"a", "."} {
+		if a[dir] != b[dir] {
+			t.Errorf("owner-bit-only dir mode difference changed perm rollup of %q", dir)
+		}
+	}
+}

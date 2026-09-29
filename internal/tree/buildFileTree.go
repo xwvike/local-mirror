@@ -85,6 +85,35 @@ func AddRecentChangedDir(dirPath string) {
 	addChangeTimerActive = true
 }
 
+// permRestoreFailed 本进程内改回权限失败过的路径（exFAT 等不支持 Unix 权限的文件系统上
+// 必然失败）。只提示一次、不再重试：否则每次重建都对整棵树逐个 chmod 失败并刷日志
+var permRestoreFailed sync.Map
+
+// restorePerm 纯汇端的磁盘权限与记录的上游权限不一致（本地被改过）时按上游改回，
+// 与内容漂移（重建时重算哈希、下一轮 diff 纠正）对称。上游权限未知不处理
+func restorePerm(fullPath, relPath string, isDir bool, disk, upstream uint32) {
+	want := EffectiveMode(isDir, upstream)
+	if want == 0 || disk == want {
+		return
+	}
+	if _, failed := permRestoreFailed.Load(relPath); failed {
+		return
+	}
+	err := ApplyPerm(fullPath, isDir, upstream)
+	if err == nil {
+		// 有的文件系统 chmod 不报错却不生效，回读确认
+		if fi, serr := os.Lstat(fullPath); serr == nil && PermOf(fi) != want {
+			err = fmt.Errorf("mode is still %o after chmod", PermOf(fi))
+		}
+	}
+	if err != nil {
+		permRestoreFailed.Store(relPath, struct{}{})
+		log.Warnf("cannot restore permissions %o on %s (filesystem without Unix permissions?): %v", want, relPath, err)
+		return
+	}
+	log.Infof("restored permissions %o on %s (changed locally, was %o)", want, relPath, disk)
+}
+
 // BuildFileTree 遍历磁盘构建目录树并写入数据库。
 // 若数据库中已有上次运行的缓存（见 InitDB），则按校准模式运行：
 // 复用未变化文件（size+mtime 一致）的哈希，只重算变化的文件，
@@ -250,8 +279,12 @@ func BuildFileTree(path string) error {
 				hash = old.Hash
 				reusedHashes++
 			}
-			// 纯汇端的权限以上游为准（记的是最近应用的上游值），不从磁盘回读
+			// 纯汇端的权限以上游为准（记的是最近应用的上游值），不从磁盘回读；
+			// 磁盘被本地改过则按上游改回
 			if mode == 0 || !config.ServesDownstream() {
+				if mode != 0 && !config.ServesDownstream() {
+					restorePerm(fullPath, relPath, info.IsDir(), mode, old.Mode)
+				}
 				mode = old.Mode
 			}
 		} else {
