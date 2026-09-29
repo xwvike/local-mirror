@@ -50,6 +50,9 @@ type Node struct {
 	ModTime  time.Time `json:"mod_time"`
 	Hash     string    `json:"hash"`
 	Depth    int       `json:"depth"` // 目录深度
+	// Mode 权限位（见 PermOf），0 = 未知（Windows 端或旧版对端）。源端记磁盘现状；
+	// 汇端记最近一次应用的上游值，本地被改动的权限不回收
+	Mode uint32 `json:"mode,omitempty"`
 }
 
 type Children struct {

@@ -11,8 +11,9 @@ import (
 )
 
 // discoverProcRoots 用 ps 列出进程并筛出 local-mirror 常驻进程。mac 无 /proc，
-// 拿不到进程 cwd（不引入 lsof 那种重家伙），故只认**显式带 -p** 的实例——
-// 服务化部署通常都显式指定同步根，够用；纯靠 cwd 默认根的临时进程发现不到
+// 拿不到进程 cwd（不引入 lsof 那种重家伙），故只认 argv 能给出绝对同步根的实例
+// （绝对 -p、绝对 --config 的单任务、绝对位置参数）——服务化部署都满足；
+// 纯靠 cwd 默认根或相对路径的临时进程发现不到
 func discoverProcRoots() []procRoot {
 	data, err := exec.Command("ps", "-axww", "-o", "pid=,args=").Output()
 	if err != nil {
@@ -37,7 +38,7 @@ func discoverProcRoots() []procRoot {
 		if !looksLikeDaemon(args) {
 			continue
 		}
-		// 无 cwd：resolveRoot 只有拿到绝对 -p 才能给出可用根
+		// 无 cwd：resolveRoot 只有从 argv 拿到绝对路径才能给出可用根
 		root := resolveRoot(args, "")
 		if root == "" || !filepath.IsAbs(root) {
 			continue

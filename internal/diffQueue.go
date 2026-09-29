@@ -9,11 +9,12 @@ import (
 type DiffResult struct {
 	Path    string    `json:"path"`
 	IsDir   bool      `json:"is_dir"` // 是否为目录
-	Action  string    `json:"action"` // "create", "delete", "modify"
+	Action  string    `json:"action"` // "create", "delete", "modify", "retype", "chmod"
 	Name    string    `json:"name"`
 	Size    uint64    `json:"size"`     // 文件大小
 	Hash    string    `json:"hash"`     // 文件内容哈希（create/modify 取服务端，delete 取本地）
 	ModTime time.Time `json:"mod_time"` // 源文件修改时间，用于镜像端保真
+	Mode    uint32    `json:"mode"`     // 源端权限位（0 = 未知），用于镜像端保真
 }
 
 // FindDifferences 比较两个树结构，以 a（服务端）为基准
@@ -39,6 +40,7 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 				Size:    nodeA.Size,
 				Hash:    nodeA.Hash,
 				ModTime: nodeA.ModTime,
+				Mode:    nodeA.Mode,
 			})
 			continue
 		}
@@ -54,6 +56,7 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 				Size:    nodeA.Size,
 				Hash:    nodeA.Hash,
 				ModTime: nodeA.ModTime,
+				Mode:    nodeA.Mode,
 			})
 			continue
 		}
@@ -63,18 +66,25 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 		// processDirectoryDiff（MkdirAll + AddNodes 写库），又使目录走 diff 循环的下钻 push
 		// 绕过按 rollup 的 Merkle 剪枝，剪枝形同虚设。目录的结构变化（内部文件增删）由
 		// 下钻进该目录后比对其**内容**得出（那里文件才显示为 create/delete），不靠目录自身的
-		// size。目录只有 create/delete/retype 三种真实差异，没有 modify。
+		// size。目录没有 modify，只有 create/delete/retype/chmod。
+		action := ""
 		if !nodeA.IsDir &&
 			(nodeA.Size != nodeB.Size ||
 				(nodeA.Hash != "" && nodeB.Hash != "" && nodeA.Hash != nodeB.Hash)) {
+			action = "modify"
+		} else if modeDiffers(nodeA, nodeB) {
+			action = "chmod"
+		}
+		if action != "" {
 			diffs = append(diffs, DiffResult{
 				Path:    nodeA.Path,
 				IsDir:   nodeA.IsDir,
-				Action:  "modify",
+				Action:  action,
 				Name:    nodeA.Name,
 				Size:    nodeA.Size,
 				Hash:    nodeA.Hash,
 				ModTime: nodeA.ModTime,
+				Mode:    nodeA.Mode,
 			})
 		}
 	}
@@ -89,11 +99,22 @@ func FindDifferences(a, b []tree.Node) []DiffResult {
 				Size:    nodeB.Size,
 				Hash:    nodeB.Hash,
 				ModTime: nodeB.ModTime,
+				Mode:    nodeB.Mode,
 			})
 		}
 	}
 
 	return diffs
+}
+
+// modeDiffers 仅权限不同（内容一致）：上游权限未知时不比；上游读不了的文件（无哈希）
+// 不套它的权限，免得把本地副本也改成不可读。口径与 rollup 一致（EffectiveMode）
+func modeDiffers(a, b tree.Node) bool {
+	want := tree.EffectiveMode(a.IsDir, a.Mode)
+	if want == 0 || (!a.IsDir && a.Hash == "") {
+		return false
+	}
+	return want != tree.EffectiveMode(a.IsDir, b.Mode)
 }
 
 // Diff 用服务端目录列表与本地数据库中的同名目录比对，返回差异列表

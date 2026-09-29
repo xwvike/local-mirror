@@ -21,7 +21,9 @@ import (
 //   - **mtime 不入哈希**：FindDifferences 不看 mtime，纯 mtime 变动不产生 diff，
 //     若纳入会让整棵子树被误判为"变了"而全量重走（安全但白费流量）；
 //   - 只用 child.Name（basename，分隔符无关）而非完整路径——哈希要跨 mac/debian/windows
-//     一致，不能掺入各端不同的路径分隔符。
+//     一致，不能掺入各端不同的路径分隔符；
+//   - 权限按 EffectiveMode 入哈希，0（未知）不写入——与 FindDifferences 的 chmod 判定同口径，
+//     且 Windows/旧版对端的 rollup 与引入权限前保持一致。
 //
 // 不变量：源目录 rollup == 汇同名目录 rollup  ⟺  该子树内 FindDifferences 无任何差异。
 
@@ -105,6 +107,10 @@ func computeDirHashes(nodes map[string]*Node) map[string]string {
 				_, _ = h.Write([]byte(strconv.FormatUint(k.Size, 10)))
 				_, _ = h.Write([]byte{0})
 				_, _ = h.Write([]byte(k.Hash))
+			}
+			if m := EffectiveMode(k.IsDir, k.Mode); m != 0 {
+				_, _ = h.Write([]byte{0, 'm'})
+				_, _ = h.Write([]byte(strconv.FormatUint(uint64(m), 8)))
 			}
 			_, _ = h.Write([]byte{0})
 		}

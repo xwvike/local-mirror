@@ -62,6 +62,12 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 		if gone := dirGone(err, path); gone != nil {
 			return gone
 		}
+		// 上游读不了这个目录：本地副本原样保留、不下钻，上游恢复可读后变更推送会带回来
+		var re *network.RealityError
+		if errors.As(err, &re) && re.Code == network.ErrCodePermissionDenied {
+			warnUnreadableDirOnce(path)
+			return nil
+		}
 		return handleConnectionError(err, fileClient)
 	}
 
@@ -108,7 +114,8 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 			continue
 		}
 		recordChangedDir(v.Path)
-		if v.IsDir && v.Action != "delete" {
+		// 只有新建/类型互换的目录要强制下钻；chmod 的目录交给下面的 rollup 剪枝判定
+		if v.IsDir && (v.Action == "create" || v.Action == "retype") {
 			diffDirs[v.Path] = true
 			NextLevel.Push(v)
 		}
@@ -252,6 +259,7 @@ func applyRename(oldDiff, newDiff DiffResult) error {
 	if err := os.Rename(oldFull, newFull); err != nil {
 		return err
 	}
+	applyPerm(newFull, newDiff)
 	applyModTime(newDiff)
 	if err := tree.DeleteNode(oldDiff.Path); err != nil {
 		return err

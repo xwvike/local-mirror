@@ -1,8 +1,11 @@
 package status
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Instance 本机上一个正在运行的 local-mirror 常驻实例
@@ -61,31 +64,89 @@ func looksLikeDaemon(args []string) bool {
 	return true
 }
 
-// resolveRoot 从进程 argv 与 cwd 推断同步根：-p/--path 优先（相对路径挂到
-// cwd 上），未指定则同步根就是 cwd（与 resolveSyncRoot 的默认一致）
+// valueFlags 带值的旗子：其后的 argv 是值，不是位置参数
+var valueFlags = map[string]bool{
+	"p": true, "path": true, "m": true, "mode": true, "r": true, "realityip": true,
+	"k": true, "secret": true, "l": true, "loglevel": true, "c": true, "cooldown": true,
+	"f": true, "filebuffersize": true, "a": true, "alias": true, "i": true, "ignore": true,
+	"config": true, "connect": true,
+}
+
+// resolveRoot 从进程 argv 与 cwd 推断同步根，与 main 的解析口径一致：
+// -p/--path 优先；--config 只有单任务（进程内直跑）时取该任务的 path，多任务的
+// 监督进程本身不是实例（子进程带 -p，各自被发现）；位置形态取不带 @ 的那一侧；
+// 都没有则同步根就是 cwd。相对路径挂到 cwd 上，拿不到 cwd 时无解
 func resolveRoot(args []string, cwd string) string {
-	p := ""
-	for i := 0; i < len(args); i++ {
+	var p, cfg string
+	var positional []string
+	for i := 1; i < len(args); i++ {
 		a := args[i]
-		switch {
-		case a == "-p" || a == "--path":
-			if i+1 < len(args) {
-				p = args[i+1]
-			}
-		case strings.HasPrefix(a, "-p="):
-			p = a[len("-p="):]
-		case strings.HasPrefix(a, "--path="):
-			p = a[len("--path="):]
+		if a == "--" {
+			positional = args[i+1:]
+			break
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			positional = args[i:]
+			break
+		}
+		name, val, hasVal := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if !hasVal && valueFlags[name] && i+1 < len(args) {
+			i++
+			val = args[i]
+		}
+		switch name {
+		case "p", "path":
+			p = val
+		case "config":
+			cfg = val
 		}
 	}
-	if p == "" {
+	switch {
+	case p != "":
+	case cfg != "":
+		if p = singleTaskPath(absUnder(cwd, cfg)); p == "" {
+			return ""
+		}
+	case len(positional) == 2:
+		p = positional[0]
+		if strings.HasPrefix(p, "@") {
+			p = positional[1]
+		}
+	default:
 		return cwd
 	}
+	return absUnder(cwd, p)
+}
+
+// absUnder 把 p 解析为绝对路径（相对则挂到 cwd）；相对且无 cwd 时返回空
+func absUnder(cwd, p string) string {
 	if filepath.IsAbs(p) {
 		return filepath.Clean(p)
 	}
 	if cwd == "" {
-		return "" // 相对 -p 但拿不到 cwd（如 mac 上无 /proc）：无法解析
+		return ""
 	}
 	return filepath.Join(cwd, p)
+}
+
+// singleTaskPath 读 YAML 配置，恰好一个任务时返回其 path（原样，相对路径由调用方
+// 按进程 cwd 解析，与守护进程 LoadMultiConfig 的 filepath.Abs 同口径）。
+// 读不到、多任务或解析失败都返回空
+func singleTaskPath(cfgPath string) string {
+	if cfgPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Tasks []struct {
+			Path string `yaml:"path"`
+		} `yaml:"tasks"`
+	}
+	if yaml.Unmarshal(data, &cfg) != nil || len(cfg.Tasks) != 1 {
+		return ""
+	}
+	return cfg.Tasks[0].Path
 }

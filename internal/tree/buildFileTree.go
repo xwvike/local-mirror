@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"local-mirror/config"
@@ -99,8 +100,7 @@ func BuildFileTree(path string) error {
 		return err
 	}
 	if !rootInfo.IsDir() {
-		log.Error("The specified path is not a directory:", path)
-		return err
+		return fmt.Errorf("not a directory: %s", path)
 	}
 
 	// 上次运行留下的节点缓存（首次运行为空表）
@@ -108,6 +108,7 @@ func BuildFileTree(path string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load cached nodes: %w", err)
 	}
+	ResetUnreadableDirs()
 
 	// 创建根节点。已有缓存时必须复用旧 ID：
 	// children 索引以节点 ID 为键，换新 ID 会切断所有既有的父子关系
@@ -124,6 +125,7 @@ func BuildFileTree(path string) error {
 		IsDir:   true,
 		Size:    uint64(rootInfo.Size()),
 		ModTime: rootInfo.ModTime(),
+		Mode:    PermOf(rootInfo),
 	}
 
 	// 用于存储路径到节点ID的映射
@@ -178,6 +180,11 @@ func BuildFileTree(path string) error {
 	walkErr := filepath.WalkDir(path, func(fullPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			log.Warnf("Error accessing path %s: %v", fullPath, walkErr)
+			// 目录列不出内容（权限、I/O 错误）≠ 目录变空：登记后其子树沿用缓存、不剪枝，
+			// 否则汇端 --allow-delete 会把镜像副本整片删掉。目录中途消失才是真删除
+			if d != nil && d.IsDir() && !errors.Is(walkErr, fs.ErrNotExist) {
+				MarkUnreadableDir(utils.RelPath(config.StartPath, fullPath))
+			}
 			return nil
 		}
 
@@ -221,6 +228,11 @@ func BuildFileTree(path string) error {
 				log.Debugf("path vanished during walk, skipping: %s", relPath)
 			} else {
 				log.Warnf("Error getting file info for %s: %v", fullPath, err)
+				// 条目还在、只是 stat 失败：保留缓存节点，不当作删除
+				if old, ok := existing[relPath]; ok {
+					seen[relPath] = struct{}{}
+					pathToID[relPath] = old.ID
+				}
 			}
 			return nil
 		}
@@ -230,12 +242,17 @@ func BuildFileTree(path string) error {
 		// 已缓存的节点复用 ID；size+mtime 未变的文件同时复用哈希
 		id := ""
 		hash := ""
+		mode := PermOf(info)
 		if old, ok := existing[relPath]; ok {
 			id = old.ID
 			if !info.IsDir() && old.Hash != "" &&
 				old.Size == uint64(info.Size()) && old.ModTime.Equal(info.ModTime()) {
 				hash = old.Hash
 				reusedHashes++
+			}
+			// 纯汇端的权限以上游为准（记的是最近应用的上游值），不从磁盘回读
+			if mode == 0 || !config.ServesDownstream() {
+				mode = old.Mode
 			}
 		} else {
 			id, _ = utils.RandomString(16)
@@ -254,6 +271,7 @@ func BuildFileTree(path string) error {
 			ModTime:  info.ModTime(),
 			Hash:     hash,
 			Depth:    strings.Count(relPath, string(filepath.Separator)),
+			Mode:     mode,
 		}
 
 		// 记录路径到ID的映射
@@ -290,7 +308,7 @@ func BuildFileTree(path string) error {
 	// 清理缓存中磁盘上已不存在的节点（进程离线期间被删除的文件/目录）
 	var stale []string
 	for p := range existing {
-		if _, ok := seen[p]; !ok {
+		if _, ok := seen[p]; !ok && !UnderUnreadableDir(p) {
 			stale = append(stale, p)
 		}
 	}

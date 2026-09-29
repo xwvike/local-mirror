@@ -107,6 +107,13 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 	clientAddr := conn.RemoteAddr().String()
 	log.Infof("Received tree request from %s for path: %s (cursor %q)", clientAddr, treeRequest.RootPath, treeRequest.ContinueFrom)
 
+	// 本端列不出内容的目录：如实回"读不了"，而不是下发缓存/空列表——汇端据此整棵跳过，
+	// 不会把它当成空目录删光镜像副本
+	if tree.UnderUnreadableDir(treeRequest.RootPath) {
+		return &wireError{Code: ErrCodePermissionDenied, Path: treeRequest.RootPath,
+			Message: "directory is unreadable on the source; its contents are withheld until it is readable"}
+	}
+
 	// PERF-01：续页复用首页建立的已排序快照，避免超大目录每页都全量加载 + 排序。
 	// handleTreeRequest 在该客户端唯一的消息循环 goroutine 内串行执行，dirCache 无需加锁
 	c := _client.(*client)

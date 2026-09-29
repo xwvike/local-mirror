@@ -257,7 +257,9 @@ func (sw *ScoreWatch) performScan() {
 			if os.IsNotExist(err) {
 				delete(sw.heatMap, heat.Path)
 			} else {
-				log.Warnf("Failed to read directory %s: %v", heat.Path, err)
+				// 读不了（权限、fd 耗尽等）也不能从两级监控里消失，降级进 tier2 轮询兜底
+				log.Warnf("Failed to read directory %s, falling back to tier2 polling: %v", heat.Path, err)
+				newTier2 = append(newTier2, heat)
 			}
 			continue
 		}
@@ -403,16 +405,26 @@ func hasDirectoryChanged(path string) (bool, error) {
 			changed = true
 			continue
 		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
 		// 已存在的文件比较大小和修改时间，捕捉内容修改
-		if !entry.IsDir() {
-			if info, err := entry.Info(); err == nil &&
-				(uint64(info.Size()) != oldNode.Size || !info.ModTime().Equal(oldNode.ModTime)) {
-				eventFilter(fsnotify.Event{
-					Name: filepath.Join(fullPath, entry.Name()),
-					Op:   fsnotify.Write,
-				})
-				changed = true
-			}
+		if !entry.IsDir() && (uint64(info.Size()) != oldNode.Size || !info.ModTime().Equal(oldNode.ModTime)) {
+			eventFilter(fsnotify.Event{
+				Name: filepath.Join(fullPath, entry.Name()),
+				Op:   fsnotify.Write,
+			})
+			changed = true
+			continue
+		}
+		// chmod 不改 size/mtime，单独比权限位
+		if tree.PermOf(info) != oldNode.Mode {
+			eventFilter(fsnotify.Event{
+				Name: filepath.Join(fullPath, entry.Name()),
+				Op:   fsnotify.Chmod,
+			})
+			changed = true
 		}
 	}
 	for _, entry2 := range oldContents {

@@ -46,6 +46,7 @@ func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
 		ModTime:  modTime,
 		Hash:     hash,
 		Depth:    strings.Count(v.Path, string(filepath.Separator)),
+		Mode:     v.Mode,
 	}
 }
 
@@ -102,6 +103,19 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 		}
 		return processFileDiff(v, fileClient)
 
+	case "chmod":
+		full, err := safety.SafeResolve(config.StartPath, v.Path)
+		if err != nil {
+			log.Errorf("refusing to chmod out-of-root path: %v", err)
+			return nil
+		}
+		applyPerm(full, v)
+		hash := v.Hash
+		if v.IsDir {
+			hash = "" // 目录在线格式上的 Hash 是 rollup，不落库
+		}
+		return tree.AddNodes([]*tree.Node{createNodeFromDiff(v, hash)})
+
 	case "create", "modify":
 		if v.IsDir {
 			return processDirectoryDiff(v)
@@ -133,6 +147,7 @@ func processDirectoryDiff(v DiffResult) error {
 	if err := os.MkdirAll(fullPath, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", fullPath, err)
 	}
+	applyPerm(fullPath, v)
 
 	// AddNodes 对已存在路径按更新处理，无需先查询
 	node := createNodeFromDiff(v, "")
@@ -151,6 +166,12 @@ var unreadableWarned sync.Map
 func warnUnreadableOnce(path string) {
 	if _, loaded := unreadableWarned.LoadOrStore(path, struct{}{}); !loaded {
 		log.Errorf("upstream cannot read %s (server failed to hash it, usually a permission problem); skipping. Sync resumes automatically once fixed upstream", path)
+	}
+}
+
+func warnUnreadableDirOnce(path string) {
+	if _, loaded := unreadableWarned.LoadOrStore(path, struct{}{}); !loaded {
+		log.Errorf("upstream cannot read directory %s (usually a permission problem); its local copy is left untouched. Sync resumes automatically once fixed upstream", path)
 	}
 }
 
@@ -183,7 +204,7 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 			appError.ErrDiskFull, v.Path, humanBytes(v.Size), humanBytes(free), humanBytes(diskReserve))
 	}
 
-	hash, err := fileClient.DownloadFile(v.Path)
+	hash, err := fileClient.DownloadFile(v.Path, v.Mode)
 	if err != nil {
 		if errors.Is(err, appError.ErrConnection) {
 			fileClient.ConnectionClose()
@@ -225,6 +246,19 @@ func recordChangedDir(relPath string) {
 		return
 	}
 	tree.AddRecentChangedDir(filepath.Dir(relPath))
+}
+
+// permWarned 已提示过的"权限设置失败"路径（如 exFAT 等不支持 Unix 权限的文件系统），每路径一次
+var permWarned sync.Map
+
+// applyPerm 把上游权限落到本地（尽力而为，同 applyModTime）。失败不阻断同步，
+// 数据库仍记上游值，避免每轮全量扫描反复重试
+func applyPerm(full string, v DiffResult) {
+	if err := tree.ApplyPerm(full, v.IsDir, v.Mode); err != nil {
+		if _, loaded := permWarned.LoadOrStore(v.Path, struct{}{}); !loaded {
+			log.Warnf("failed to set permissions %o on %s: %v", tree.EffectiveMode(v.IsDir, v.Mode), v.Path, err)
+		}
+	}
 }
 
 // applyModTime 将本地文件的修改时间对齐到服务端源文件

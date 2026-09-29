@@ -130,6 +130,7 @@ func eventFilter(event fsnotify.Event) {
 			ModTime:  linfo.ModTime(),
 			Hash:     "",
 			Depth:    strings.Count(relPath, string(filepath.Separator)),
+			Mode:     tree.PermOf(linfo),
 		}
 		if event.Has(fsnotify.Create) {
 			GlobalScoreWatch.addHeat(newLeaf.Path, newLeaf)
@@ -185,7 +186,29 @@ func eventFilter(event fsnotify.Event) {
 		// 复用写事件的防抖流水线。内容未变时重算得到相同哈希，只是一次
 		// 幂等 upsert，代价可忽略；目录与符号链接的属性变化无需处理
 		linfo, err := os.Lstat(event.Name)
-		if err != nil || linfo.IsDir() || linfo.Mode()&os.ModeSymlink != 0 {
+		if err != nil || linfo.Mode()&os.ModeSymlink != 0 {
+			return
+		}
+		if linfo.IsDir() {
+			// 目录权限变化：只更新节点的权限位，内容不动。根目录的权限不同步
+			if relPath == "." {
+				return
+			}
+			uuid, _ := utils.RandomString(16)
+			eventMu.Lock()
+			createEventCache = append(createEventCache, &tree.Node{
+				ID:       uuid,
+				Path:     relPath,
+				Name:     filepath.Base(event.Name),
+				ParentID: fatherNode.ID,
+				IsDir:    true,
+				Size:     uint64(linfo.Size()),
+				ModTime:  linfo.ModTime(),
+				Depth:    strings.Count(relPath, string(filepath.Separator)),
+				Mode:     tree.PermOf(linfo),
+			})
+			eventMu.Unlock()
+			flushCreateEvents()
 			return
 		}
 		scheduleFileChange(event.Name)
@@ -209,6 +232,7 @@ func recoverUnreadable(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			recoverUnreadableDirs()
 			for _, p := range tree.UnreadableSnapshot() {
 				// 非普通文件（socket/FIFO/设备节点）永远不会变成可读，
 				// 留在表里只会被无休止地重试；直接摘牌。正常情况下它们
@@ -231,6 +255,29 @@ func recoverUnreadable(ctx context.Context) {
 				scheduleFileChange(p)
 			}
 		}
+	}
+}
+
+// recoverUnreadableDirs 建树时列不出内容的目录重新可读后摘牌。摘牌前先按磁盘现状
+// 校准该目录的直接子项（hasDirectoryChanged 为差异合成事件）；本轮有差异就等下一轮，
+// 直到树与磁盘一致才摘——否则汇端会在事件落库前拿到残缺列表，把还没入树的文件当删除
+func recoverUnreadableDirs() {
+	for _, rel := range tree.UnreadableDirsSnapshot() {
+		if _, err := os.ReadDir(filepath.Join(config.StartPath, rel)); err != nil {
+			if os.IsNotExist(err) {
+				tree.UnmarkUnreadableDir(rel)
+			}
+			continue
+		}
+		changed, err := hasDirectoryChanged(rel)
+		if err != nil || changed {
+			continue
+		}
+		tree.UnmarkUnreadableDir(rel)
+		log.Infof("directory %s is readable again, resuming sync", rel)
+		// 恢复可读多半就是改了它自身的权限，而这个目录此前可能不在任何 watch 里
+		eventFilter(fsnotify.Event{Name: filepath.Join(config.StartPath, rel), Op: fsnotify.Chmod})
+		tree.AddRecentChangedDir(rel)
 	}
 }
 
@@ -293,6 +340,7 @@ func finalizeFileChange(absPath string) {
 		ModTime:  linfo.ModTime(),
 		Hash:     hash,
 		Depth:    strings.Count(relPath, string(filepath.Separator)),
+		Mode:     tree.PermOf(linfo),
 	}
 
 	eventMu.Lock()

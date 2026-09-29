@@ -479,7 +479,9 @@ func drainFileSession(conn net.Conn) error {
 	}
 }
 
-func (c *FileClient) DownloadFile(filePath string) (string, error) {
+// perm 为上游权限位（0 = 未知，沿用旧行为的默认权限）。已知时分片以 0600 创建、
+// 落盘前再改成上游权限：传输中的私密文件不会对本机其他用户可读
+func (c *FileClient) DownloadFile(filePath string, perm uint32) (string, error) {
 	// filePath 来自服务端下发的目录树，属不可信输入：拼接后必须仍在同步根内。
 	// 越界（如 "../../etc/x"）直接拒绝，绝不向服务端发起请求、也绝不落盘，
 	// 否则服务端可借此把内容写到同步目录外的任意位置
@@ -553,7 +555,13 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 		file, err = os.OpenFile(partialPath, os.O_WRONLY|os.O_APPEND, 0644)
 		log.Infof("resuming %s: %d/%d bytes already present", filePath, offset, fileResponse.FileSize)
 	} else {
-		file, err = os.Create(partialPath)
+		createPerm := os.FileMode(0666)
+		if perm != 0 {
+			createPerm = 0600
+		}
+		// 先删再建：O_TRUNC 会沿用残留分片的旧权限
+		os.Remove(partialPath)
+		file, err = os.OpenFile(partialPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, createPerm)
 		if err == nil {
 			// 先落 meta 再收数据：中断发生在任何时刻，分片都能被下次识别
 			metaData, _ := json.Marshal(partialMeta{Hash: serverHash, Size: fileResponse.FileSize})
@@ -661,6 +669,9 @@ func (c *FileClient) DownloadFile(filePath string) (string, error) {
 			// SEC-04：数据传输期间某级父目录可能被换成符号链接，替换落盘前再校验一次（缩小 TOCTOU）
 			if err := safety.VerifyNoSymlinkComponents(config.StartPath, filePath); err != nil {
 				return "", fmt.Errorf("refusing to write %s: %w", filePath, err)
+			}
+			if err := tree.ApplyPerm(partialPath, false, perm); err != nil {
+				log.Warnf("failed to set permissions %o on %s: %v", perm, filePath, err)
 			}
 			if err := os.Rename(partialPath, fullPath); err != nil {
 				return "", fmt.Errorf("error renaming partial file to %s: %w", fullPath, err)
