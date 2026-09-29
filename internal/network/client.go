@@ -246,14 +246,10 @@ func (c *FileClient) Reconnect() error {
 	return nil
 }
 
-// Reverify 用于 Reconnect 后重新验证连接：发送的是真正的 Handshake 消息
-// （而不是原来的 MsgTypeReverify），因为 MsgTypeReverify 请求体是空的，
-// 服务端无从得知是"哪个" InstanceID 的客户端在重连，也就无法把这个新的
-// TCP 连接重新注册进 clientMap——此前 Reconnect 后的连接在服务端上
-// 永远没有 clientMap 记录，导致 Reconnect 之后任何依赖 clientMap.Load
-// 的请求（TreeRequest/FileRequest 等）都会被判定为"client not found"
-// 而遭到服务端主动关闭，实测表现为反复 EOF、最终整个目录被放弃同步。
-// 复用 MsgTypeHandshake 让服务端用已有的注册逻辑正确处理重连，客户端这边
+// Reverify 用于 Reconnect 后重新验证连接：发送的是真正的 Handshake 消息。
+// 服务端按连接记录握手状态，重连得到的是一条新连接，不握手就发 TreeRequest/
+// FileRequest 会被当作未握手连接关闭（实测表现为反复 EOF、最终整个目录被放弃同步）。
+// 复用 MsgTypeHandshake 让服务端用已有的握手逻辑正确处理重连，客户端这边
 // 仍然按原语义校验响应里的服务端信息是否与已知值一致（不一致说明连接到了
 // 不同的服务器，本地缓存的目录树不可信，需要整体重建会话）。
 func (c *FileClient) Reverify() error {

@@ -94,12 +94,11 @@ func wirePageCopy(page []tree.Node) []tree.Node {
 	return out
 }
 
-func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
-	_client, ok := s.clientMap.Load(ID)
-	if !ok {
-		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
+func (s *fileServer) handleTreeRequest(c *client, bodyBytes []byte) error {
+	if err := requireHandshake(c); err != nil {
+		return err
 	}
-	conn := _client.(*client).Conn
+	conn := c.Conn
 	treeRequest, err := decodeTreeRequest(bodyBytes)
 	if err != nil {
 		return fmt.Errorf("%w, error decoding tree request: %v", appError.ErrConnection, err)
@@ -116,7 +115,6 @@ func (s *fileServer) handleTreeRequest(ID uint32, bodyBytes []byte) error {
 
 	// PERF-01：续页复用首页建立的已排序快照，避免超大目录每页都全量加载 + 排序。
 	// handleTreeRequest 在该客户端唯一的消息循环 goroutine 内串行执行，dirCache 无需加锁
-	c := _client.(*client)
 	var entries []tree.Node
 	if snap := c.dirCache; snap != nil && treeRequest.ContinueFrom != "" &&
 		snap.rootPath == treeRequest.RootPath && time.Now().Before(snap.expiry) {
@@ -206,12 +204,11 @@ func trustedServeHash(node *tree.Node, fi os.FileInfo) ([32]byte, bool) {
 	return h, true
 }
 
-func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
-	_client, ok := s.clientMap.Load(ID)
-	if !ok {
-		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
+func (s *fileServer) handleFileRequest(c *client, bodyBytes []byte) error {
+	if err := requireHandshake(c); err != nil {
+		return err
 	}
-	conn := _client.(*client).Conn
+	conn := c.Conn
 	fileRequest, err := decodeFileRequest(bodyBytes)
 	if err != nil {
 		return fmt.Errorf("%w, error decoding file request: %v", appError.ErrConnection, err)
@@ -316,7 +313,7 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 			file:     file,
 		}
 
-		_client.(*client).SessionMap.Store(session.ID, session)
+		c.SessionMap.Store(session.ID, session)
 
 		fileResponse := FileResponseMessage{
 			SessionID: sessionBytes,
@@ -325,25 +322,20 @@ func (s *fileServer) handleFileRequest(ID uint32, bodyBytes []byte) error {
 		}
 		responseBytes := encodeFileResponse(fileResponse)
 		if err := sendMessage(conn, MsgTypeFileResponse, responseBytes); err != nil {
-			s.removeClientIfCurrent(ID, _client.(*client))
 			return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
 		}
 		log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
-		if err := s.sendFileData(ID, session); err != nil {
+		if err := s.sendFileData(c, session); err != nil {
 			return err
 		}
 		return nil
 	}
 }
 
-func (s *fileServer) sendFileData(ID uint32, session *session) error {
-	_client, ok := s.clientMap.Load(ID)
-	if !ok {
-		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
-	}
-	conn := _client.(*client).Conn
+func (s *fileServer) sendFileData(c *client, session *session) error {
+	conn := c.Conn
 	// session.file 由 handleFileRequest 中的 defer 统一关闭，这里不重复 Close
-	defer _client.(*client).SessionMap.Delete(session.ID)
+	defer c.SessionMap.Delete(session.ID)
 
 	rel := strings.Replace(session.FilePath, config.StartPath, ".", 1)
 

@@ -49,8 +49,7 @@ func acquireFileServeSlot() (release func()) {
 }
 
 type fileServer struct {
-	listener  net.Listener
-	clientMap sync.Map
+	listener net.Listener
 	// connSlots 带缓冲的信号量，容量即连接上限；每条连接占一个槽，
 	// handleConnection 退出时释放
 	connSlots chan struct{}
@@ -73,25 +72,20 @@ func (c *client) UpdateLastActiveTime() {
 	c.LastActiveTime = time.Now()
 }
 
-// removeClientIfCurrent 仅当 clientMap 中该 ID 当前对应的仍是 expected 这个
-// client 对象时才删除。
-//
-// 背景：clientMap 以客户端 InstanceID 为键。同一个客户端进程快速断线重连时
-// （InstanceID 不变），新连接握手后会 Store 一个新的 client 对象覆盖旧的；
-// 但旧连接对应的 goroutine 可能因为迟迟才检测到自己已失效（例如还在阻塞地
-// 尝试发送文件数据），在那之后才执行清理逻辑——如果直接无条件 Delete(ID)，
-// 删掉的其实是新连接刚注册的条目，导致新连接被服务端误判为"找不到客户端"
-// 而遭到关闭。必须用原子的 CompareAndDelete：Load 后再 Delete 的两步写法
-// 在两步之间仍可能被新连接的 Store 插入，竞态只是变窄而没有消除。
-func (s *fileServer) removeClientIfCurrent(id uint32, expected *client) {
-	s.clientMap.CompareAndDelete(id, expected)
+// requireHandshake 请求必须来自已完成握手的连接，否则按连接错误关闭。
+// 各 handler 直接使用所在连接的 client，不按对端自报的 ID 查表——ID 相同的两条
+// 连接会互相串线，把一条连接的应答发到另一条上
+func requireHandshake(c *client) error {
+	if !c.Connected {
+		return fmt.Errorf("%w, request before handshake from %s", appError.ErrConnection, c.Addr)
+	}
+	return nil
 }
 
 func NewFileServer(listener net.Listener) *fileServer {
 	log.Info("Creating file server, listen address:", listener.Addr())
 	return &fileServer{
 		listener:  listener,
-		clientMap: sync.Map{},
 		connSlots: make(chan struct{}, maxConcurrentConnections),
 	}
 }
@@ -100,7 +94,6 @@ func NewFileServer(listener net.Listener) *fileServer {
 // 连接由 StartDial 主动建立
 func NewFileServerDial() *fileServer {
 	return &fileServer{
-		clientMap: sync.Map{},
 		connSlots: make(chan struct{}, maxConcurrentConnections),
 	}
 }
@@ -109,6 +102,10 @@ func NewFileServerDial() *fileServer {
 // 立即发握手，等不到就多半是两端都配了 --send（都在等对方先说话）或
 // 拨错了对象——把静默死等变成有诊断的快速失败
 const dialFirstMessageTimeout = 15 * time.Second
+
+// minHealthyDialSession 拨出会话短于此即视为被对端拒绝（汇忙、握手被拒等），
+// 按退避重拨；否则会在两端之间形成每次都完整握手的热循环
+const minHealthyDialSession = 10 * time.Second
 
 // StartDial 源端拨出（四象限的「源拨 → 汇听」格）：向监听中的汇拨号，
 // 连接就绪后在同一套源端消息循环（serveConn）上服务。协议报文与谁拨号
@@ -147,9 +144,16 @@ func (s *fileServer) StartDial(addr string) {
 			continue
 		}
 
-		delay = baseDelay
 		log.Infof("Connected out to sink %s, serving", addr)
+		started := time.Now()
 		s.serveConn(conn, &prereadMessage{msgType: msgType, body: body})
+		if time.Since(started) < minHealthyDialSession {
+			log.Warnf("connection to sink %s ended after %v, redialing in %v", addr, time.Since(started).Round(time.Millisecond), delay)
+			time.Sleep(delay)
+			delay = min(delay*2, maxDelay)
+			continue
+		}
+		delay = baseDelay
 		log.Warnf("connection to sink %s ended, redialing", addr)
 	}
 }
@@ -234,7 +238,6 @@ func (s *fileServer) serveConn(conn net.Conn, first *prereadMessage) {
 		if err := conn.Close(); err != nil {
 			log.Error(err)
 		}
-		s.removeClientIfCurrent(client.ID, client)
 		if sessionCounted {
 			status.SessionDown()
 		}
@@ -282,21 +285,20 @@ func (s *fileServer) serveConn(conn net.Conn, first *prereadMessage) {
 			client.Role = clientBase.Role
 			client.Version = clientBase.Version
 			client.Connected = true
-			s.clientMap.Store(clientBase.UUID, client)
 			if !sessionCounted {
 				sessionCounted = true
 				status.SessionUp(fmt.Sprintf("serving %s", clientAddr))
 			}
 		case MsgTypeRecentChangeRequest:
-			if closed := s.dispatchError(conn, client, s.handleRecentChangeRequest(client.ID, bodyBytes)); closed {
+			if closed := s.dispatchError(conn, client, s.handleRecentChangeRequest(client, bodyBytes)); closed {
 				return
 			}
 		case MsgTypeTreeRequest:
-			if closed := s.dispatchError(conn, client, s.handleTreeRequest(client.ID, bodyBytes)); closed {
+			if closed := s.dispatchError(conn, client, s.handleTreeRequest(client, bodyBytes)); closed {
 				return
 			}
 		case MsgTypeFileRequest:
-			if closed := s.dispatchError(conn, client, s.handleFileRequest(client.ID, bodyBytes)); closed {
+			if closed := s.dispatchError(conn, client, s.handleFileRequest(client, bodyBytes)); closed {
 				return
 			}
 		default:
@@ -324,7 +326,6 @@ func (s *fileServer) dispatchError(conn net.Conn, c *client, err error) (closed 
 	}
 	if errors.Is(err, appError.ErrConnection) {
 		conn.Close()
-		s.removeClientIfCurrent(c.ID, c)
 		status.RecordError()
 		log.Warnf("Connection closed for %s due to error: %v", c.Addr, err)
 		return true

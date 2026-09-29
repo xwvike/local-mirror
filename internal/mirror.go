@@ -119,46 +119,95 @@ func Mirror() {
 	}
 }
 
+// maxPendingInbound 汇监听端同时进行中的入站握手上限。握手（加密 + 协议）各自限时
+// 5 秒，放在独立 goroutine 里并发做：不说话的连接只占一个槽，不再串行挡住后来的
+// 合法源端。满额时新连接直接关闭，拨号方按自己的退避重拨
+const maxPendingInbound = 64
+
 // MirrorListen 汇监听格（--receive --listen，四象限）：不拨出，在
-// ServerListener 上等源端拨入，每条入站连接跑一轮完整镜像会话。
+// ServerListener 上等源端拨入，每条握手成功的入站连接跑一轮完整镜像会话。
 // 协议报文与谁拨号无关——汇仍先说话（accept 后立即发握手）。
-// 单上游串行服务：会话期间不 accept，多余拨入留在内核 backlog，
-// 当前会话结束后自然轮到（拨号方有自己的重试退避）。
-// 入站连接断开后不可重拨（主动权在源端），回到 accept 等下一条
+// 单上游串行服务：会话进行中再有握手成功的拨入即关闭，拨号方退避重拨，
+// 当前会话结束后自然轮到。入站连接断开后不可重拨（主动权在源端）
 func MirrorListen() {
 	log.Debug("step 3 >> start sink listener")
 	if ServerListener == nil {
 		log.Fatal("server listener not initialized")
 	}
 	log.Infof("Sink listening on %s, waiting for the source to dial in", ServerListener.Addr())
+	sessions := make(chan *network.FileClient)
+	done := make(chan struct{})
+	var busy atomic.Bool
+	go acceptInbound(sessions, done, &busy)
 	for {
-		conn, err := ServerListener.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			log.Error("Error accepting inbound source:", err)
-			continue
+		var fileClient *network.FileClient
+		select {
+		case fileClient = <-sessions:
+		case <-done:
+			return
 		}
-		prepared, err := network.PrepareInboundConn(conn)
-		if err != nil {
-			log.Warnf("Rejecting inbound %s: %v", conn.RemoteAddr(), err)
-			continue
-		}
-		fileClient := network.NewFileClientFromConn(prepared)
-		if err := fileClient.Handshake(); err != nil {
-			log.Warnf("Inbound source %s handshake failed: %v", conn.RemoteAddr(), err)
-			fileClient.ConnectionClose()
-			continue
-		}
-		log.Infof("Source dialed in from %s, mirror session starting", conn.RemoteAddr())
-		status.SessionUp(fmt.Sprintf("source dialed in from %s", conn.RemoteAddr()))
+		busy.Store(true)
+		log.Infof("Source dialed in from %s, mirror session starting", fileClient.RealityAddr)
+		status.SessionUp(fmt.Sprintf("source dialed in from %s", fileClient.RealityAddr))
 		if err := runMirrorTasks(fileClient); err != nil {
 			status.RecordError()
 			log.Errorf("Mirror session over inbound transport ended: %v", err)
 		}
 		status.SessionDown()
 		fileClient.ConnectionClose()
+		busy.Store(false)
+	}
+}
+
+// acceptInbound 接收入站连接并各自并发握手，握手成功的交给 sessions。
+// sessions 无缓冲：只有会话循环空闲（正在等下一条）时交接才成功，否则关闭该连接。
+// 监听器关闭时关闭 done 让 MirrorListen 退出；sessions 不关，握手中的 goroutine
+// 仍可能向它做非阻塞发送。busy 为真（会话进行中）时，加密握手一过即关闭、不发协议
+// 握手：拨号方按"汇未应答"退避重拨，而不是以为会话已建立又立刻结束、马上重拨
+func acceptInbound(sessions chan<- *network.FileClient, done chan<- struct{}, busy *atomic.Bool) {
+	slots := make(chan struct{}, maxPendingInbound)
+	for {
+		conn, err := ServerListener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				close(done)
+				return
+			}
+			log.Error("Error accepting inbound source:", err)
+			continue
+		}
+		select {
+		case slots <- struct{}{}:
+		default:
+			log.Warnf("pending inbound handshake cap %d reached, rejecting %s", maxPendingInbound, conn.RemoteAddr())
+			conn.Close()
+			continue
+		}
+		go func() {
+			defer func() { <-slots }()
+			prepared, err := network.PrepareInboundConn(conn)
+			if err != nil {
+				log.Warnf("Rejecting inbound %s: %v", conn.RemoteAddr(), err)
+				return
+			}
+			if busy.Load() {
+				log.Warnf("Rejecting inbound source %s: a mirror session is already active", conn.RemoteAddr())
+				prepared.Close()
+				return
+			}
+			fileClient := network.NewFileClientFromConn(prepared)
+			if err := fileClient.Handshake(); err != nil {
+				log.Warnf("Inbound source %s handshake failed: %v", conn.RemoteAddr(), err)
+				fileClient.ConnectionClose()
+				return
+			}
+			select {
+			case sessions <- fileClient:
+			default:
+				log.Warnf("Rejecting inbound source %s: a mirror session is already active", conn.RemoteAddr())
+				fileClient.ConnectionClose()
+			}
+		}()
 	}
 }
 

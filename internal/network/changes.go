@@ -35,14 +35,13 @@ func buildRecentChangeResponse(changes []string, now int64) RecentChangeResponse
 	}
 }
 
-func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) error {
-	_client, ok := s.clientMap.Load(ID)
-	if !ok {
-		// 与其余 handler 一致：未握手/已注销的连接按连接错误关闭，
-		// 而不是静默不应答让对端干等读超时
-		return fmt.Errorf("%w, client not found for ID: %d", appError.ErrConnection, ID)
+func (s *fileServer) handleRecentChangeRequest(c *client, bodyBytes []byte) error {
+	// 与其余 handler 一致：未握手的连接按连接错误关闭，
+	// 而不是静默不应答让对端干等读超时
+	if err := requireHandshake(c); err != nil {
+		return err
 	}
-	conn := _client.(*client).Conn
+	conn := c.Conn
 	recentChangeRequest, err := decodeRecentChangeRequest(bodyBytes)
 	if err != nil {
 		return fmt.Errorf("%w, error decoding recent change request: %v", appError.ErrConnection, err)
@@ -61,12 +60,17 @@ func (s *fileServer) handleRecentChangeRequest(ID uint32, bodyBytes []byte) erro
 		sig := tree.ChangeSignal()
 		now := time.Now().Unix()
 		recentChanges, err := tree.GetChangedDirs(start, now)
+		expired := !time.Now().Before(holdDeadline)
 		if err != nil {
+			// 查询失败不能当"区间内无变更"回：客户端会把游标推进到 now，这段变更
+			// 就只能等全量扫描补。继续挂起重试；挂满仍失败则回空列表且覆盖点留在
+			// start，游标原地不动
 			log.Error("Error getting changed dirs:", err)
 			recentChanges = nil
+			now = start
 		}
 
-		if len(recentChanges) > 0 || err != nil || !time.Now().Before(holdDeadline) {
+		if len(recentChanges) > 0 || expired {
 			responseMsg := buildRecentChangeResponse(recentChanges, now)
 			if serr := sendMessage(conn, MsgTypeRecentChangeResponse, encodeRecentChangeResponse(responseMsg)); serr != nil {
 				return fmt.Errorf("%w, error sending recent change response: %v", appError.ErrConnection, serr)
