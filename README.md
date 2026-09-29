@@ -41,27 +41,42 @@ go build -o local-mirror ./cmd/local-mirror
 ## Recipes
 
 ```bash
-# serve a directory (-p defaults to the current working directory)
-local-mirror --send -p /path/to/source
+# ── 1. LAN: the source listens, the sink dials it ─────────────────────────────
+# on A (source): --gen-key creates a key (or reuses the existing one) and prints
+# the exact command for the other end
+local-mirror --send -p /path/to/source --gen-key
+# on B (sink); 192.168.1.100 is A's address
+local-mirror --receive --connect 192.168.1.100 -p /path/to/replica -k <printed-key>
 
-# replicate it from another machine, dialing a known host
-local-mirror --receive --connect 192.168.1.100 -p /path/to/replica
+# ── 2. LAN, zero config: the sink finds the source by UDP discovery ───────────
+# on A (source)
+local-mirror --send -p /path/to/source --gen-key
+# on B (sink): scans the LAN and lets you pick A
+local-mirror --receive -p /path/to/replica -k <printed-key>
 
-# replicate over the LAN with zero config: no --connect/--listen → scan for
-# sources and pick one interactively
-local-mirror --receive -p /path/to/replica
+# ── 3. Push over the internet: the reachable end (sink) listens ───────────────
+# on the VPS (sink)
+local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key
+# at home (source)
+local-mirror --send --connect vps.example.net:52345 -p /path/to/source -k <printed-key>
 
-# relay: pull from upstream and serve downstream in one process
-local-mirror --send --receive --connect 192.168.1.100 -p /path/to/relay
+# ── 4. The same push, rsync-style positional form (./dir @host = push) ────────
+# on the VPS (sink)
+local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key
+# at home (source)
+local-mirror -k <printed-key> ./path/to/source @vps.example.net:52345
 
-# push across the public internet: the reachable end is the sink and listens,
-# the source dials out. A listening end MUST set a key (see Encryption).
-local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key   # prints a key
-local-mirror --send --connect a.example.net:52345 -p /path/to/source -k <printed-key>
-
-# same push, rsync-style positional form (./dir @host = push)
-local-mirror ./path/to/source @a.example.net:52345 -k <printed-key>
+# ── 5. Relay A → B → C: B pulls from A and serves C ───────────────────────────
+# on A (source, 192.168.1.100)
+local-mirror --send -p /path/to/source --gen-key
+# on B (relay, 192.168.1.101)
+local-mirror --send --receive --connect 192.168.1.100 -p /path/to/relay -k <printed-key>
+# on C (sink)
+local-mirror --receive --connect 192.168.1.101 -p /path/to/replica -k <printed-key>
 ```
+
+Every end saves the key to its own `.local-mirror/key` on the first run, so later
+runs can drop `-k`; rerunning a `--gen-key` command reuses the key.
 
 ## Flags
 
@@ -78,7 +93,7 @@ local-mirror ./path/to/source @a.example.net:52345 -k <printed-key>
 | `--allow-delete` | delete sink files that no longer exist upstream | off |
 | `--allow-critical` | allow syncing on critical paths, with overwrite backups | off |
 | `-k, --secret` | transport encryption key (or `secret:` in the YAML config) | |
-| `--gen-key` | write a random key to `.local-mirror/key`, print it, exit | |
+| `--gen-key` | write a random key to `.local-mirror/key` (reuses an existing one) and print it; with run flags, start as well | |
 | `--show-key` | print the existing key file and exit | |
 | `--no-encrypt` | force plaintext even when a key file exists | |
 | `--status` | print a running instance's status and exit (`--all` for every one) | |
@@ -93,8 +108,9 @@ local-mirror ./path/to/source @a.example.net:52345 -k <printed-key>
 Two independent axes: **direction** (`--send` / `--receive`) and **transport**
 (`--connect` / `--listen`). Combine freely.
 
-- `--connect` takes a domain, IPv4, or IPv6 literal (`local-mirror --connect [2001:db8::1]:52345`);
-- `--receive` → LAN discovery: scan over UDP, pick a source interactively (`local-mirror --receive`).
+- `--connect` takes a domain, IPv4, or IPv6 literal, with an optional port (`--connect [2001:db8::1]:52345`).
+- `--receive` with neither `--connect` nor `--listen` → LAN discovery: scan over UDP, pick a source interactively (recipe 2).
+- A listening sink serves one source at a time; another source dialing in meanwhile is turned away and retries with backoff.
 
 ## Ignore patterns
 
@@ -107,6 +123,17 @@ comments). Matched per path segment at any depth; `* ? []` globs supported.
 - `.git` and `.DS_Store` are excluded by default but removable — prefix `!` to
   sync (e.g. `-i '!.git'`). For `.git`, prefer git push/fetch over a file-level
   mirror.
+
+## What gets synced
+
+- Regular files (content and modification time) and directories, plus the
+  permission bits (`rwx`) of both. Sink directories always keep owner `rwx`.
+  Permissions are not synced to or from Windows.
+- Symlinks, sockets, FIFOs and device files are skipped.
+- Anything the source cannot read (a file or a whole directory) is skipped, and the
+  sink leaves its copy untouched, even with `--allow-delete`. Sync resumes once it
+  is readable again.
+- Permissions changed locally on a sink are restored on its periodic local rescan.
 
 ## Deletion safety
 
@@ -130,11 +157,14 @@ forward secrecy; a wrong key or a plaintext peer fails the handshake.
 - **A listener binds all interfaces, so a plaintext listener refuses to start.**
   Any non-loopback listener must set a key, or pass `--no-encrypt` to insist on
   plaintext (trusted LAN only). Dialers are unaffected.
-- `--gen-key` writes a strong random key to `.local-mirror/key` (mode 600),
-  prints it once, and (with run flags) starts in the same command. Use a long
-  random string if you supply your own (`openssl rand -base64 24`).
+- `--gen-key` writes a strong random key to `.local-mirror/key` (mode 600) and,
+  on a terminal, prints it along with the matching command for the other end.
+  An existing key file is reused, so rerunning the same command after a restart
+  just works. With run flags it starts in the same command. Use a long random
+  string if you supply your own (`openssl rand -base64 24`).
 - Resolution order: explicit `-k` (or `secret:` in YAML) > `.local-mirror/key`
-  file > plaintext. The dialing end saves its own copy after the first connect.
+  file > plaintext. An end started with `-k` saves the key to its own key file
+  (sinks, and sources that dial out), so later runs can omit `-k`.
 - `--show-key` prints the file; `--gen-key --force` regenerates. Regenerating on
   the listening end disconnects every connected dialer.
 
@@ -148,6 +178,9 @@ while one of these is watching.
 local-mirror --status -p /path/to/source     # add --all for every process
 local-mirror --heat   -p /path/to/source     # source only; sinks have no heat table
 ```
+
+`--all` finds every instance on this host from the process table. On macOS it only
+finds instances started with absolute paths.
 
 ```
 ──────────────────────────────────────────────────────
@@ -172,6 +205,7 @@ Run several directories from one file (example:
 ```yaml
 defaults:
   loglevel: info
+  secret: <key>           # listening tasks need a key (or a .local-mirror/key in their root)
 tasks:
   - name: photos          # task name = discovery alias = log prefix
     send: true
