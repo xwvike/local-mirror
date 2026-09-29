@@ -17,6 +17,22 @@ import (
 	"golang.org/x/term"
 )
 
+// positionalArgs 命令行里的位置参数（位置写法 ./dir @host）
+var positionalArgs []string
+
+// parseInterspersed 让旗子可以写在位置参数之后（local-mirror ./dir @host -k key）：
+// 标准 flag 包遇到第一个非旗子参数就停止解析，其后的 -k 会被当成未知参数。
+// 逐个摘下位置参数、继续解析余下部分，直到参数耗尽
+func parseInterspersed() []string {
+	var pos []string
+	for flag.NArg() > 0 {
+		args := flag.Args()
+		pos = append(pos, args[0])
+		_ = flag.CommandLine.Parse(args[1:]) // ExitOnError：非法旗子自行报错退出
+	}
+	return pos
+}
+
 // resolveSyncRoot 确定同步根目录：-p 优先，否则当前工作目录；
 // 必须是已存在的目录，返回绝对路径
 func resolveSyncRoot() (string, error) {
@@ -64,14 +80,14 @@ func resolveDirection() error {
 	upstreamGiven := set["r"] || set["realityip"]
 	dirVocab := set["send"] || set["receive"] || set["connect"] || set["listen"]
 
-	if flag.NArg() > 0 {
+	if len(positionalArgs) > 0 {
 		if modeGiven || upstreamGiven || dirVocab || set["p"] || set["path"] {
 			return fmt.Errorf("positional SRC DST form cannot be mixed with -m/-r/-p or direction flags")
 		}
-		if flag.NArg() != 2 {
-			return fmt.Errorf("unknown arguments: %v\npositional form: local-mirror ./dir @host[:port] (push) or local-mirror @host[:port] ./dir (pull)", flag.Args())
+		if len(positionalArgs) != 2 {
+			return fmt.Errorf("unknown arguments: %v\npositional form: local-mirror ./dir @host[:port] (push) or local-mirror @host[:port] ./dir (pull)", positionalArgs)
 		}
-		a, b := flag.Arg(0), flag.Arg(1)
+		a, b := positionalArgs[0], positionalArgs[1]
 		aRemote, bRemote := strings.HasPrefix(a, "@"), strings.HasPrefix(b, "@")
 		switch {
 		case aRemote == bRemote:
@@ -182,15 +198,32 @@ func resolveSecret() error {
 		if *config.NoEncrypt {
 			return fmt.Errorf("--gen-key conflicts with --no-encrypt")
 		}
+		// 仅带 --gen-key（外加 --force / -p）＝ 像 wg genkey 一样生成即退出；
+		// 带其他运行旗子才接着正常启动
+		runFlags := cliFlagsSet()
+		for _, name := range []string{"gen-key", "force", "path", "p"} {
+			delete(runFlags, name)
+		}
+		starting := len(runFlags) > 0 || len(positionalArgs) > 0
+
 		// 已有 key 且未 --force：沿用它。重启时照原命令（含 --gen-key）再跑一遍必须能起来；
 		// 换 key 会让所有持旧 key 的拨号端断开，只在显式 --force 时做
 		key, err := keyfile.Load(root)
 		if err != nil {
 			return err
 		}
-		if key != "" && !*config.Force {
+		switch {
+		case key != "" && !*config.Force:
 			fmt.Printf("key file exists, reusing it: %s (--force regenerates it and disconnects every dialer holding the old one)\n", keyfile.Path(root))
-		} else {
+		case starting:
+			// 要启动的新 key 推迟到拿到目录锁后落盘（persistPendingKey）：目录已被别的
+			// 实例占用时本命令会失败，不能先把那个实例的 key 文件换掉
+			if key, err = keyfile.NewKey(); err != nil {
+				return err
+			}
+			keySavePending = true
+			fmt.Printf("generated a new key, saved to %s (mode 600) once this instance starts\n", keyfile.Path(root))
+		default:
 			if key, err = keyfile.Generate(root, *config.Force); err != nil {
 				return err
 			}
@@ -204,13 +237,7 @@ func resolveSecret() error {
 		} else {
 			fmt.Printf("(key not shown: stdout is not a terminal; run --show-key in one)\n")
 		}
-		// 仅带 --gen-key（外加 --force / -p）＝ 像 wg genkey 一样生成即退出；
-		// 带其他运行旗子才接着正常启动
-		runFlags := cliFlagsSet()
-		for _, name := range []string{"gen-key", "force", "path", "p"} {
-			delete(runFlags, name)
-		}
-		if len(runFlags) == 0 {
+		if !starting {
 			os.Exit(0)
 		}
 		*config.Secret = key
@@ -228,16 +255,9 @@ func resolveSecret() error {
 
 	if *config.Secret != "" {
 		// 显式最高优先（least surprise：文件优先会让 -k newvalue 被静默忽略）。
-		// 汇端与拨出的源端对称持有：把 key 落进自己的密钥文件，下次启动可省 -k；
-		// 内容一致时静默跳过，落盘失败不致命（本次仍按 -k 跑）
-		if config.SyncsFromUpstream() || config.SourceDials {
-			written, err := keyfile.Save(root, *config.Secret)
-			if err != nil {
-				log.Warnf("failed to save the key file (still running with -k): %v", err)
-			} else if written {
-				fmt.Printf("key saved to %s; -k can be omitted from now on\n", keyfile.Path(root))
-			}
-		}
+		// 汇端与拨出的源端对称持有：把 key 落进自己的密钥文件，下次启动可省 -k。
+		// 落盘推迟到拿到目录锁之后（persistPendingKey）
+		keySavePending = config.SyncsFromUpstream() || config.SourceDials
 		return nil
 	}
 
@@ -271,6 +291,26 @@ func peerKeyHint(key string) (label, cmd string) {
 			fmt.Sprintf("local-mirror %s --connect <host> -p <dir> -k '%s'", peerDir, key)
 	}
 	return "on the listening end:", fmt.Sprintf("local-mirror %s --listen -p <dir> -k '%s'", peerDir, key)
+}
+
+// keySavePending 本次生效的 key（-k 给的，或 --gen-key 新生成的）需要落进 key 文件，
+// 由 persistPendingKey 在拿到目录锁后执行
+var keySavePending bool
+
+// persistPendingKey 把本次生效的 key 落进同步根的 key 文件。必须在 InitDB 拿到目录锁之后调用：
+// 同一目录已有实例在跑时，新进程会在锁上失败退出，绝不能先把运行中实例的 key 文件
+// 换成自己的（那样运行中实例下次重启就用错 key，所有对端都连不上）。
+// 内容一致时静默跳过，落盘失败不致命（本次仍按 -k 跑）
+func persistPendingKey() {
+	if !keySavePending {
+		return
+	}
+	written, err := keyfile.Save(config.StartPath, *config.Secret)
+	if err != nil {
+		log.Warnf("failed to save the key file (still running with -k): %v", err)
+	} else if written {
+		fmt.Printf("key saved to %s; -k can be omitted from now on\n", keyfile.Path(config.StartPath))
+	}
 }
 
 // runDiscovery 扫描局域网服务端并确定上游地址，写入

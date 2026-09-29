@@ -42,6 +42,7 @@ func main() {
 	}
 
 	flag.Parse()
+	positionalArgs = parseInterspersed()
 
 	// 用户主动请求帮助：输出到 stdout，退出码 0
 	if *config.Help {
@@ -202,6 +203,7 @@ func main() {
 	// 顺序反了会出现"横幅宣布成功后才因锁退出"的误导，以及一个
 	// accept 循环永远不会启动的幽灵端口
 	tree.InitDB()
+	persistPendingKey()
 	defer func() {
 		if tree.DB != nil {
 			if err := tree.DB.Close(); err != nil {

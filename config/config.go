@@ -301,8 +301,9 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               .local-mirror/key file > plaintext\n")
 	fmt.Fprintf(w, "      --gen-key                generate a strong random key into .local-mirror/key (600),\n")
 	fmt.Fprintf(w, "                               print it to the terminal, then exit; add run flags (e.g. --send)\n")
-	fmt.Fprintf(w, "                               to generate and start in one go. Refuses to overwrite an\n")
-	fmt.Fprintf(w, "                               existing key (--force to regenerate)\n")
+	fmt.Fprintf(w, "                               to generate and start in one go. An existing key is reused,\n")
+	fmt.Fprintf(w, "                               so the same command works again after a restart\n")
+	fmt.Fprintf(w, "                               (--force to regenerate)\n")
 	fmt.Fprintf(w, "      --status                 live status dashboard for the running instance (refreshes\n")
 	fmt.Fprintf(w, "                               in a terminal, prints once when piped). Reads the sync\n")
 	fmt.Fprintf(w, "                               root from -p or the current directory; a separate,\n")
@@ -333,32 +334,33 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "  .local-mirror/logs/error.log   runtime log (errors also go to the terminal)\n")
 	fmt.Fprintf(w, "  .local-mirror/ignore           ignore patterns (one per line, # comments; merged with -i)\n\n")
 
-	fmt.Fprintf(w, "Examples:\n")
-	fmt.Fprintf(w, "  # classic: serve the current directory, mirror it from another machine\n")
-	fmt.Fprintf(w, "  local-mirror --send\n")
-	fmt.Fprintf(w, "  local-mirror --receive --connect 192.168.1.100 -p /srv/replica\n\n")
+	fmt.Fprintf(w, "Examples (each group runs on the machines named; the listener's --gen-key\n")
+	fmt.Fprintf(w, "prints the key and the exact command for the other end):\n\n")
+
+	fmt.Fprintf(w, "  # LAN: the source listens, the sink dials it (192.168.1.100 = the source)\n")
+	fmt.Fprintf(w, "  A$ local-mirror --send -p /srv/data --gen-key\n")
+	fmt.Fprintf(w, "  B$ local-mirror --receive --connect 192.168.1.100 -p /srv/replica -k <printed-key>\n\n")
+
+	fmt.Fprintf(w, "  # LAN, zero config: the sink finds the source by UDP discovery\n")
+	fmt.Fprintf(w, "  A$ local-mirror --send -p /srv/data --gen-key\n")
+	fmt.Fprintf(w, "  B$ local-mirror --receive -p /srv/replica -k <printed-key>\n\n")
 
 	fmt.Fprintf(w, "  # push to a public VPS: the sink listens there, the source dials out\n")
 	fmt.Fprintf(w, "  # (edit locally, never ssh in; home stays outbound-only, NAT-friendly)\n")
-	fmt.Fprintf(w, "  vps$   local-mirror --receive --listen -p /srv/backup --allow-delete\n")
-	fmt.Fprintf(w, "  home$  local-mirror --send --connect vps.example.net:%d\n\n", DefaultPort)
+	fmt.Fprintf(w, "  vps$   local-mirror --receive --listen -p /srv/backup --allow-delete --gen-key\n")
+	fmt.Fprintf(w, "  home$  local-mirror --send --connect vps.example.net:%d -p ./proj -k <printed-key>\n", DefaultPort)
+	fmt.Fprintf(w, "  home$  local-mirror -k <printed-key> ./proj @vps.example.net:%d   # same, positional\n\n", DefaultPort)
 
-	fmt.Fprintf(w, "  # same, rsync-style positional sugar\n")
-	fmt.Fprintf(w, "  local-mirror ./proj @vps.example.net:%d\n\n", DefaultPort)
+	fmt.Fprintf(w, "  # relay A -> B -> C (192.168.1.100 = A, 192.168.1.101 = B)\n")
+	fmt.Fprintf(w, "  A$ local-mirror --send -p /srv/data --gen-key\n")
+	fmt.Fprintf(w, "  B$ local-mirror --send --receive --connect 192.168.1.100 -p /srv/relay -k <printed-key>\n")
+	fmt.Fprintf(w, "  C$ local-mirror --receive --connect 192.168.1.101 -p /srv/replica -k <printed-key>\n\n")
 
-	fmt.Fprintf(w, "  # receive with LAN discovery (interactive pick)\n")
-	fmt.Fprintf(w, "  local-mirror --receive -p /srv/replica\n\n")
-
-	fmt.Fprintf(w, "  # relay: receive from upstream while serving downstream (A -> B -> C)\n")
-	fmt.Fprintf(w, "  local-mirror --send --receive --connect 192.168.1.100 -p /srv/relay\n\n")
-
-	fmt.Fprintf(w, "  # transport encryption, self-managed key: generate on the listening end,\n")
-	fmt.Fprintf(w, "  # dial in with it once (the dialer saves it and -k can then be omitted)\n")
-	fmt.Fprintf(w, "  local-mirror --gen-key --send\n")
-	fmt.Fprintf(w, "  local-mirror --receive --connect 192.168.1.100 -k <generated-key>\n\n")
+	fmt.Fprintf(w, "  # every end keeps the key in .local-mirror/key after its first run, so -k can\n")
+	fmt.Fprintf(w, "  # be dropped from then on; rerunning a --gen-key command reuses the key\n\n")
 
 	fmt.Fprintf(w, "  # ignore node_modules and all .log files\n")
-	fmt.Fprintf(w, "  local-mirror --send -i \"node_modules,*.log\"\n")
+	fmt.Fprintf(w, "  local-mirror --send -p /srv/data --gen-key -i \"node_modules,*.log\"\n")
 }
 
 // filebuffersize 传输分块大小的合法区间（CFG-01）。0 会让发送循环空转——零长度
@@ -423,7 +425,7 @@ func init() {
 	SecretStdin = flag.Bool("secret-stdin", false, "read the transport key from the first line of stdin (internal: supervisor to child)")
 
 	// 密钥自管理（公网化支柱 C）：监听端生成强随机 key，消灭弱口令
-	GenKey = flag.Bool("gen-key", false, "generate a strong random key into .local-mirror/key, print it to the terminal, then exit")
+	GenKey = flag.Bool("gen-key", false, "generate a strong random key into .local-mirror/key (reusing an existing one) and print it to the terminal; exits unless run flags are given")
 	ShowKey = flag.Bool("show-key", false, "print the existing key file to the terminal and exit")
 	NoEncrypt = flag.Bool("no-encrypt", false, "force plaintext even when a key file exists")
 	Force = flag.Bool("force", false, "with --gen-key: overwrite an existing key file")

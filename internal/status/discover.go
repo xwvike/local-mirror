@@ -82,12 +82,13 @@ func resolveRoot(args []string, cwd string) string {
 	for i := 1; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
-			positional = args[i+1:]
+			positional = append(positional, args[i+1:]...)
 			break
 		}
+		// 旗子与位置参数可任意穿插（与 main 的 parseInterspersed 一致）
 		if !strings.HasPrefix(a, "-") || a == "-" {
-			positional = args[i:]
-			break
+			positional = append(positional, a)
+			continue
 		}
 		name, val, hasVal := strings.Cut(strings.TrimLeft(a, "-"), "=")
 		if !hasVal && valueFlags[name] && i+1 < len(args) {

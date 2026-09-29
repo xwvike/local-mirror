@@ -54,15 +54,23 @@ func Generate(root string, force bool) (string, error) {
 				"regenerating disconnects every dialer holding the old key; pass --force to overwrite", path)
 		}
 	}
-	buf := make([]byte, KeyBytes)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("failed to gather randomness: %w", err)
+	key, err := NewKey()
+	if err != nil {
+		return "", err
 	}
-	key := base64.StdEncoding.EncodeToString(buf)
 	if err := write(path, key); err != nil {
 		return "", err
 	}
 	return key, nil
+}
+
+// NewKey 生成强随机 key，不落盘（由调用方决定何时 Save）
+func NewKey() (string, error) {
+	buf := make([]byte, KeyBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to gather randomness: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf), nil
 }
 
 // Save 把 key 落盘（拨号端对称持有，下次启动可省 -k）。

@@ -13,5 +13,5 @@
 #     path: /srv/backup       # 同步根（必填）
 #     allow_delete: true      # 忠实镜像（含删除）；不给则只增不删
 #     loglevel: warn          # debug / info / warn / error
-#     secret: <--gen-key 生成的 key 贴这里>   # 不填则明文传输
+#     secret: <--gen-key 生成的 key 贴这里>   # 监听端必须有 key：填这里或在同步根放 .local-mirror/key；拨号端不填则明文
 #     ignore: [node_modules, dist]           # 额外忽略项
