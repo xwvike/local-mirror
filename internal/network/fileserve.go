@@ -130,15 +130,16 @@ func (s *fileServer) handleTreeRequest(c *client, bodyBytes []byte) error {
 	}
 	page, next := pageSortedEntries(entries, treeRequest.ContinueFrom, treePageMaxEntries)
 	wire := wirePageCopy(page)
-	// Merkle rollup 注入：给目录条目填上其子树指纹（Node.Hash 对目录原本为空），
-	// 供汇端全量扫描据此剪枝未变子树。按原始 page[i].Path（本地分隔符）查表，写到
-	// 已转 "/" 的 wire[i]。DirHashes 出错则跳过——目录 Hash 留空，汇端老实全走一遍（兜底）。
+	// Merkle rollup 注入：给目录条目填上其子树指纹，供汇端全量扫描据此剪枝未变子树。
+	// Hash（对目录原本为空）放不含权限的 rollup，旧版汇端只认它；PermRollup 放含权限的，
+	// 新版汇端优先比它。按原始 page[i].Path（本地分隔符）查表，写到已转 "/" 的 wire[i]。
+	// 出错则跳过——目录指纹留空，汇端老实全走一遍（兜底）。
 	if dirHashes, dhErr := tree.DirHashes(); dhErr == nil {
+		permHashes, _ := tree.PermDirHashes()
 		for i := range wire {
 			if page[i].IsDir {
-				if h, ok := dirHashes[page[i].Path]; ok {
-					wire[i].Hash = h
-				}
+				wire[i].Hash = dirHashes[page[i].Path]
+				wire[i].PermRollup = permHashes[page[i].Path]
 			}
 		}
 	} else {

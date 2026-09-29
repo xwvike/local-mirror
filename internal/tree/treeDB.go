@@ -53,6 +53,9 @@ type Node struct {
 	// Mode 权限位（见 PermOf），0 = 未知（Windows 端或旧版对端）。源端记磁盘现状；
 	// 汇端记最近一次应用的上游值，本地被改动的权限不回收
 	Mode uint32 `json:"mode,omitempty"`
+	// PermRollup 仅出现在线格式的目录条目上：计入权限的子树 rollup（见 PermDirHashes）。
+	// 不落库；旧版对端忽略它，照旧比对 Hash 里不含权限的 rollup
+	PermRollup string `json:"perm_rollup,omitempty"`
 }
 
 type Children struct {

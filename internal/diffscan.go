@@ -133,16 +133,11 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 				continue
 			}
 			if node.IsDir && !diffDirs[node.Path] {
-				// Merkle 剪枝：源端下发的目录 rollup（node.Hash）与本地快照相等 → 整棵子树无
-				// 任何 diff，不下钻，省掉该子树全部逐目录清单拉取（idle-traffic 根治的核心）。
-				// 仅当两侧 rollup 都拿得到才剪：node.Hash 为空（对端老版本没填）或本地快照缺该项
-				// （新目录，本地还没有）或快照整体不可用（localDirHashes==nil）时，一律照旧下钻，
-				// 正确性优先——剪枝只在"能证明相等"时生效。
-				if localDirHashes != nil && node.Hash != "" {
-					if lh, ok := localDirHashes[node.Path]; ok && lh == node.Hash {
-						log.Debugf("pruning unchanged subtree (rollup match): %s", node.Path)
-						continue
-					}
+				// Merkle 剪枝：源端下发的目录 rollup 与本地快照相等 → 整棵子树无任何 diff，
+				// 不下钻，省掉该子树全部逐目录清单拉取（idle-traffic 根治的核心）
+				if rollupMatches(node) {
+					log.Debugf("pruning unchanged subtree (rollup match): %s", node.Path)
+					continue
 				}
 				NextLevel.Push(DiffResult{
 					Path:   node.Path,
@@ -155,6 +150,22 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 		}
 	}
 	return nil
+}
+
+// rollupMatches 源端目录 rollup 与本地快照相等即可剪枝。对端给了含权限的 PermRollup
+// 就比它，否则（旧版源端）比不含权限的 Hash——新旧版本任意组合剪枝都照常生效。
+// 仅当两侧都拿得到才剪：对端没填、本地快照缺该项（新目录）或快照整体不可用时一律照旧
+// 下钻，正确性优先——剪枝只在"能证明相等"时生效
+func rollupMatches(node tree.Node) bool {
+	remote, local := node.PermRollup, localPermDirHashes
+	if remote == "" {
+		remote, local = node.Hash, localDirHashes
+	}
+	if remote == "" || local == nil {
+		return false
+	}
+	lh, ok := local[node.Path]
+	return ok && lh == remote
 }
 
 // filterIgnoredDiffs 剔除命中忽略列表的 diff 项。
