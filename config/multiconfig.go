@@ -63,6 +63,12 @@ func LoadMultiConfig(path string) (*MultiConfig, error) {
 		}
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
+	return ParseMultiConfig(data, path)
+}
+
+// ParseMultiConfig 解析并校验 YAML 内容，path 是它（将要）所在的位置——配置不得落在
+// 任务同步根内的校验要用到。service install 据此在写盘前校验改好的配置
+func ParseMultiConfig(data []byte, path string) (*MultiConfig, error) {
 	var cfg MultiConfig
 	// KnownFields(true)：拒绝未知字段（CFG-02）。此前 yaml.Unmarshal 会静默忽略拼错的键，
 	// 把 secret 拼成 secrect 之类会让任务照常启动却退化成明文；allow_delete/listen/connect

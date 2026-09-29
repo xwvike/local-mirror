@@ -18,14 +18,18 @@ import (
 // 返回空切片 = 不加固。三种情况都会落到这里：配置还是空白的（首次安装）、
 // 配置解析不了、或任一任务的根落在关键路径上（此时授权范围会大到让加固失去意义）
 func rwPathsFromConfig(configPath string) (paths []string, note string) {
-	cfg, err := config.LoadMultiConfig(configPath)
+	return rwPathsFrom(config.LoadMultiConfig(configPath))
+}
+
+// rwPathsFrom 同 rwPathsFromConfig，作用于已解析（或解析失败）的配置
+func rwPathsFrom(cfg *config.MultiConfig, err error) (paths []string, note string) {
 	if err != nil {
-		// procd 本就没有 ProtectSystem/ReadWritePaths 的对应物，
-		// 在那里承诺「重跑即可补上加固」是空头支票
-		if detectInit() == initProcd {
+		// ProtectSystem/ReadWritePaths 只有 systemd 有：procd、launchd 上承诺
+		// 「重跑即可补上加固」是空头支票
+		if detectInit() != initSystemd {
 			return nil, ""
 		}
-		return nil, "配置尚未填写或暂不可解析：本次不写入 ProtectSystem 加固；填好配置后重跑 service install 即可补上"
+		return nil, "配置中尚无可用任务，本次未写入 ProtectSystem 加固；填写配置后执行 local-mirror service restart（系统级服务需 sudo）时写入"
 	}
 	for _, t := range cfg.Tasks {
 		if critical, hit := safety.IsCriticalRoot(t.Path); critical {
@@ -260,15 +264,11 @@ func chownConfigTo(cfgPath, username string) error {
 	return os.Chown(cfgPath, uid, gid)
 }
 
-// registerCmd 注册服务的命令。launchd 的 bootstrap 需要域名 + plist 路径；
-// systemd 只需 daemon-reload（enable/start 交给用户，见 install 的收尾提示）
+// registerCmd 配置还没有可用任务时的"只注册、不启动"命令：systemd 只需 daemon-reload，
+// procd 建好 rc.d 软链。launchd 没有不启动的注册方式（bootstrap 按 RunAtLoad 立即拉起），
+// 返回 nil——等配置可用、由 startSteps 一并加载
 func registerCmd(userScope bool, svcPath string) []string {
 	switch runtime.GOOS {
-	case "darwin":
-		if userScope {
-			return []string{"launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), svcPath}
-		}
-		return []string{"launchctl", "bootstrap", "system", svcPath}
 	case "linux":
 		if detectInit() == initProcd {
 			// procd 没有 daemon-reload，enable 建好 rc.d 软链即完成注册
@@ -280,25 +280,6 @@ func registerCmd(userScope bool, svcPath string) []string {
 		return []string{"systemctl", "daemon-reload"}
 	}
 	return nil
-}
-
-func startHint(userScope bool) string {
-	switch runtime.GOOS {
-	case "darwin":
-		if userScope {
-			return fmt.Sprintf("launchctl kickstart -k gui/%d/%s", os.Getuid(), serviceLabel)
-		}
-		return fmt.Sprintf("sudo launchctl kickstart -k system/%s", serviceLabel)
-	case "linux":
-		if detectInit() == initProcd {
-			return "/etc/init.d/local-mirror start"
-		}
-		if userScope {
-			return "systemctl --user enable --now local-mirror"
-		}
-		return "sudo systemctl enable --now local-mirror"
-	}
-	return ""
 }
 
 // ensureBlankConfig 建目录与空白配置。已存在则原样保留——
@@ -327,9 +308,9 @@ func reportConfigOutcome(path string, created, dryRun bool) {
 	case created && dryRun:
 		fmt.Printf("[dry-run] 将创建空白配置 %s（600）\n", path)
 	case created:
-		fmt.Printf("已创建空白配置 %s（600）——编辑它\n", path)
+		fmt.Printf("已创建空白配置 %s（600）\n", path)
 	default:
-		fmt.Printf("配置已存在，原样保留：%s\n", path)
+		fmt.Printf("使用现有配置：%s\n", path)
 	}
 }
 

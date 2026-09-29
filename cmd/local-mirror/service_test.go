@@ -191,7 +191,8 @@ func TestRWPathsFromConfigSkipsCriticalRoot(t *testing.T) {
 }
 
 // TestRWPathsFromConfigBlankConfig 空白配置（刚 install 出来、用户还没填）
-// 不该报错，只是不加固，并提示填好后重跑
+// 不该报错，只是不加固。加固（ProtectSystem）只有 systemd 有：那里提示填好后重跑
+// 即可补上，其他 init 上不给这个空头承诺
 func TestRWPathsFromConfigBlankConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	if _, err := ensureBlankConfig(path, false); err != nil {
@@ -201,8 +202,12 @@ func TestRWPathsFromConfigBlankConfig(t *testing.T) {
 	if len(paths) != 0 {
 		t.Errorf("空白配置不应产出授权路径: %v", paths)
 	}
-	if !strings.Contains(note, "重跑") {
-		t.Errorf("应提示填好配置后重跑 install，实际: %q", note)
+	if detectInit() == initSystemd {
+		if !strings.Contains(note, "重跑") {
+			t.Errorf("systemd 上应提示填好配置后重跑 install，实际: %q", note)
+		}
+	} else if note != "" {
+		t.Errorf("非 systemd 没有加固可补，不应给出提示，实际: %q", note)
 	}
 }
 

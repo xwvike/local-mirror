@@ -1,8 +1,11 @@
 # local-mirror 配置文件
 #
-# 填好之后启动服务：
-#   Linux:  sudo systemctl enable --now local-mirror
-#   macOS:  launchctl kickstart -k gui/$(id -u)/com.xwvike.local-mirror
+# 推荐方式：以前台验证过的参数执行 local-mirror service install，任务自动写入本文件并
+# 启动服务（Linux 上需 sudo），例如：
+#   sudo local-mirror service install --receive --listen -p /srv/backup --allow-delete --gen-key
+#
+# 手工填写：取消下方注释并填写字段，然后执行 local-mirror service restart（Linux 上需 sudo）
+# 注册并启动服务。
 #
 # 观测：local-mirror --status --all
 #
