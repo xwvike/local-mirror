@@ -81,8 +81,12 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 	// 忽略的条目由此对同步完全隐形（本地已有的副本也不会被碰）
 	diffs = filterIgnoredDiffs(diffs)
 
+	// 本目录的树写入攒成一批，处理完提交（见 tree.Batch）
+	var batch tree.Batch
+	defer batch.Commit()
+
 	// 保真：就地重命名的文件走本地 rename，免整文件重新下载（COR-02，门控见 maybeDetectRenames）
-	diffs = maybeDetectRenames(diffs)
+	diffs = maybeDetectRenames(diffs, &batch)
 
 	log.Infof("Diff count for %s: %d", path, len(diffs))
 	diffDirs := make(map[string]bool)
@@ -92,7 +96,7 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 			// 已确认持续失败，本轮不再尝试，让其余正常项能被处理到
 			continue
 		}
-		if err := processDiffItem(v, fileClient); err != nil {
+		if err := processDiffItem(v, fileClient, &batch); err != nil {
 			// 磁盘空间不足：跳过该文件继续处理其余项（小文件可能仍装得下），
 			// 目录处理完后聚合成一条提示，避免逐文件刷屏
 			if errors.Is(err, appError.ErrDiskFull) {
@@ -113,7 +117,7 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 			log.Errorf("Error processing diff item %v: %v", v, err)
 			continue
 		}
-		recordChangedDir(v.Path)
+		recordChangedDir(v.Path, &batch)
 		// 只有新建/类型互换的目录要强制下钻；chmod 的目录交给下面的 rollup 剪枝判定
 		if v.IsDir && (v.Action == "create" || v.Action == "retype") {
 			diffDirs[v.Path] = true
@@ -186,18 +190,18 @@ func filterIgnoredDiffs(diffs []DiffResult) []DiffResult {
 // maybeDetectRenames 仅在 --allow-delete（忠实镜像）下启用重命名优化——rename 会移除
 // 旧路径，本质是删除；默认增量模式不删除，那里旧文件必须原样保留、新文件另行下载，
 // 否则「默认只同步不删」会被这条优化悄悄打破（COR-02）
-func maybeDetectRenames(diffs []DiffResult) []DiffResult {
+func maybeDetectRenames(diffs []DiffResult, b *tree.Batch) []DiffResult {
 	if !*config.AllowDelete {
 		return diffs
 	}
-	return detectRenames(diffs)
+	return detectRenames(diffs, b)
 }
 
 // detectRenames 在单个目录的 diff 内识别"就地重命名"：一个 delete 与一个
 // create 若指向哈希相同的文件（内容未变、仅换名），直接本地 rename，
 // 避免整文件重新下载。返回消化掉重命名对之后剩余的 diff。
 // 仅处理同目录内的文件（跨目录移动分属不同目录的 diff，无法在此配对）。
-func detectRenames(diffs []DiffResult) []DiffResult {
+func detectRenames(diffs []DiffResult, b *tree.Batch) []DiffResult {
 	// 按哈希索引待删除的文件（每个哈希取第一个）
 	delIdxByHash := make(map[string]int)
 	for i, d := range diffs {
@@ -220,7 +224,7 @@ func detectRenames(diffs []DiffResult) []DiffResult {
 		if !ok || handled[di] || diffs[di].Path == d.Path {
 			continue
 		}
-		if err := applyRename(diffs[di], d); err != nil {
+		if err := applyRename(diffs[di], d, b); err != nil {
 			log.Warnf("rename %s -> %s failed, falling back to download: %v", diffs[di].Path, d.Path, err)
 			continue
 		}
@@ -242,7 +246,7 @@ func detectRenames(diffs []DiffResult) []DiffResult {
 }
 
 // applyRename 执行一次就地重命名：本地移动文件、对齐 mtime、更新数据库
-func applyRename(oldDiff, newDiff DiffResult) error {
+func applyRename(oldDiff, newDiff DiffResult, b *tree.Batch) error {
 	oldFull, err := safety.SafeResolve(config.StartPath, oldDiff.Path)
 	if err != nil {
 		log.Errorf("refusing to rename from out-of-root path: %v", err)
@@ -272,15 +276,11 @@ func applyRename(oldDiff, newDiff DiffResult) error {
 	}
 	applyPerm(newFull, newDiff)
 	applyModTime(newDiff)
-	if err := tree.DeleteNode(oldDiff.Path); err != nil {
-		return err
-	}
-	if err := tree.AddNodes([]*tree.Node{createNodeFromDiff(newDiff, newDiff.Hash)}); err != nil {
-		return err
-	}
+	b.Delete(oldDiff.Path)
+	b.Add(createNodeFromDiff(newDiff, newDiff.Hash), false)
 	// 重命名影响新旧两个父目录
-	recordChangedDir(oldDiff.Path)
-	recordChangedDir(newDiff.Path)
+	recordChangedDir(oldDiff.Path, b)
+	recordChangedDir(newDiff.Path, b)
 	return nil
 }
 
