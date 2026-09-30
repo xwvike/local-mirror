@@ -11,6 +11,7 @@ import (
 	"local-mirror/internal/status"
 	"local-mirror/internal/tree"
 	"local-mirror/pkg/utils"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -215,26 +216,72 @@ func (s *fileServer) handleFileRequest(c *client, bodyBytes []byte) error {
 		return fmt.Errorf("%w, error decoding file request: %v", appError.ErrConnection, err)
 	}
 	log.Debugf("Received file request: %s, offset: %d", fileRequest.FilePath, fileRequest.Offset)
-	fullPath := filepath.Join(config.StartPath, fileRequest.FilePath)
+	sf, release, err := openServeFile(fileRequest.FilePath, fileRequest.Offset)
+	if err != nil {
+		return err
+	}
+	defer release()
+	defer sf.file.Close()
+
+	sessionID, err := utils.RandomString(16)
+	if err != nil {
+		return fmt.Errorf("error generating session ID for file %s", fileRequest.FilePath)
+	}
+	var sessionBytes [16]byte
+	copy(sessionBytes[:], sessionID)
+	session := &session{
+		ID:       sessionBytes,
+		FilePath: sf.fullPath,
+		FileSize: uint64(sf.info.Size()),
+		Offset:   sf.offset,
+		file:     sf.file,
+	}
+	c.SessionMap.Store(session.ID, session)
+
+	fileResponse := FileResponseMessage{
+		SessionID: sessionBytes,
+		FileSize:  uint64(sf.info.Size()),
+		FileHash:  sf.hash,
+	}
+	if err := sendMessage(conn, MsgTypeFileResponse, encodeFileResponse(fileResponse)); err != nil {
+		return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
+	}
+	log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, sf.info.Size())
+	return s.sendFileData(conn, c, session)
+}
+
+// servedFile 通过全部校验、已打开并定位到起始偏移的待发文件
+type servedFile struct {
+	file     *os.File
+	info     os.FileInfo
+	hash     [32]byte // 起始哈希（续传提示），权威哈希由 sendFileData 流式算出
+	fullPath string
+	offset   uint64
+}
+
+// openServeFile 执行文件服务的全部校验并打开文件，单文件请求与首次全量推送共用。
+// 成功时已持有全局文件服务槽，调用方负责 release() 与关闭文件
+func openServeFile(reqPath string, offset uint64) (*servedFile, func(), error) {
+	fullPath := filepath.Join(config.StartPath, reqPath)
 	// 防止路径穿越：请求路径解析后必须仍位于同步根目录内
 	rel, relErr := filepath.Rel(config.StartPath, fullPath)
 	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return &wireError{Code: ErrCodeOutOfRoot, Path: fileRequest.FilePath, Message: "illegal file path (escapes sync root)"}
+		return nil, nil, &wireError{Code: ErrCodeOutOfRoot, Path: reqPath, Message: "illegal file path (escapes sync root)"}
 	}
 	// 授权闸门（SEC-02）：文件服务只提供「公开目录树里、哈希非空的普通文件」。词法根检查
 	// 只保证「没逃出根」，但已握手的对端仍能绕过树枚举、直接点名根内任意路径。策略抽到
 	// authorizeServeFile 便于单测；rel 复用上面根检查算出的同一个值，与 tree/IsIgnored 的
 	// 键形态（OS 分隔符、根为 "."）一致。
-	node, werr := authorizeServeFile(rel, fileRequest.FilePath)
+	node, werr := authorizeServeFile(rel, reqPath)
 	if werr != nil {
-		return werr
+		return nil, nil, werr
 	}
 	// SEC-03：逐级校验请求路径的每一级组件都不是符号链接。只查末段（原 Lstat）挡不住
 	// 「中间某级目录是指向根外的符号链接」——后续 Stat/Open 会解引用它，读到同步根之外的
 	// 文件（outside→/etc，请求 outside/passwd）。SEC-02 的树成员校验已基本关掉此路（建树跳过
 	// 符号链接，故这类路径不在树里），这里作纵深防御 + 收 TOCTOU
 	if err := safety.VerifyNoSymlinkComponents(config.StartPath, rel); err != nil {
-		return &wireError{Code: ErrCodeOutOfRoot, Path: fileRequest.FilePath, Message: "refusing to serve symlinked path"}
+		return nil, nil, &wireError{Code: ErrCodeOutOfRoot, Path: reqPath, Message: "refusing to serve symlinked path"}
 	}
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
@@ -252,89 +299,58 @@ func (s *fileServer) handleFileRequest(c *client, bodyBytes []byte) error {
 					log.Infof("evicted phantom tree node %s (advertised but missing on disk)", rel)
 				}
 			}
-			return &wireError{Code: ErrCodeNotFound, Path: fileRequest.FilePath, Message: "file not found"}
+			return nil, nil, &wireError{Code: ErrCodeNotFound, Path: reqPath, Message: "file not found"}
 		}
-		return fmt.Errorf("error getting file info: %s :%v", fileRequest.FilePath, err)
-
-	} else {
-		// 5.4 全局限流：整文件预哈希 + 传输是两次全盘读，256 连接各自触发大文件会把磁盘/CPU
-		// 打爆。在此获取全局服务槽（容量远小于连接上限），跨「哈希 → 传输」整段持有、出函数即释放。
-		// 阻塞发生在该连接自己的消息循环 goroutine 内——只是排队等槽，不影响其它连接的握手/目录树/
-		// 变更长轮询等轻量交互。所有廉价校验（越权/忽略/不在树/不存在/软链）都在获取槽之前完成，
-		// 被拒的请求不占槽
-		release := acquireFileServeSlot()
-		defer release()
-
-		// 起始哈希（写入 FileResponse，仅作续传提示）：5.2 meta-trust——磁盘 size+mtime 与树
-		// 节点一致就直接复用 node.Hash，免这一遍全量预读；不一致（文件自建树后变过）才回退
-		// 全量重算。权威的完整性哈希由 sendFileData 按实际字节流式算出并写入 FileComplete
-		fileHash, ok := trustedServeHash(node, fileInfo)
-		if !ok {
-			var herr error
-			fileHash, herr = utils.CalcBlake3(fullPath)
-			if herr != nil {
-				tree.MarkUnreadable(fullPath)
-				if os.IsPermission(herr) {
-					return &wireError{Code: ErrCodePermissionDenied, Path: fileRequest.FilePath,
-						Message: fmt.Sprintf("error calculating file hash: %v", herr)}
-				}
-				return fmt.Errorf("error calculating file hash for %s: %v", fileRequest.FilePath, herr)
-			}
-		}
-
-		file, err := os.Open(fullPath)
-		if err != nil {
-			// meta-trust 跳过了预读，读不了要在这里登记不可读（原先由 CalcBlake3 失败登记）
-			if os.IsPermission(err) {
-				tree.MarkUnreadable(fullPath)
-				return &wireError{Code: ErrCodePermissionDenied, Path: fileRequest.FilePath,
-					Message: fmt.Sprintf("error opening file: %v", err)}
-			}
-			return fmt.Errorf("error opening file %s: %v", fileRequest.FilePath, err)
-		}
-		defer file.Close()
-
-		sessionID, err := utils.RandomString(16)
-		if err != nil {
-			return fmt.Errorf("error generating session ID for file %s", fileRequest.FilePath)
-		}
-		var sessionBytes [16]byte
-		copy(sessionBytes[:], sessionID)
-
-		if fileRequest.Offset > 0 {
-			if _, err := file.Seek(int64(fileRequest.Offset), io.SeekStart); err != nil {
-				return fmt.Errorf("error seeking file %s at offset %d", fileRequest.FilePath, fileRequest.Offset)
-			}
-		}
-		session := &session{
-			ID:       sessionBytes,
-			FilePath: fullPath,
-			FileSize: uint64(fileInfo.Size()),
-			Offset:   fileRequest.Offset,
-			file:     file,
-		}
-
-		c.SessionMap.Store(session.ID, session)
-
-		fileResponse := FileResponseMessage{
-			SessionID: sessionBytes,
-			FileSize:  uint64(fileInfo.Size()),
-			FileHash:  fileHash,
-		}
-		responseBytes := encodeFileResponse(fileResponse)
-		if err := sendMessage(conn, MsgTypeFileResponse, responseBytes); err != nil {
-			return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
-		}
-		log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, fileInfo.Size())
-		if err := s.sendFileData(c, session); err != nil {
-			return err
-		}
-		return nil
+		return nil, nil, fmt.Errorf("error getting file info: %s :%v", reqPath, err)
 	}
+
+	// 5.4 全局限流：整文件预哈希 + 传输是两次全盘读，256 连接各自触发大文件会把磁盘/CPU
+	// 打爆。在此获取全局服务槽（容量远小于连接上限），跨「哈希 → 传输」整段持有，由调用方释放。
+	// 阻塞发生在该连接自己的消息循环 goroutine 内——只是排队等槽，不影响其它连接的握手/目录树/
+	// 变更长轮询等轻量交互。所有廉价校验（越权/忽略/不在树/不存在/软链）都在获取槽之前完成，
+	// 被拒的请求不占槽
+	release := acquireFileServeSlot()
+
+	// 起始哈希（写入 FileResponse，仅作续传提示）：5.2 meta-trust——磁盘 size+mtime 与树
+	// 节点一致就直接复用 node.Hash，免这一遍全量预读；不一致（文件自建树后变过）才回退
+	// 全量重算。权威的完整性哈希由 sendFileData 按实际字节流式算出并写入 FileComplete
+	fileHash, ok := trustedServeHash(node, fileInfo)
+	if !ok {
+		var herr error
+		fileHash, herr = utils.CalcBlake3(fullPath)
+		if herr != nil {
+			release()
+			tree.MarkUnreadable(fullPath)
+			if os.IsPermission(herr) {
+				return nil, nil, &wireError{Code: ErrCodePermissionDenied, Path: reqPath,
+					Message: fmt.Sprintf("error calculating file hash: %v", herr)}
+			}
+			return nil, nil, fmt.Errorf("error calculating file hash for %s: %v", reqPath, herr)
+		}
+	}
+
+	file, err := os.Open(fullPath)
+	if err != nil {
+		release()
+		// meta-trust 跳过了预读，读不了要在这里登记不可读（原先由 CalcBlake3 失败登记）
+		if os.IsPermission(err) {
+			tree.MarkUnreadable(fullPath)
+			return nil, nil, &wireError{Code: ErrCodePermissionDenied, Path: reqPath,
+				Message: fmt.Sprintf("error opening file: %v", err)}
+		}
+		return nil, nil, fmt.Errorf("error opening file %s: %v", reqPath, err)
+	}
+	if offset > 0 {
+		if _, err := file.Seek(int64(offset), io.SeekStart); err != nil {
+			file.Close()
+			release()
+			return nil, nil, fmt.Errorf("error seeking file %s at offset %d", reqPath, offset)
+		}
+	}
+	return &servedFile{file: file, info: fileInfo, hash: fileHash, fullPath: fullPath, offset: offset}, release, nil
 }
 
-func (s *fileServer) sendFileData(c *client, session *session) error {
-	conn := c.Conn
+func (s *fileServer) sendFileData(conn net.Conn, c *client, session *session) error {
 	// session.file 由 handleFileRequest 中的 defer 统一关闭，这里不重复 Close
 	defer c.SessionMap.Delete(session.ID)
 

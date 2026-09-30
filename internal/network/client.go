@@ -536,20 +536,48 @@ func (c *FileClient) DownloadFile(filePath string, perm uint32) (string, error) 
 		return "", fmt.Errorf("partial data for %s is stale, will restart from offset 0 on next attempt", filePath)
 	}
 
+	return receiveFile(conn, fileSession{Path: filePath, Perm: perm, ID: fileResponse.SessionID, Size: fileResponse.FileSize,
+		StartHash: serverHash, Offset: offset, Resume: resume})
+}
+
+// fileSession 一次已由服务端开始发送的文件会话（FileResponse 之后紧跟 FileData/FileComplete）
+type fileSession struct {
+	Path      string
+	Perm      uint32 // 上游权限位，0 = 未知
+	ID        [16]byte
+	Size      uint64
+	StartHash string // 服务端起始哈希（十六进制），记入分片元数据供续传核对
+	Offset    uint64 // 本次数据流的起始偏移
+	Resume    bool   // 是否接在已有分片之后
+}
+
+// drainAfter 在数据流开始前遇到本地错误时排空该会话，保持连接可复用；排空失败按连接错误上报
+func drainAfter(conn net.Conn, err error) error {
+	if derr := drainFileSession(conn); derr != nil {
+		return fmt.Errorf("%w: %v (draining the session failed: %v)", appError.ErrConnection, err, derr)
+	}
+	return err
+}
+
+// receiveFile 接收一次文件会话：写入分片、校验整文件哈希后落到最终位置，返回十六进制哈希
+func receiveFile(conn net.Conn, fs fileSession) (string, error) {
+	filePath, perm, offset, resume := fs.Path, fs.Perm, fs.Offset, fs.Resume
+	partialPath, metaPath := partialPaths(filePath)
 	fullPath := filepath.Join(config.StartPath, filePath)
 	// SEC-04：建目录前逐级校验无符号链接父目录逃逸（入口 484 的 SafeJoin 只做词法根检查，
 	// 挡不住中间某级是指向根外的符号链接——MkdirAll 会解引用它、在根外造目录）
 	if err := safety.VerifyNoSymlinkComponents(config.StartPath, filePath); err != nil {
-		return "", fmt.Errorf("refusing to write %s: %w", filePath, err)
+		return "", drainAfter(conn, fmt.Errorf("refusing to write %s: %w", filePath, err))
 	}
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return "", fmt.Errorf("failed to create directory for file: %w", err)
+		return "", drainAfter(conn, fmt.Errorf("failed to create directory for file: %w", err))
 	}
 
 	var file *os.File
+	var err error
 	if resume {
 		file, err = os.OpenFile(partialPath, os.O_WRONLY|os.O_APPEND, 0644)
-		log.Infof("resuming %s: %d/%d bytes already present", filePath, offset, fileResponse.FileSize)
+		log.Infof("resuming %s: %d/%d bytes already present", filePath, offset, fs.Size)
 	} else {
 		createPerm := os.FileMode(0666)
 		if perm != 0 {
@@ -560,14 +588,14 @@ func (c *FileClient) DownloadFile(filePath string, perm uint32) (string, error) 
 		file, err = os.OpenFile(partialPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, createPerm)
 		if err == nil {
 			// 先落 meta 再收数据：中断发生在任何时刻，分片都能被下次识别
-			metaData, _ := json.Marshal(partialMeta{Hash: serverHash, Size: fileResponse.FileSize})
+			metaData, _ := json.Marshal(partialMeta{Hash: fs.StartHash, Size: fs.Size})
 			if werr := os.WriteFile(metaPath, metaData, 0644); werr != nil {
 				log.Warnf("Failed to write partial meta for %s: %v", filePath, werr)
 			}
 		}
 	}
 	if err != nil {
-		return "", fmt.Errorf("failed to open partial file: %w", err)
+		return "", drainAfter(conn, fmt.Errorf("failed to open partial file: %w", err))
 	}
 	// 只负责关闭；分片文件在传输失败时保留，供下次续传
 	defer file.Close()
@@ -579,16 +607,16 @@ func (c *FileClient) DownloadFile(filePath string, perm uint32) (string, error) 
 	if resume {
 		pf, perr := os.Open(partialPath)
 		if perr != nil {
-			return "", fmt.Errorf("error opening partial for resume hashing %s: %w", filePath, perr)
+			return "", drainAfter(conn, fmt.Errorf("error opening partial for resume hashing %s: %w", filePath, perr))
 		}
 		if _, cerr := io.CopyN(hasher, pf, int64(offset)); cerr != nil {
 			pf.Close()
-			return "", fmt.Errorf("error hashing resume prefix of %s: %w", filePath, cerr)
+			return "", drainAfter(conn, fmt.Errorf("error hashing resume prefix of %s: %w", filePath, cerr))
 		}
 		pf.Close()
 	}
 
-	sessionID := fileResponse.SessionID
+	sessionID := fs.ID
 	receivedSize := offset
 	startTime := time.Now()
 
@@ -628,7 +656,7 @@ func (c *FileClient) DownloadFile(filePath string, perm uint32) (string, error) 
 			receivedSize += uint64(len(dataMsg.Data))
 			// 进度上报（--status 实时展示当前文件/速率）：节流在 status 内部，
 			// 这里每块调用只更新内存态，不落盘
-			status.RecordProgress(filePath, receivedSize, fileResponse.FileSize)
+			status.RecordProgress(filePath, receivedSize, fs.Size)
 		case MsgTypeFileComplete:
 			completeMsg, err := decodeFileComplete(bodyBytes)
 			if err != nil {
@@ -673,10 +701,10 @@ func (c *FileClient) DownloadFile(filePath string, perm uint32) (string, error) 
 				return "", fmt.Errorf("error renaming partial file to %s: %w", fullPath, err)
 			}
 			os.Remove(metaPath)
-			transferSpeed := float64(fileResponse.FileSize-offset) / time.Since(startTime).Seconds()
+			transferSpeed := float64(fs.Size-offset) / time.Since(startTime).Seconds()
 			log.Infof("File transfer complete, file path: %s, file size: %d bytes, transfer speed: %.2f MB/s",
 				fullPath,
-				fileResponse.FileSize,
+				fs.Size,
 				transferSpeed/1024/1024)
 			return fmt.Sprintf("%x", fileHash), nil
 		case MsgTypeError:
