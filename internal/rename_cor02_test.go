@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"local-mirror/config"
+	"local-mirror/internal/tree"
 )
 
 // TestRenameOptimizationGatedByAllowDelete 验证 COR-02 门控：--allow-delete 关闭时
@@ -21,7 +22,7 @@ func TestRenameOptimizationGatedByAllowDelete(t *testing.T) {
 		{Path: "a.txt", Action: "delete", IsDir: false, Hash: "h"},
 		{Path: "b.txt", Action: "create", IsDir: false, Hash: "h"},
 	}
-	got := maybeDetectRenames(diffs)
+	got := maybeDetectRenames(diffs, &tree.Batch{})
 	if len(got) != 2 {
 		t.Fatalf("allow-delete 关闭时不该消化 rename 对，应原样保留 2 条，实际 %d 条: %+v", len(got), got)
 	}
@@ -42,7 +43,7 @@ func TestApplyRenameRejectsDriftedLocalFile(t *testing.T) {
 	oldDiff := DiffResult{Path: oldRel, Hash: "0000deadbeef", IsDir: false}
 	newDiff := DiffResult{Path: "new.txt", Hash: "0000deadbeef", IsDir: false}
 
-	if err := applyRename(oldDiff, newDiff); err == nil {
+	if err := applyRename(oldDiff, newDiff, &tree.Batch{}); err == nil {
 		t.Fatal("本地旧文件哈希与 DB 不符时 applyRename 应返回错误（放弃 rename）")
 	}
 	// 旧文件原封未动、新文件未产生

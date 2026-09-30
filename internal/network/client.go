@@ -638,8 +638,8 @@ func (c *FileClient) DownloadFile(filePath string, perm uint32) (string, error) 
 				return "", fmt.Errorf("%w: invalid session ID in file complete message, got %x", appError.ErrConnection, completeMsg.SessionID)
 			}
 
-			if err := file.Sync(); err != nil {
-				log.Warnf("file.Sync() failed for %s: %v", partialPath, err)
+			if err := tree.SyncFileData(file); err != nil {
+				log.Warnf("syncing %s to disk failed: %v", partialPath, err)
 			}
 			if err := file.Close(); err != nil {
 				return "", fmt.Errorf("error closing file: %w", err)

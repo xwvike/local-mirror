@@ -51,7 +51,7 @@ func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
 }
 
 // processDiffItem handles a single diff item (file or directory)
-func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
+func processDiffItem(v DiffResult, fileClient *network.FileClient, b *tree.Batch) error {
 	switch v.Action {
 	case "delete":
 		// 默认不删除：仅增量同步，本地多余文件保留。
@@ -66,12 +66,11 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 			log.Errorf("refusing to delete out-of-root path: %v", err)
 			return nil
 		}
-		if err := os.RemoveAll(full); err == nil {
-			tree.DeleteNode(v.Path)
-			return nil
-		} else {
+		if err := os.RemoveAll(full); err != nil {
 			return err
 		}
+		b.Delete(v.Path)
+		return nil
 
 	case "retype":
 		// 类型互换（文件↔目录，COR-03）：必须先移除旧类型再建新类型。移除本质是删除，
@@ -90,18 +89,16 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 		if err := os.RemoveAll(full); err != nil {
 			return err
 		}
-		if err := tree.DeleteNode(v.Path); err != nil {
-			return err
-		}
+		b.Delete(v.Path)
 		// 建新类型：目录直接建，文件走正常下载（上游哈希缺失同 create 分支跳过）
 		if v.IsDir {
-			return processDirectoryDiff(v)
+			return processDirectoryDiff(v, b)
 		}
 		if v.Hash == "" {
 			warnUnreadableOnce(v.Path)
 			return nil
 		}
-		return processFileDiff(v, fileClient)
+		return processFileDiff(v, fileClient, b)
 
 	case "chmod":
 		full, err := safety.SafeResolve(config.StartPath, v.Path)
@@ -114,11 +111,12 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 		if v.IsDir {
 			hash = "" // 目录在线格式上的 Hash 是 rollup，不落库
 		}
-		return tree.AddNodes([]*tree.Node{createNodeFromDiff(v, hash)})
+		b.Add(createNodeFromDiff(v, hash), false)
+		return nil
 
 	case "create", "modify":
 		if v.IsDir {
-			return processDirectoryDiff(v)
+			return processDirectoryDiff(v, b)
 		}
 		// 上游哈希缺失 = 服务端自己都读不了这个文件（扫描/监听时哈希失败，
 		// 典型是权限问题），下载注定失败——确定性跳过并明确告知，而不是发一个
@@ -129,7 +127,7 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 			warnUnreadableOnce(v.Path)
 			return nil
 		}
-		return processFileDiff(v, fileClient)
+		return processFileDiff(v, fileClient, b)
 
 	default:
 		log.Warnf("Unknown action type: %s", v.Action)
@@ -137,7 +135,7 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient) error {
 	}
 }
 
-func processDirectoryDiff(v DiffResult) error {
+func processDirectoryDiff(v DiffResult, b *tree.Batch) error {
 	// v.Path 来自服务端，必须校验拼接后仍在同步根内，防止 ".." 越界建目录
 	fullPath, err := safety.SafeResolve(config.StartPath, v.Path)
 	if err != nil {
@@ -149,9 +147,9 @@ func processDirectoryDiff(v DiffResult) error {
 	}
 	applyPerm(fullPath, v)
 
-	// AddNodes 对已存在路径按更新处理，无需先查询
-	node := createNodeFromDiff(v, "")
-	return tree.AddNodes([]*tree.Node{node})
+	// 对已存在路径按更新处理，无需先查询
+	b.Add(createNodeFromDiff(v, ""), false)
+	return nil
 }
 
 // diskReserve 磁盘空间预留：可用空间必须容得下目标文件之外再留出这个余量，
@@ -196,7 +194,7 @@ func humanBytes(b uint64) string {
 	}
 }
 
-func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
+func processFileDiff(v DiffResult, fileClient *network.FileClient, b *tree.Batch) error {
 	// 磁盘空间预检：不够就不发请求、不写分片，返回 ErrDiskFull 由调用方
 	// 按目录聚合提示。探测失败（极少见）时放行，交给写入时的兜底识别
 	if free, ferr := utils.DiskFree(config.StartPath); ferr == nil && free < v.Size+diskReserve {
@@ -228,10 +226,7 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 	// 重启校准时不会因时间戳不符而误判为已变化
 	applyModTime(v)
 
-	fileNode := createNodeFromDiff(v, hash)
-	if err := tree.AddNodes([]*tree.Node{fileNode}); err != nil {
-		return err
-	}
+	b.Add(createNodeFromDiff(v, hash), true)
 	status.RecordFile(v.Path, v.Size)
 	log.Infof("File downloaded successfully: %s", v.Path)
 	return nil
@@ -241,11 +236,11 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient) error {
 // 唤醒下游客户端的长轮询。这比依赖 fsnotify 更精确——中继目录的变更
 // 全部来自 mirror 引擎自身，且不受冷目录轮询延迟影响。
 // 纯 mirror 模式没有下游，跳过以省去无谓的落库
-func recordChangedDir(relPath string) {
+func recordChangedDir(relPath string, b *tree.Batch) {
 	if !config.ServesDownstream() {
 		return
 	}
-	tree.AddRecentChangedDir(filepath.Dir(relPath))
+	b.ChangedDir(filepath.Dir(relPath))
 }
 
 // permWarned 已提示过的"权限设置失败"路径（如 exFAT 等不支持 Unix 权限的文件系统），每路径一次
