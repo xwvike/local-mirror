@@ -18,8 +18,8 @@ import (
 // FeatureBits 能力位，会话版本取两区间交集的最高值，交集为空则拒绝
 // （服务端拒绝前回一条 ErrCodeVersionMismatch 错误，让对端日志里有人话）。
 // 当前两端区间均为 [3,3]，行为与严格相等一致；该结构的意义在于未来版本
-// 可以引入真正的跨版本协商而无需再次 flag-day。FeatureBits 当前恒为 0，
-// 非零位留给未来能力声明（压缩、增量传输、PSK 拉伸参数等）。
+// 可以引入真正的跨版本协商而无需再次 flag-day。FeatureBits 声明同版本内的可选能力，
+// 双方都置位才启用；已用的位见 FeatureBulkPush，旧版对端恒报 0。
 //
 // 同版本演进（正式机制）：解码器只读取已知字段、静默忽略消息体尾部的
 // 多余字节。因此**在消息体尾部追加新字段是同版本内的兼容演进方式**：
@@ -55,6 +55,11 @@ const (
 	MsgTypeTreeResponse         uint16 = 0x0009 // 目录树响应
 	MsgTypeRecentChangeRequest  uint16 = 0x000C // 最近变更请求
 	MsgTypeRecentChangeResponse uint16 = 0x000D // 最近变更响应
+	MsgTypeBulkPlanRequest      uint16 = 0x0010 // 首次全量推送：规划请求（需协商 FeatureBulkPush）
+	MsgTypeBulkPlanResponse     uint16 = 0x0011 // 首次全量推送：待推送的文件数与字节数
+	MsgTypeBulkStartRequest     uint16 = 0x0012 // 首次全量推送：开始推送
+	MsgTypeBulkEntry            uint16 = 0x0013 // 推送流中的一个目录或文件（文件后随 FileData/FileComplete）
+	MsgTypeBulkEnd              uint16 = 0x0014 // 推送流结束
 
 	// 头部大小
 	HeaderSize = 12 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节）
@@ -62,6 +67,10 @@ const (
 	// 单条消息体长度上限，防止损坏/恶意的头部导致超大内存分配
 	MaxBodyLength = 64 * 1024 * 1024
 )
+
+// FeatureBulkPush 能力位：汇端能发起、源端能提供首次全量推送。旧版对端恒报 0，
+// 双方都置位才会用到 MsgTypeBulk*——旧版源端收到不认识的消息类型不作应答
+const FeatureBulkPush uint64 = 1 << 0
 
 // 错误码（ErrorMessage.Code）。客户端据此区分可重试/永久失败，
 // 服务端 handler 用 wireError 构造；未归类的错误一律 ErrCodeInternal。
@@ -98,7 +107,7 @@ type HandshakeMessage struct {
 	MinVersion  uint16 // 支持的最低协议版本
 	UUID        uint32 // 实例标识
 	Role        uint8  // 角色
-	FeatureBits uint64 // 能力位（当前恒 0，非零位留给未来能力协商）
+	FeatureBits uint64 // 能力位（见 FeatureBulkPush），双方都置位的能力才启用
 }
 
 // 文件请求消息

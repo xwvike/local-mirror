@@ -244,10 +244,15 @@ func shouldRebuildLocalTree() bool {
 }
 
 func runMirrorTasks(fileClient *network.FileClient) error {
+	// 首次同步尚未完成时先由源端全量推送（见 initialPush），中断后下次连接从游标续推
+	if err := executeTaskWithClient("initial push", fileClient, initialPush); err != nil {
+		return err
+	}
 	// 连接后先全量对账；重连（含休眠后 socket 断开）都会重新走到这里
 	if err := executeTaskWithClient("initial full scan", fileClient, fullScan); err != nil {
 		return err
 	}
+	markInitialSyncDone()
 
 	// 有了实时推送，全量扫描退化为低频安全网
 	fullScanInterval := time.Duration(*config.CoolDown) * time.Second

@@ -19,6 +19,7 @@ type Batch struct {
 	ops     []batchOp
 	data    bool
 	changed []string
+	meta    []byte // 随本批写入的首次同步记录（见 SetInitialSync）
 }
 
 type batchOp struct {
@@ -60,7 +61,7 @@ func (b *Batch) commitIfFull() {
 // （如损坏的 children 数据）不能连累同批其余写入。被丢弃的节点等同于未入库，
 // 由下一轮 diff 或启动校准补回
 func (b *Batch) Commit() {
-	if len(b.ops) > 0 {
+	if len(b.ops) > 0 || b.meta != nil {
 		if b.data {
 			if err := flushData(); err != nil {
 				log.Warnf("flushing downloaded file data to disk failed: %v", err)
@@ -72,7 +73,7 @@ func (b *Batch) Commit() {
 					return err
 				}
 			}
-			return nil
+			return b.putMeta(tx)
 		}); err != nil {
 			var failed int
 			var first error
@@ -88,12 +89,22 @@ func (b *Batch) Commit() {
 				log.Errorf("%d of %d tree updates could not be recorded and will be redone by a later scan: %v",
 					failed, len(b.ops), first)
 			}
+			if err := update(b.putMeta); err != nil {
+				log.Errorf("recording initial sync progress failed: %v", err)
+			}
 		}
 	}
 	for _, d := range b.changed {
 		AddRecentChangedDir(d)
 	}
-	b.ops, b.data, b.changed = nil, false, nil
+	b.ops, b.data, b.changed, b.meta = nil, false, nil, nil
+}
+
+func (b *Batch) putMeta(tx *bolt.Tx) error {
+	if b.meta == nil {
+		return nil
+	}
+	return tx.Bucket([]byte("meta")).Put([]byte(initialSyncKey), b.meta)
 }
 
 func (op batchOp) apply(tx *bolt.Tx) error {

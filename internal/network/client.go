@@ -32,7 +32,7 @@ func localHandshake() HandshakeMessage {
 		MinVersion:  config.MinProtocolVersion,
 		UUID:        config.InstanceID,
 		Role:        config.RoleReceive,
-		FeatureBits: 0,
+		FeatureBits: FeatureBulkPush,
 	}
 }
 
@@ -200,8 +200,12 @@ type FileClient struct {
 	connectionManage *ConnectionManager
 	realityVersion   uint16
 	realityID        uint32
+	peerFeatures     uint64
 	State            ConnectionState
 }
+
+// SupportsBulkPush 对端（源）是否支持首次全量推送
+func (c *FileClient) SupportsBulkPush() bool { return c.peerFeatures&FeatureBulkPush != 0 }
 
 func NewFileClient(realityAddr string, serverAlias string) (*FileClient, error) {
 	log.Info("Creating file client, server address:", realityAddr)
@@ -341,6 +345,7 @@ func (c *FileClient) Handshake() error {
 	}
 	c.realityVersion = handshakeResponse.Version
 	c.realityID = handshakeResponse.UUID
+	c.peerFeatures = handshakeResponse.FeatureBits
 	c.State = Online
 	log.Infof("Received handshake response: version: %d (agreed %d), realityID: %d",
 		handshakeResponse.Version, agreed, handshakeResponse.UUID)
@@ -418,8 +423,9 @@ func (c *FileClient) GetRealityTree(rootPath string) ([]tree.Node, error) {
 // partialMeta 记录分片对应的服务端文件指纹。
 // 续传前用它判断服务端文件是否在中断期间发生了变化
 type partialMeta struct {
-	Hash string `json:"hash"` // 服务端整文件 blake3（十六进制）
-	Size uint64 `json:"size"` // 服务端文件大小
+	Hash string `json:"hash"`           // 服务端整文件 blake3（十六进制）
+	Size uint64 `json:"size"`           // 服务端文件大小
+	Path string `json:"path,omitempty"` // 首次全量推送中写入的分片：同步路径（"/" 分隔），续推时据此定位
 }
 
 // partialPaths 返回某个同步路径对应的分片文件与元数据文件位置。
@@ -540,7 +546,7 @@ func (c *FileClient) DownloadFile(filePath string, perm uint32) (string, error) 
 		StartHash: serverHash, Offset: offset, Resume: resume})
 }
 
-// fileSession 一次已由服务端开始发送的文件会话（FileResponse 之后紧跟 FileData/FileComplete）
+// fileSession 一次已由服务端开始发送的文件会话（FileResponse 或推送条目之后紧跟 FileData/FileComplete）
 type fileSession struct {
 	Path      string
 	Perm      uint32 // 上游权限位，0 = 未知
@@ -549,6 +555,7 @@ type fileSession struct {
 	StartHash string // 服务端起始哈希（十六进制），记入分片元数据供续传核对
 	Offset    uint64 // 本次数据流的起始偏移
 	Resume    bool   // 是否接在已有分片之后
+	Bulk      bool   // 首次全量推送中：分片元数据记下路径，中断后据此续推
 }
 
 // drainAfter 在数据流开始前遇到本地错误时排空该会话，保持连接可复用；排空失败按连接错误上报
@@ -588,7 +595,11 @@ func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 		file, err = os.OpenFile(partialPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, createPerm)
 		if err == nil {
 			// 先落 meta 再收数据：中断发生在任何时刻，分片都能被下次识别
-			metaData, _ := json.Marshal(partialMeta{Hash: fs.StartHash, Size: fs.Size})
+			meta := partialMeta{Hash: fs.StartHash, Size: fs.Size}
+			if fs.Bulk {
+				meta.Path = filepath.ToSlash(filePath)
+			}
+			metaData, _ := json.Marshal(meta)
 			if werr := os.WriteFile(metaPath, metaData, 0644); werr != nil {
 				log.Warnf("Failed to write partial meta for %s: %v", filePath, werr)
 			}
