@@ -238,6 +238,12 @@ forward secrecy; a wrong key or a plaintext peer fails the handshake.
 
 ## Observe: `--status` / `--heat`
 
+When local-mirror runs in the foreground in a terminal, the link, the current
+transfer, the session totals, the error count and the latest log lines are shown
+below the start-up banner and refreshed every second. While this display is active,
+logs are written only to the log file. It is not shown when the output is redirected
+or when local-mirror runs as a service.
+
 Read-only commands for a running instance, selected by `-p` (its sync root) or by
 the current directory. The daemon writes `status.json` / `heat.json` only while
 one of these commands is running.
