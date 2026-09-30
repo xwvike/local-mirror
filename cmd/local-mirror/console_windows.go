@@ -20,3 +20,14 @@ func enableConsoleUTF8() func() {
 	}
 	return func() { _ = windows.SetConsoleOutputCP(old) }
 }
+
+// enableVirtualTerminal 开启控制台的 VT 序列处理（光标移动、清屏）。前台实时面板依赖它；
+// 旧式控制台开不了时返回 false，面板不启用
+func enableVirtualTerminal() bool {
+	h := windows.Handle(windows.Stdout)
+	var mode uint32
+	if windows.GetConsoleMode(h, &mode) != nil {
+		return false
+	}
+	return windows.SetConsoleMode(h, mode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING) == nil
+}

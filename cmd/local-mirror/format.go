@@ -100,6 +100,8 @@ func fileSuffix(name string, p termstyle.Palette) string {
 	if name == "" {
 		return ""
 	}
+	// 源端记录的路径带 "./" 前缀，与汇端的相对路径写法统一
+	name = strings.TrimPrefix(name, "."+string(filepath.Separator))
 	return fmt.Sprintf("  %s(%s)%s", p.Dim, name, p.Reset)
 }
 

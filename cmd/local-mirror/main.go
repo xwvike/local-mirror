@@ -274,7 +274,6 @@ func main() {
 	}
 
 	printBanner()
-	log.Infof("startup: version=%s mode=%s instance=%08x root=%s", version, *config.Mode, config.InstanceID, config.StartPath)
 
 	// 运维快照：定型 identity 段并启动后台落盘循环，供 --status 读取。
 	// 落进 .local-mirror/status.json（可弃状态，删了下次自建）
@@ -282,8 +281,12 @@ func main() {
 		directionLabel(), transportLabel(), peerLabel(), *config.Secret != "", config.StartTime)
 	stopStatus := make(chan struct{})
 	go status.Run(stopStatus)
+	// 前台终端里在横幅下方原地刷新状态；此后日志只写文件，最近几条显示在面板里
+	live := startLiveStatus()
+	log.Infof("startup: version=%s mode=%s instance=%08x root=%s", version, *config.Mode, config.InstanceID, config.StartPath)
 
 	app.App()
+	live.Stop()
 	close(stopStatus)      // 收到退出信号后停止落盘（App 返回即已收到 SIGINT/SIGTERM）
 	status.FlushLifetime() // 优雅退出前把终身累计的尾批增量落盘（stats.json）
 }

@@ -333,6 +333,15 @@ func SessionUp(detail string) {
 	signal()
 }
 
+// Live 返回内存中的当前快照（速率按此刻重算），供前台进程在终端上自绘状态
+func Live() Snapshot {
+	mu.Lock()
+	defer mu.Unlock()
+	s := snap
+	s.RateBps = computeRateLocked(time.Now())
+	return s
+}
+
 // SetDetail 更新人读的连接细节（如首次全量推送的进度），返回原值供恢复
 func SetDetail(detail string) (prev string) {
 	mu.Lock()
