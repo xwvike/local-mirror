@@ -308,6 +308,14 @@ func (s *fileServer) serveConn(conn net.Conn, first *prereadMessage) {
 			if closed := s.dispatchError(conn, client, s.handleFileRequest(client, bodyBytes)); closed {
 				return
 			}
+		case MsgTypeBulkPlanRequest:
+			if closed := s.dispatchError(conn, client, s.handleBulkPlan(client, bodyBytes)); closed {
+				return
+			}
+		case MsgTypeBulkStartRequest:
+			if closed := s.dispatchError(conn, client, s.handleBulkStart(client, bodyBytes)); closed {
+				return
+			}
 		default:
 			log.Errorf("Unknown message type: %d", msgType)
 		}
@@ -394,7 +402,7 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*Handshak
 		MinVersion:  config.MinProtocolVersion,
 		UUID:        config.InstanceID,
 		Role:        config.RoleSend,
-		FeatureBits: 0,
+		FeatureBits: FeatureBulkPush,
 	}
 	handshakeBytes := encodeHandshake(receiveHandshake)
 	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {

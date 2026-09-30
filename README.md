@@ -187,6 +187,21 @@ comments). Matched per path segment at any depth; `* ? []` globs supported.
   is readable again.
 - Permissions changed locally on a sink are restored on its periodic local rescan.
 
+## First sync
+
+A receiver that has not completed its first sync receives the whole tree from the source
+in one continuous stream, without a request per file or per directory. On a
+long-distance link this removes most of the time a first sync of many small files takes.
+
+- Files already in the target directory do not prevent the first sync. A file at the
+  same path as a source file is overwritten; a file the source does not have is kept,
+  or deleted with `--allow-delete`.
+- An interrupted first sync continues from the last recorded entry on the next
+  connection. A partly received file resumes where it stopped.
+- The progress is recorded in `.local-mirror`. Deleting that directory or changing the
+  sync root starts a new first sync of the whole tree.
+- With a peer that does not support it, the first sync runs file by file.
+
 ## Deletion safety
 
 Syncing overwrites existing files; `--allow-delete` removes extra ones. Three

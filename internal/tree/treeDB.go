@@ -135,6 +135,9 @@ func InitDB() {
 		}
 
 		metaBucket := tx.Bucket([]byte("meta"))
+		if err := initInitialSync(metaBucket, !reuse); err != nil {
+			return err
+		}
 		if err := metaBucket.Put([]byte("start_path"), []byte(config.StartPath)); err != nil {
 			return err
 		}

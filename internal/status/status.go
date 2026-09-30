@@ -333,6 +333,15 @@ func SessionUp(detail string) {
 	signal()
 }
 
+// SetDetail 更新人读的连接细节（如首次全量推送的进度），返回原值供恢复
+func SetDetail(detail string) (prev string) {
+	mu.Lock()
+	prev, snap.Detail = snap.Detail, detail
+	mu.Unlock()
+	signal()
+	return prev
+}
+
 // SessionDown 一条连接结束
 func SessionDown() {
 	mu.Lock()
