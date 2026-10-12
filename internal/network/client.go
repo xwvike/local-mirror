@@ -77,6 +77,33 @@ func SplitPeer(addr string) (host string, port int) {
 	return strings.Trim(addr, "[]"), 0
 }
 
+// ValidatePeerAddr 校验 --connect 收到的对端地址写法，拦住一种会静默跑偏的
+// 写法：IPv6 字面量带端口却没加方括号（2001:db8::1:52345）。SplitHostPort
+// 认不出它（冒号过多），整串会被当成 host 去逐个端口拨号，拨的全是
+// [2001:db8::1:52345]:52345 这类非法地址，而失败信息里完全看不出是写法问题。
+// 域名与 v4 不受影响；带 zone 的链路本地地址（fe80::1%en0）照常放行。
+// 无法识别的边缘：恰好 4 位十六进制的尾段（2001:db8::1:5234）本身就是合法
+// v6，语义上无从区分，只能靠文档约定用方括号
+func ValidatePeerAddr(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	host, _ := SplitPeer(addr)
+	if host == "" {
+		return fmt.Errorf("--connect %q has no host part", addr)
+	}
+	// host 仍含冒号 = v6 字面量；解析不出来就多半是端口没括起来
+	if strings.Contains(host, ":") {
+		literal, _, _ := strings.Cut(host, "%") // 去掉 zone 再解析
+		if net.ParseIP(literal) == nil {
+			return fmt.Errorf("--connect %q is not a valid address: an IPv6 literal with a port must be bracketed, "+
+				"e.g. --connect '[2001:db8::1]:%d' (without a port the brackets are optional: --connect 2001:db8::1)",
+				addr, config.DefaultPort)
+		}
+	}
+	return nil
+}
+
 // PrepareInboundConn 监听端收到入站连接后的传输就绪化：
 // keepalive +（配置口令时）Noise responder 握手。失败时连接已关闭
 func PrepareInboundConn(conn net.Conn) (net.Conn, error) {

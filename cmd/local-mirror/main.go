@@ -155,6 +155,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
 		os.Exit(2)
 	}
+	// 对端地址写法校验：v6 字面量带端口不加方括号会被当成 host 去扫端口段，
+	// 失败信息里看不出是写法问题，提前拦在用法错误里
+	if err := network.ValidatePeerAddr(*config.RealityIP); err != nil {
+		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
+		os.Exit(2)
+	}
 	root, err := resolveSyncRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
