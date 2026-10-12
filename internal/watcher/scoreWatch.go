@@ -23,10 +23,14 @@ import (
 )
 
 type ScoreWatch struct {
-	Watcher         *fsnotify.Watcher
-	maxfilesperproc int //https://pkg.go.dev/github.com/fsnotify/fsnotify@v1.8.0#readme-linux
-	tier1Limit      int
-	tier2Interval   time.Duration
+	Watcher *fsnotify.Watcher
+	// tier1Limit 实时 watch 名额上限（按描述符预算推算，见 InitWatcher）
+	tier1Limit int
+	// fdCeiling 本进程的描述符额度，0 = 探针不可用（Windows）则不做水位收缩
+	fdCeiling int
+	// tier1Scale 名额收缩分母，随描述符水位在 [1, tier1ScaleMax] 间翻倍/减半
+	tier1Scale    int
+	tier2Interval time.Duration
 	// mu 保护 heatMap/tier1/tier2：事件处理、定期扫描、tier2 轮询三个 goroutine 都会访问
 	mu      sync.Mutex
 	heatMap map[string]*HeatScore
@@ -45,29 +49,50 @@ type HeatScore struct {
 
 var GlobalScoreWatch *ScoreWatch
 
+// 描述符预算相关常量。darwin 上每个 tier1 目录按 len(entries)+1 个描述符计，
+// 名额直接换算成描述符占用；linux 的 inotify watch 不占描述符（整个实例共用
+// 一个），限制因素是 max_user_watches，故两者取各自的约束
+const (
+	// fdReserve 预留给监视器之外的描述符用途：监听套接字与并发连接槽、
+	// bbolt 目录树库、日志文件与轮转、并发文件哈希与发送、临时文件
+	fdReserve = 1024
+	// minWatchBudget 探针不可用或额度极小时的保守下限
+	minWatchBudget = 128
+	// fdHighWaterPct/fdLowWaterPct 描述符水位：越过高水位收缩 tier1 名额，
+	// 回落到低水位以下再逐步放开（留出迟滞区间，避免在阈值上反复抖动）
+	fdHighWaterPct = 70
+	fdLowWaterPct  = 40
+	// tier1ScaleMax 收缩分母上限；minTier1Limit 收缩后仍保留的最小名额，
+	// 保证最热的几个目录始终有实时监控
+	tier1ScaleMax = 64
+	minTier1Limit = 64
+	// maxWatchesCap 保守上限：预算再大也不值得为单个同步根铺这么多 watch
+	maxWatchesCap = 65536
+)
+
+// watchBudget 由本进程的描述符额度推算 watch 预算（darwin：kqueue 的
+// watch 直接占描述符）。ok=false 表示额度探针不可用，退保守下限
+func watchBudget(limit int, ok bool) int {
+	if !ok {
+		return minWatchBudget
+	}
+	return min(max((limit-fdReserve)/2, minWatchBudget), maxWatchesCap)
+}
+
 func InitWatcher(watcher *fsnotify.Watcher) error {
-	// 系统上限值（如 macOS kern.maxfilesperproc 常见为 245760）远超 uint16，
-	// 用 int 解析后再设置一个保守上限，避免溢出导致解析失败退回极小值
-	const maxWatchesCap = 65536
 	_maxWatches := 10240
 	osType := utils.BaseOSInfo().OS
 	switch osType {
 	case "darwin":
-		maxfilesperprocCmd := exec.Command("sysctl", "-n", "kern.maxfilesperproc")
-		maxfilesCmd := exec.Command("sysctl", "-n", "kern.maxfiles")
-		maxfilesperproc, maxfilesperprocErr := maxfilesperprocCmd.Output()
-		maxfiles, maxfilesErr := maxfilesCmd.Output()
-		if maxfilesperprocErr != nil || maxfilesErr != nil {
-			_maxWatches = 1024
-		} else {
-			maxFilesPerProcInt, err1 := strconv.Atoi(strings.TrimSpace(string(maxfilesperproc)))
-			maxFilesInt, err2 := strconv.Atoi(strings.TrimSpace(string(maxfiles)))
-			if err1 != nil || err2 != nil {
-				_maxWatches = 1024
-			} else {
-				_maxWatches = min(maxFilesPerProcInt, maxFilesInt, maxWatchesCap)
-			}
-		}
+		// kqueue 为目录及其每个条目各占一个描述符，watch 名额直接吃本进程的
+		// 描述符额度，预算必须从 RLIMIT_NOFILE 推算，并给进程的其余用途留出
+		// fdReserve（连接槽、目录树库、日志轮转、并发文件哈希与发送）。
+		// 旧实现拿 sysctl 的 kern.maxfilesperproc/kern.maxfiles 当预算——那是
+		// 系统给进程的天花板而非本进程的额度：默认 macOS 上
+		// kern.maxfilesperproc=10240，于是预算=10240、tier1 名额=5120，等于
+		// 允许监视器独占全部额度的一半，叠上 kqueue 的实际漂移足以把描述符
+		// 耗尽，连 accept 都会拿到 EMFILE（整个地址族随之停服）
+		_maxWatches = watchBudget(fdLimit())
 	case "linux":
 		maxWatchesCmd := exec.Command("sh", "-c", "cat /proc/sys/fs/inotify/max_user_watches")
 		maxWatchesOutput, err := maxWatchesCmd.Output()
@@ -91,17 +116,21 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 		_maxWatches = 1024
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	fdCeiling, _ := fdLimit()
 	GlobalScoreWatch = &ScoreWatch{
-		Watcher:         watcher,
-		maxfilesperproc: _maxWatches,
-		tier1Limit:      _maxWatches / 2,
-		tier2Interval:   30 * time.Second,
-		heatMap:         make(map[string]*HeatScore),
-		tier1:           make([]*HeatScore, 0),
-		tier2:           make([]*HeatScore, 0),
-		ctx:             ctx,
-		cancel:          cancel,
+		Watcher:       watcher,
+		tier1Limit:    _maxWatches / 2,
+		fdCeiling:     fdCeiling,
+		tier1Scale:    1,
+		tier2Interval: 30 * time.Second,
+		heatMap:       make(map[string]*HeatScore),
+		tier1:         make([]*HeatScore, 0),
+		tier2:         make([]*HeatScore, 0),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
+	log.Infof("watcher: tier1 quota %d directories (fd limit %d, reserve %d)",
+		GlobalScoreWatch.tier1Limit, fdCeiling, fdReserve)
 
 	err := GlobalScoreWatch.collectAll()
 	if err != nil {
@@ -243,8 +272,9 @@ func (sw *ScoreWatch) performScan() {
 	newTier1 := make([]*HeatScore, 0, len(dirs))
 	var newTier2 []*HeatScore
 	usedWatches := 0
+	tier1Limit := sw.effectiveTier1Limit()
 	for i, heat := range dirs {
-		if usedWatches >= sw.tier1Limit {
+		if usedWatches >= tier1Limit {
 			// 剩余的低分目录全部进入 tier2 轮询
 			newTier2 = append(newTier2, dirs[i:]...)
 			break
@@ -284,6 +314,36 @@ func (sw *ScoreWatch) performScan() {
 	sw.tier1 = newTier1
 	sw.tier2 = newTier2
 	sw.removeOldWatchers(oldTier1, newTier1)
+}
+
+// effectiveTier1Limit 按描述符的真实水位调整本轮 tier1 名额。调用方须持 sw.mu。
+//
+// 为什么不能只信规划时的预估：darwin 上每轮按 len(entries)+1 估算开销，但
+// fsnotify 的 kqueue 后端为了模仿 inotify，会为监视目录里**之后新建的每个
+// 文件**再开一个描述符（sendCreateIfNew → internalWatch → addWatch），这条路
+// 不经过本模块的 Add，预算无从知晓。于是预估只是下界，写入活跃的大目录
+// （node_modules 之类）会让实际占用持续漂高。每轮规划前采样真实占用，越过
+// 高水位就把名额减半、把目录让给 tier2 轮询；回落后再逐步放开
+func (sw *ScoreWatch) effectiveTier1Limit() int {
+	if sw.fdCeiling <= 0 {
+		return sw.tier1Limit // 探针不可用（Windows）：watch 不占描述符
+	}
+	open, ok := openFDCount()
+	if !ok {
+		return sw.tier1Limit
+	}
+	pct := open * 100 / sw.fdCeiling
+	switch {
+	case pct >= fdHighWaterPct && sw.tier1Scale < tier1ScaleMax:
+		sw.tier1Scale *= 2
+		log.Warnf("watcher: open file descriptors at %d%% of the %d limit, halving the tier1 watch quota to %d "+
+			"(the remaining directories fall back to tier2 polling)", pct, sw.fdCeiling, sw.tier1Limit/sw.tier1Scale)
+	case pct <= fdLowWaterPct && sw.tier1Scale > 1:
+		sw.tier1Scale /= 2
+		log.Infof("watcher: open file descriptors back down to %d%%, raising the tier1 watch quota to %d",
+			pct, sw.tier1Limit/sw.tier1Scale)
+	}
+	return max(sw.tier1Limit/sw.tier1Scale, minTier1Limit)
 }
 
 func (sw *ScoreWatch) removeOldWatchers(oldTier1, newTier1 []*HeatScore) {
