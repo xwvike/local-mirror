@@ -174,6 +174,12 @@ func (s *fileServer) Start() error {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
+			// 没有 accept 循环还活着：套接字可能仍绑着但无人收，继续
+			// 空转只会刷屏且永远不再服务任何连接——交由调用方退出进程
+			if errors.Is(err, ErrNoListenerLeft) {
+				return err
+			}
+			// 临时错误（multiListener 内部已退避重试，这里是裸 listener 的路径）
 			log.Error("Error accepting connection:", err)
 			continue
 		}

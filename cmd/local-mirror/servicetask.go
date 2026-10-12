@@ -14,6 +14,7 @@ import (
 
 	"local-mirror/config"
 	"local-mirror/internal/keyfile"
+	"local-mirror/internal/network"
 	"local-mirror/internal/safety"
 
 	"gopkg.in/yaml.v3"
@@ -75,6 +76,10 @@ func taskFromRunFlags(runArgs []string, existing []byte) (*serviceTask, error) {
 		return nil, fmt.Errorf("--no-encrypt is not supported for services; the link requires a key (--gen-key or -k <key>)")
 	}
 	if err := config.ValidateRuntimeNumbers(); err != nil {
+		return nil, err
+	}
+	// 服务安装时就拦下错误的对端地址写法，免得装完才在日志里反复拨空地址
+	if err := network.ValidatePeerAddr(*config.RealityIP); err != nil {
 		return nil, err
 	}
 	root, err := resolveSyncRoot()
