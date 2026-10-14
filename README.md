@@ -167,14 +167,58 @@ Two independent axes: **direction** (`--send` / `--receive`) and **transport**
 ## Ignore patterns
 
 Patterns come from `-i` and/or a `.local-mirror/ignore` file (one per line, `#`
-comments). Matched per path segment at any depth; `* ? []` globs supported.
+comments). There are two forms:
+
+- **A name without a slash** matches that path segment at any depth: `node_modules`
+  excludes every directory with that name, wherever it sits. A trailing slash is
+  allowed and changes nothing (`target/` is the same as `target`).
+- **A pattern containing a slash** is matched against the path, anchored at the sync
+  root: `src-tauri/target` excludes only that one subtree, not same-named
+  directories elsewhere. A leading slash is optional, and `**` spans any number of
+  segments, so `**/src-tauri/target` matches at any depth.
+
+`* ? []` globs apply within a segment (`*.log`, `packages/*/dist`). Matching a
+directory covers its whole subtree. Matching is case-sensitive.
 
 - On the source, a match is never scanned or served (enumeration and direct file
-  requests both refused). On the sink, never downloaded and never deleted.
+  requests both refused). On the sink, never downloaded and never deleted — so
+  adding a pattern later does not remove what the sink already has.
 - `.local-mirror` (own state dir) is always excluded and cannot be un-ignored.
-- `.git` and `.DS_Store` are excluded by default; a `!` prefix includes them again,
-  e.g. `local-mirror --send -p <dir> --gen-key -i '!.git'`. For `.git`, git
-  push/fetch is preferable to a file-level mirror.
+
+### Default ignores
+
+Build output and dependency directories that a project regenerates, and that often
+bake in absolute paths from the machine that produced them:
+
+| Ecosystem | Excluded by default |
+| --- | --- |
+| JS/TS | `node_modules`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.vite` |
+| Rust, Maven, Gradle | `target`, `.gradle` |
+| Python | `__pycache__`, `.venv`, `venv`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache` |
+| macOS | `.DS_Store` |
+
+A `!` prefix syncs one anyway: `-i '!node_modules'`. Go has no conventional output
+directory, so nothing is excluded for it.
+
+`dist`, `build`, `out`, `vendor` and `Pods` are deliberately **not** default
+ignores: they are often committed on purpose, and excluding them by default would
+silently drop files. Add them yourself when they apply: `-i 'dist,build'`.
+
+`.git` **is** synced. That carries history, branches, remotes and your uncommitted
+work, which `git clone` cannot. The cost is that copying a live version-control
+database can capture an inconsistent moment, so avoid running git commands on the
+source while the first push runs, and check afterwards:
+
+```bash
+find <dir> -maxdepth 2 -name .git | while read -r g; do
+  r=$(dirname "$g"); LC_ALL=C git -C "$r" fsck --no-dangling | grep -v '^notice:' \
+    && echo "$r needs attention"
+done
+```
+
+Dangling objects are normal. A clean `git status` is the strong signal: it means
+every tracked file's hash matches what `.git` records. To exclude `.git` instead,
+use `-i '.git'`.
 
 ## What gets synced
 
@@ -264,12 +308,25 @@ finds instances started with absolute paths.
 ──────────────────────────────────────────────────────
   Status      ● running   pid 62289 · up 3h12m
   Direction   send · source   (listen)
+  Listen      IPv4 + IPv6   (0.0.0.0:52345)
   Link        ● serving 192.168.1.50:54012
   Encryption  on (Noise NNpsk0)
   Transfer    ▶ docs/report.pdf  ██████████░░░░░░  4.2 MB / 8.1 MB  5.3 MB/s
   Totals      1.2 GB / 3841 files    Errors 0
 ──────────────────────────────────────────────────────
 ```
+
+The `Listen` row names the address families that are **still accepting**. A socket
+can stay bound while the process has stopped accepting on it: the kernel completes
+the TCP handshake anyway, so an outside port probe reports the port as open while
+every client connects and then waits for a reply that never comes. When that
+happens, the row says so:
+
+```
+  Listen      IPv4 + IPv6 not accepting   (0.0.0.0:52345)   ← that address family is bound but unserved
+```
+
+The foreground status area shows the same row.
 
 `--heat`: a source scores each directory by activity, watches hot ones in real
 time (tier1) and polls cold ones lazily (tier2). The table lists directories

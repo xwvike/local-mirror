@@ -119,6 +119,9 @@ func renderSingle(root string) {
 
 	row("Direction", fmt.Sprintf("%s   %s(%s)%s", snap.Direction, p.Dim, snap.Transport, p.Reset))
 	row("Peer", snap.Peer)
+	if s := listenRow(snap, p, live); s != "" {
+		row("Listen", s)
+	}
 	switch {
 	case !live && snap.Connected:
 		// 进程已停：连接字段是死前的最后已知态，别用绿色误导成"此刻在连"
@@ -282,4 +285,35 @@ func renderAll() {
 		rows = append(rows, statusRow{Name: shortRoot(inst.Root), Dir: dirShortFromSnap(inst.Snap), Snap: inst.Snap})
 	}
 	renderStatusTable(rows, p)
+}
+
+// listenRow 渲染监听侧各地址族的 accept 存活。拨出侧无监听，返回空串。
+//
+// 为什么单独显示：曾经出现过「套接字仍绑着、内核照常完成三次握手，但进程
+// 不再 accept」的半边停服——外部端口探测看着通、启动横幅照常写着
+// IPv4 + IPv6，客户端却只能连上后干等到自己超时。那次只有服务端日志里有
+// 线索。这一行把它摆到台面上
+func listenRow(snap *status.Snapshot, p termstyle.Palette, live bool) string {
+	if len(snap.Listen) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(snap.Listen))
+	degraded := false
+	for _, lf := range snap.Listen {
+		switch {
+		case !lf.Live:
+			degraded = true
+			parts = append(parts, fmt.Sprintf("%s%s not accepting%s", p.Yellow, lf.Family, p.Reset))
+		case live:
+			parts = append(parts, fmt.Sprintf("%s%s%s", p.Green, lf.Family, p.Reset))
+		default:
+			// 进程已停：别用绿色把死前的最后已知态误导成"此刻在收"
+			parts = append(parts, fmt.Sprintf("%s%s%s", p.Dim, lf.Family, p.Reset))
+		}
+	}
+	out := fmt.Sprintf("%s   %s(%s)%s", strings.Join(parts, " + "), p.Dim, snap.Listen[0].Addr, p.Reset)
+	if degraded && live {
+		out += fmt.Sprintf("   %s← that address family is bound but unserved%s", p.Yellow, p.Reset)
+	}
+	return out
 }

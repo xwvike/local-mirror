@@ -88,7 +88,19 @@ type Snapshot struct {
 	FDs        int     `json:"fds"` // 打开的文件描述符数（linux 精确；其他平台 -1=未知）
 	HasFDs     bool    `json:"has_fds"`
 
+	// Listen 监听侧各地址族的 accept 存活（拨出侧为空）。
+	// 半边停服是本项目出过的真实故障：套接字仍绑着、内核照常完成三次握手，
+	// 外部端口探测与启动横幅都显示正常，实际只剩一个地址族在服务
+	Listen []ListenFamily `json:"listen,omitempty"`
+
 	UpdatedUnix int64 `json:"updated_unix"` // 本快照写盘时刻（陈旧判据）
+}
+
+// ListenFamily 监听侧单个地址族的 accept 存活状态
+type ListenFamily struct {
+	Family string `json:"family"` // "IPv4" / "IPv6"
+	Addr   string `json:"addr"`   // 实际监听地址
+	Live   bool   `json:"live"`   // accept 循环是否还在收
 }
 
 // rateSample 累计已传字节在某时刻的取样，用于滚动速率
@@ -170,6 +182,25 @@ func RegisterObservedWriter(fn func()) {
 	mu.Lock()
 	observedWriters = append(observedWriters, fn)
 	mu.Unlock()
+}
+
+// listenProbe 监听存活探针，由 network 绑定监听器后注册
+var listenProbe func() []ListenFamily
+
+// RegisterListenProbe 注册监听侧各地址族的 accept 存活探针。
+// 探针在持本包锁的情况下被调用，因此必须廉价且不得回调本包——
+// network 侧只读原子标志，满足这两条
+func RegisterListenProbe(fn func() []ListenFamily) {
+	mu.Lock()
+	listenProbe = fn
+	mu.Unlock()
+}
+
+// refreshListenLocked 刷新监听存活。调用方须持 mu
+func refreshListenLocked() {
+	if listenProbe != nil {
+		snap.Listen = listenProbe()
+	}
 }
 
 // Run 落盘循环，只在被观测时写盘（用户不看就停）。无人观测时阻塞在 fsnotify
@@ -337,6 +368,7 @@ func SessionUp(detail string) {
 func Live() Snapshot {
 	mu.Lock()
 	defer mu.Unlock()
+	refreshListenLocked() // 前台状态区每秒取一次，监听存活要跟得上
 	s := snap
 	s.RateBps = computeRateLocked(time.Now())
 	return s
@@ -457,6 +489,7 @@ func sampleResourcesLocked(now time.Time) {
 	snap.HeapBytes = m.HeapAlloc
 	snap.SysBytes = m.Sys
 	snap.Goroutines = runtime.NumGoroutine()
+	refreshListenLocked()
 }
 
 // RecordError 一次连接级错误（掉线、握手失败、传输中断等）

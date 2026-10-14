@@ -159,14 +159,52 @@ sudo journalctl -u local-mirror
 
 ## 忽略模式
 
-模式来自 `-i` 和/或 `.local-mirror/ignore` 文件（一行一条，`#` 注释）。按路径分段、
-任意深度匹配，支持 `* ? []` 通配。
+模式来自 `-i` 和/或 `.local-mirror/ignore` 文件（一行一条，`#` 注释）。有两种写法：
 
-- 发送端命中即不扫描、不供给（目录枚举与直接文件请求都拒绝）；接收端命中即不下载、不删除。
+- **不含斜杠的名字**按路径分段、任意深度匹配：`node_modules` 排除任何位置下的同名目录。
+  可以带尾部斜杠，语义不变（`target/` 等同 `target`）。
+- **含斜杠的模式**按路径匹配，从同步根锚定：`src-tauri/target` 只排除那一棵子树，不会
+  误伤别处的同名目录。前导斜杠可省；`**` 匹配任意多段，所以 `**/src-tauri/target`
+  可在任意深度命中。
+
+`* ? []` 通配在段内生效（`*.log`、`packages/*/dist`）。命中一个目录等于命中它整棵子树。
+匹配大小写敏感。
+
+- 发送端命中即不扫描、不供给（目录枚举与直接文件请求都拒绝）；接收端命中即不下载、
+  **也不删除** —— 所以事后新增一条模式，不会清掉接收端已有的那些文件。
 - `.local-mirror`（自身状态目录）永远排除，无法取消忽略。
-- `.git`、`.DS_Store` 默认排除，加 `!` 前缀可重新纳入同步，例如
-  `local-mirror --send -p <目录> --gen-key -i '!.git'`。`.git` 仓库的复制宜使用
-  git push/fetch，而非文件级镜像。
+
+### 默认忽略项
+
+都是项目能自己重新生成、且往往烤死了产出机器绝对路径的构建产物与依赖目录：
+
+| 生态 | 默认排除 |
+| --- | --- |
+| JS/TS | `node_modules`、`.next`、`.nuxt`、`.svelte-kit`、`.turbo`、`.vite` |
+| Rust、Maven、Gradle | `target`、`.gradle` |
+| Python | `__pycache__`、`.venv`、`venv`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache` |
+| macOS | `.DS_Store` |
+
+加 `!` 前缀可单独纳入：`-i '!node_modules'`。Go 没有约定的产物目录，因此没有为它
+排除任何东西。
+
+`dist`、`build`、`out`、`vendor`、`Pods` **刻意不入**默认项：它们常被刻意提交进仓库
+（有些库就发布 `dist/`，Go 的 `vendor/` 多是故意入库，`build` 还可能是源码目录名），
+在同步工具里默认排掉等于静默丢文件。需要时自己加：`-i 'dist,build'`。
+
+`.git` **会同步**。它带着历史、分支、remote，以及你未提交的改动 —— 这是 `git clone`
+拿不到的。代价是实时复制一个版本控制数据库可能抓到不一致的瞬间，所以首次推送期间
+别在源端跑 git 命令，推完自检一下：
+
+```bash
+find <目录> -maxdepth 2 -name .git | while read -r g; do
+  r=$(dirname "$g"); LC_ALL=C git -C "$r" fsck --no-dangling | grep -v '^notice:' \
+    && echo "$r 需要检查"
+done
+```
+
+悬空对象是正常的。`git status` 干净才是强信号 —— 它意味着每个被跟踪文件的哈希都与
+`.git` 记录一致。想改回排除 `.git`，用 `-i '.git'`。
 
 ## 同步什么
 
@@ -240,12 +278,23 @@ local-mirror --heat -p /path/to/source
 ──────────────────────────────────────────────────────
   Status      ● running   pid 62289 · up 3h12m
   Direction   send · source   (listen)
+  Listen      IPv4 + IPv6   (0.0.0.0:52345)
   Link        ● serving 192.168.1.50:54012
   Encryption  on (Noise NNpsk0)
   Transfer    ▶ docs/report.pdf  ██████████░░░░░░  4.2 MB / 8.1 MB  5.3 MB/s
   Totals      1.2 GB / 3841 files    Errors 0
 ──────────────────────────────────────────────────────
 ```
+
+`Listen` 一行列出**仍在 accept** 的地址族。套接字可以还绑着、而进程已经不再
+accept：内核照样完成 TCP 三次握手，所以从外面探测端口显示"通"，但每个客户端
+连上之后都在等一个永远不会来的回应。出现这种情况时这一行会直说：
+
+```
+  Listen      IPv4 + IPv6 not accepting   (0.0.0.0:52345)   ← that address family is bound but unserved
+```
+
+前台运行时的状态区显示同一行。
 
 `--heat`：发送端按活跃度为每个目录评分，热目录实时监听（tier1），冷目录延迟轮询
 （tier2）。表按热度从高到低排列，可用于确认活跃目录是否处于实时监听。

@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"local-mirror/internal/status"
+
 	log "github.com/sirupsen/logrus"
 )
 
@@ -96,6 +98,33 @@ type multiListener struct {
 	closeErr  error
 	live      atomic.Int32  // 仍在 accept 的协程数
 	allDead   chan struct{} // live 归零时关闭
+	// liveFlags 与 listeners 一一对应：该侧 accept 循环是否还在收。
+	// 供 status 探针读出"半边停服"——这是本项目出过的真实故障，而套接字
+	// 仍绑着，外部端口探测与启动横幅都看不出来
+	liveFlags []atomic.Bool
+}
+
+// families 各地址族的 accept 存活，供 status 探针调用。
+// 只读原子标志：status 在持自己的锁时调用本函数，这里不能加锁也不能回调它
+func (m *multiListener) families() []status.ListenFamily {
+	out := make([]status.ListenFamily, 0, len(m.listeners))
+	for i, l := range m.listeners {
+		addr := l.Addr()
+		out = append(out, status.ListenFamily{
+			Family: addrFamily(addr),
+			Addr:   addr.String(),
+			Live:   m.liveFlags[i].Load(),
+		})
+	}
+	return out
+}
+
+// addrFamily 监听地址属于哪个地址族。0.0.0.0 的 To4 非空、[::] 为空
+func addrFamily(a net.Addr) string {
+	if ta, ok := a.(*net.TCPAddr); ok && ta.IP.To4() != nil {
+		return "IPv4"
+	}
+	return "IPv6"
 }
 
 func newMultiListener(listeners ...net.Listener) *multiListener {
@@ -106,15 +135,20 @@ func newMultiListener(listeners ...net.Listener) *multiListener {
 		allDead:   make(chan struct{}),
 	}
 	m.live.Store(int32(len(listeners)))
-	for _, l := range listeners {
-		go m.acceptLoop(l)
+	m.liveFlags = make([]atomic.Bool, len(listeners))
+	for i, l := range listeners {
+		m.liveFlags[i].Store(true)
+		go m.acceptLoop(i, l)
 	}
+	// 注册监听存活探针：--status 与前台状态区据此显示哪个地址族还在服务
+	status.RegisterListenProbe(m.families)
 	return m
 }
 
 // acceptLoop 单个底层 listener 的 accept 循环
-func (m *multiListener) acceptLoop(l net.Listener) {
+func (m *multiListener) acceptLoop(idx int, l net.Listener) {
 	defer func() {
+		m.liveFlags[idx].Store(false)
 		remaining := m.live.Add(-1)
 		select {
 		case <-m.done: // 整体关闭中，正常收尾

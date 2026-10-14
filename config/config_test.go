@@ -12,7 +12,7 @@ func resetIgnore(t *testing.T) {
 	t.Helper()
 	old := IgnoreFileList
 	oldFlag := *Ignore
-	IgnoreFileList = []string{".local-mirror", ".git", ".DS_Store"}
+	IgnoreFileList = append(append([]string{}, forcedIgnores...), defaultIgnores...)
 	*Ignore = ""
 	t.Cleanup(func() {
 		IgnoreFileList = old
@@ -26,7 +26,7 @@ func TestLoadIgnoreListDefaultsOnly(t *testing.T) {
 	if err := LoadIgnoreList(dir); err != nil {
 		t.Fatalf("LoadIgnoreList: %v", err)
 	}
-	want := []string{".local-mirror", ".git", ".DS_Store"}
+	want := append(append([]string{}, forcedIgnores...), defaultIgnores...)
 	if !slices.Equal(IgnoreFileList, want) {
 		t.Errorf("got %v, want %v", IgnoreFileList, want)
 	}
@@ -38,7 +38,7 @@ func TestLoadIgnoreListMergeFlagAndFile(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, ".local-mirror"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	content := "# 构建产物\ndist\n\n  node_modules  \n*.log\n.git\n" // 注释/空行/首尾空白/与默认重复
+	content := "# 构建产物\ndist\n\n  node_modules  \n*.log\ntarget\n" // 注释/空行/首尾空白/与默认重复
 	if err := os.WriteFile(filepath.Join(dir, ".local-mirror", "ignore"), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,9 @@ func TestLoadIgnoreListMergeFlagAndFile(t *testing.T) {
 	if err := LoadIgnoreList(dir); err != nil {
 		t.Fatalf("LoadIgnoreList: %v", err)
 	}
-	want := []string{".local-mirror", ".git", ".DS_Store", "node_modules", "coverage", "*.tmp", "dist", "*.log"}
+	// 默认集 + -i 的新增项（node_modules/target 与默认重复，去重后不再出现）
+	want := append(append([]string{}, forcedIgnores...), defaultIgnores...)
+	want = append(want, "coverage", "*.tmp", "dist", "*.log")
 	if !slices.Equal(IgnoreFileList, want) {
 		t.Errorf("got  %v\nwant %v", IgnoreFileList, want)
 	}
