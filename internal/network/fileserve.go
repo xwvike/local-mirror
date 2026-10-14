@@ -236,7 +236,6 @@ func (s *fileServer) handleFileRequest(c *client, bodyBytes []byte) error {
 		Offset:   sf.offset,
 		file:     sf.file,
 	}
-	c.SessionMap.Store(session.ID, session)
 
 	fileResponse := FileResponseMessage{
 		SessionID: sessionBytes,
@@ -247,7 +246,7 @@ func (s *fileServer) handleFileRequest(c *client, bodyBytes []byte) error {
 		return fmt.Errorf("%w, error sending file response for %s", appError.ErrConnection, fileRequest.FilePath)
 	}
 	log.Debugf("Sent file response: session ID: %s, file size: %d bytes", sessionID, sf.info.Size())
-	return s.sendFileData(conn, c, session)
+	return s.sendFileData(conn, session)
 }
 
 // servedFile 通过全部校验、已打开并定位到起始偏移的待发文件
@@ -350,9 +349,9 @@ func openServeFile(reqPath string, offset uint64) (*servedFile, func(), error) {
 	return &servedFile{file: file, info: fileInfo, hash: fileHash, fullPath: fullPath, offset: offset}, release, nil
 }
 
-func (s *fileServer) sendFileData(conn net.Conn, c *client, session *session) error {
-	// session.file 由 handleFileRequest 中的 defer 统一关闭，这里不重复 Close
-	defer c.SessionMap.Delete(session.ID)
+// sendFileData 发送一个会话的文件数据。session.file 的关闭由调用方
+// （handleFileRequest / pushFile）的 defer 负责，这里不重复 Close
+func (s *fileServer) sendFileData(conn net.Conn, session *session) error {
 
 	rel := strings.Replace(session.FilePath, config.StartPath, ".", 1)
 

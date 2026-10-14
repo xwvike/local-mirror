@@ -16,6 +16,7 @@ type rotatingWriter struct {
 	maxFiles int    // 保留的历史文件数（不含当前）
 	size     int64  // 当前文件已写字节
 	file     *os.File
+	closed   bool // Close 被显式调用过；与"重开失败导致 file==nil"区分开
 }
 
 // newRotatingWriter 打开（追加）日志文件并初始化轮转状态。
@@ -34,7 +35,11 @@ func newRotatingWriter(path string, maxSize int64, maxFiles int) (*rotatingWrite
 	return w, nil
 }
 
+// open 打开（追加）当前日志文件。失败时把 w.file 置空：rotate 先关旧句柄再
+// 调用本函数，若这里失败而 w.file 仍指向那个已关闭的句柄，后续 Write 会一直
+// 往关闭的 fd 上写（返回 ErrClosed 却被当成普通写错误），日志静默丢到进程结束
 func (w *rotatingWriter) open() error {
+	w.file = nil
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
@@ -53,15 +58,26 @@ func (w *rotatingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.file == nil {
+	if w.closed {
 		return 0, fmt.Errorf("log file not open")
+	}
+	// 上一次轮转/重开失败过：先自愈。不自愈的话一次瞬时失败（磁盘满、
+	// 日志目录被挪走）会让本进程余生的日志全部丢弃，而排障恰恰靠日志
+	if w.file == nil {
+		if err := w.open(); err != nil {
+			return 0, fmt.Errorf("reopening log file: %w", err)
+		}
 	}
 	// 单条超过上限也整条写入（不切分日志行），写完再滚动
 	if w.size+int64(len(p)) > w.maxSize && w.size > 0 {
 		if err := w.rotate(); err != nil {
-			// 轮转失败不丢日志：继续写当前文件（宁可超限也不静默丢失）
-			fmt.Fprintf(os.Stderr, "log rotation failed, continuing with current file: %v\n", err)
+			fmt.Fprintf(os.Stderr, "log rotation failed: %v\n", err)
 		}
+	}
+	// 轮转要先关当前文件（Windows 上打开中的文件改不了名），失败时连重开也没成，
+	// 此时没有可写句柄：本条日志只能上报错误，下一条进来会再试一次自愈
+	if w.file == nil {
+		return 0, fmt.Errorf("log file not open after failed rotation")
 	}
 	n, err := w.file.Write(p)
 	w.size += int64(n)
@@ -74,6 +90,7 @@ func (w *rotatingWriter) Write(p []byte) (int, error) {
 func (w *rotatingWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.closed = true
 	if w.file == nil {
 		return nil
 	}

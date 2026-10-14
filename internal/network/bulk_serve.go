@@ -125,7 +125,7 @@ func (s *fileServer) handleBulkStart(c *client, body []byte) error {
 		if n.Path == req.ResumePath && req.ResumeOffset <= n.Size {
 			offset = req.ResumeOffset
 		}
-		sent, err := s.pushFile(conn, c, n, offset)
+		sent, err := s.pushFile(conn, n, offset)
 		if err != nil {
 			var we *wireError
 			if errors.As(err, &we) || !errors.Is(err, appError.ErrConnection) {
@@ -153,7 +153,7 @@ func (s *fileServer) handleBulkStart(c *client, body []byte) error {
 }
 
 // pushFile 推送一个文件条目及其数据，返回本次实际发送的字节数（续传时不含已有部分）
-func (s *fileServer) pushFile(conn net.Conn, c *client, n tree.Node, offset uint64) (uint64, error) {
+func (s *fileServer) pushFile(conn net.Conn, n tree.Node, offset uint64) (uint64, error) {
 	sf, release, err := openServeFile(n.Path, offset)
 	if err != nil {
 		return 0, err
@@ -182,8 +182,7 @@ func (s *fileServer) pushFile(conn net.Conn, c *client, n tree.Node, offset uint
 		return 0, fmt.Errorf("%w, error sending bulk entry %s: %v", appError.ErrConnection, n.Path, err)
 	}
 	sess := &session{ID: id, FilePath: sf.fullPath, FileSize: size, Offset: sf.offset, file: sf.file}
-	c.SessionMap.Store(sess.ID, sess)
-	if err := s.sendFileData(conn, c, sess); err != nil {
+	if err := s.sendFileData(conn, sess); err != nil {
 		// 条目已发出，数据流中途失败无法在流内收尾，只能断开由汇端续推
 		if !errors.Is(err, appError.ErrConnection) {
 			err = fmt.Errorf("%w, %v", appError.ErrConnection, err)

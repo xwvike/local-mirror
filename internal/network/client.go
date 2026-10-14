@@ -593,6 +593,21 @@ func drainAfter(conn net.Conn, err error) error {
 	return err
 }
 
+// hashResumePrefix 把已有分片的前缀 [0,offset) 喂进 hasher。
+// 单独成函数只为让 defer 的作用域就是"读完即关"：内联在 receiveFile 里的 defer
+// 要等整个文件收完才执行，等于凭空多占一个描述符撑过整场传输
+func hashResumePrefix(hasher io.Writer, partialPath string, offset uint64) error {
+	pf, err := os.Open(partialPath)
+	if err != nil {
+		return fmt.Errorf("opening partial for resume hashing: %w", err)
+	}
+	defer pf.Close()
+	if _, err := io.CopyN(hasher, pf, int64(offset)); err != nil {
+		return fmt.Errorf("hashing resume prefix: %w", err)
+	}
+	return nil
+}
+
 // receiveFile 接收一次文件会话：写入分片、校验整文件哈希后落到最终位置，返回十六进制哈希
 func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 	filePath, perm, offset, resume := fs.Path, fs.Perm, fs.Offset, fs.Resume
@@ -611,7 +626,6 @@ func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 	var err error
 	if resume {
 		file, err = os.OpenFile(partialPath, os.O_WRONLY|os.O_APPEND, 0644)
-		log.Infof("resuming %s: %d/%d bytes already present", filePath, offset, fs.Size)
 	} else {
 		createPerm := os.FileMode(0666)
 		if perm != 0 {
@@ -637,21 +651,18 @@ func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 	}
 	// 只负责关闭；分片文件在传输失败时保留，供下次续传
 	defer file.Close()
+	if resume {
+		log.Infof("resuming %s: %d/%d bytes already present", filePath, offset, fs.Size)
+	}
 
 	// 5.2 流式哈希：边收边喂进 hasher，收完直接得整文件内容哈希，省掉「收完再全量回读」那一遍。
 	// 续传时先把已有前缀 [0,offset) 读进 hasher，再流式收剩余——仍比「写盘 + 全量回读」少一遍。
 	// 最终比对的仍是整文件哈希（完整性校验一点不打折）
 	hasher := blake3.New()
 	if resume {
-		pf, perr := os.Open(partialPath)
-		if perr != nil {
-			return "", drainAfter(conn, fmt.Errorf("error opening partial for resume hashing %s: %w", filePath, perr))
+		if herr := hashResumePrefix(hasher, partialPath, offset); herr != nil {
+			return "", drainAfter(conn, fmt.Errorf("resume prefix of %s: %w", filePath, herr))
 		}
-		if _, cerr := io.CopyN(hasher, pf, int64(offset)); cerr != nil {
-			pf.Close()
-			return "", drainAfter(conn, fmt.Errorf("error hashing resume prefix of %s: %w", filePath, cerr))
-		}
-		pf.Close()
 	}
 
 	sessionID := fs.ID
