@@ -37,9 +37,30 @@ var (
 	forcedIgnores = []string{".local-mirror"}
 	// defaultIgnores 默认忽略项：合理的开箱默认，但属"政策"非"不变量"，
 	// 可用 -i '!pattern'（或 ignore 文件里的 !pattern）逐项取消。
-	// .git 是版本控制数据库（用文件复制器实时抄会抓到不一致态，该交给 git 自己
-	// 复制）、.DS_Store 是 macOS 元数据垃圾，默认都不该同步
-	defaultIgnores = []string{".git", ".DS_Store"}
+	//
+	// 选取标准只有一条：业界公认「可再生、不该进版本库」的目录名——装回依赖
+	// 或重跑一次构建就能得到，且往往烤死了本机的绝对路径，复制到另一台机器
+	// 也用不了。体积通常还是同步量的大头（实测一个开发目录 34GB 里 26GB 是
+	// Rust 的 target）。误伤概率低，且都可用 ! 取消
+	//
+	// 刻意不入默认：dist/build/out/vendor——这些常被刻意提交（有些库就发布
+	// dist/，Go 的 vendor/ 多是故意入库，build 还可能是源码目录名），在同步
+	// 工具里默认排掉等于静默丢文件。Pods 同理（长期有提交进仓库的惯例）。
+	// Go 没有约定的产物目录：二进制输出到任意位置、模块缓存在项目之外
+	//
+	// .git 不在此列：它是用户显式要同步的常见对象（整机迁移时仓库历史、
+	// 分支与 remote 都在里面，且能带上未提交的改动，这是 git clone 做不到的）。
+	// 代价是实时抄一个版本控制数据库可能抓到不一致态——推送期间源端不要跑
+	// git 命令，推完用 git fsck 自检（见 README）
+	defaultIgnores = []string{
+		".DS_Store", // macOS 元数据垃圾
+		// JS/TS：依赖与各框架的构建缓存
+		"node_modules", ".next", ".nuxt", ".svelte-kit", ".turbo", ".vite",
+		// Rust / Maven / Gradle：构建产物与缓存
+		"target", ".gradle",
+		// Python：字节码、虚拟环境（内含本机绝对路径）、各类工具缓存
+		"__pycache__", ".venv", "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+	}
 
 	// IgnoreFileList 生效的忽略列表：forced + default（去掉被 ! 取消的）+ -i/--ignore
 	// + .local-mirror/ignore 文件，合并去重后的结果（见 LoadIgnoreList，启动时调用
@@ -126,8 +147,8 @@ var (
 // LoadIgnoreList 合并生效忽略列表：forcedIgnores（强制，不可取消）+ defaultIgnores
 // （默认，可用 !pattern 逐项取消）+ -i/--ignore 逗号分隔条目 + <startPath>/.local-mirror/ignore
 // 文件（每行一条，# 注释，空行跳过，文件不存在则静默跳过）。以 ! 开头的条目表示
-// "取消一个默认忽略项"（如 !.git 让 .git 参与同步）；! 不能取消强制项。普通模式用
-// filepath.Match 预校验（非法如未闭合的 "[" 返回错误）。结果去重（保序）后写回
+// "取消一个默认忽略项"（如 !node_modules 让依赖目录参与同步）；! 不能取消强制项。普通模式用
+// utils.ValidateIgnorePattern 预校验（非法如未闭合的 "[" 返回错误）。结果去重（保序）后写回
 // IgnoreFileList。启动时调用一次；运行中修改文件不生效，需重启
 func LoadIgnoreList(startPath string) error {
 	var adds []string                // -i/文件里的普通忽略模式（叠加）
@@ -296,8 +317,14 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               * ? [] globs apply within a segment. Matching a directory\n")
 	fmt.Fprintf(w, "                               covers its whole subtree. Server: never scanned or\n")
 	fmt.Fprintf(w, "                               served; client: never downloaded or deleted.\n")
-	fmt.Fprintf(w, "                               Defaults: .local-mirror (forced), plus .git and .DS_Store\n")
-	fmt.Fprintf(w, "                               (removable — prefix with ! to sync them, e.g. -i '!.git').\n")
+	fmt.Fprintf(w, "                               Forced: .local-mirror (the state dir, cannot be un-ignored).\n")
+	fmt.Fprintf(w, "                               Default: build output and dependency dirs that any project\n")
+	fmt.Fprintf(w, "                               regenerates — node_modules, target, .next, .nuxt,\n")
+	fmt.Fprintf(w, "                               .svelte-kit, .turbo, .vite, .gradle, __pycache__, .venv,\n")
+	fmt.Fprintf(w, "                               venv, .pytest_cache, .mypy_cache, .ruff_cache, .DS_Store.\n")
+	fmt.Fprintf(w, "                               Prefix with ! to sync one anyway, e.g. -i '!node_modules'.\n")
+	fmt.Fprintf(w, "                               .git IS synced by default; avoid running git commands on\n")
+	fmt.Fprintf(w, "                               the source mid-push and verify with git fsck afterwards.\n")
 	fmt.Fprintf(w, "                               Also read from .local-mirror/ignore (one per line, # comments;\n")
 	fmt.Fprintf(w, "                               restart to apply)\n")
 	fmt.Fprintf(w, "      --allow-delete           delete local files that no longer exist upstream\n")

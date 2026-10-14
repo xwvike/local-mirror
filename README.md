@@ -181,11 +181,44 @@ comments). There are two forms:
 directory covers its whole subtree. Matching is case-sensitive.
 
 - On the source, a match is never scanned or served (enumeration and direct file
-  requests both refused). On the sink, never downloaded and never deleted.
+  requests both refused). On the sink, never downloaded and never deleted — so
+  adding a pattern later does not remove what the sink already has.
 - `.local-mirror` (own state dir) is always excluded and cannot be un-ignored.
-- `.git` and `.DS_Store` are excluded by default; a `!` prefix includes them again,
-  e.g. `local-mirror --send -p <dir> --gen-key -i '!.git'`. For `.git`, git
-  push/fetch is preferable to a file-level mirror.
+
+### Default ignores
+
+Build output and dependency directories that a project regenerates, and that often
+bake in absolute paths from the machine that produced them:
+
+| Ecosystem | Excluded by default |
+| --- | --- |
+| JS/TS | `node_modules`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.vite` |
+| Rust, Maven, Gradle | `target`, `.gradle` |
+| Python | `__pycache__`, `.venv`, `venv`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache` |
+| macOS | `.DS_Store` |
+
+A `!` prefix syncs one anyway: `-i '!node_modules'`. Go has no conventional output
+directory, so nothing is excluded for it.
+
+`dist`, `build`, `out`, `vendor` and `Pods` are deliberately **not** default
+ignores: they are often committed on purpose, and excluding them by default would
+silently drop files. Add them yourself when they apply: `-i 'dist,build'`.
+
+`.git` **is** synced. That carries history, branches, remotes and your uncommitted
+work, which `git clone` cannot. The cost is that copying a live version-control
+database can capture an inconsistent moment, so avoid running git commands on the
+source while the first push runs, and check afterwards:
+
+```bash
+find <dir> -maxdepth 2 -name .git | while read -r g; do
+  r=$(dirname "$g"); LC_ALL=C git -C "$r" fsck --no-dangling | grep -v '^notice:' \
+    && echo "$r needs attention"
+done
+```
+
+Dangling objects are normal. A clean `git status` is the strong signal: it means
+every tracked file's hash matches what `.git` records. To exclude `.git` instead,
+use `-i '.git'`.
 
 ## What gets synced
 

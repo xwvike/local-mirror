@@ -170,11 +170,41 @@ sudo journalctl -u local-mirror
 `* ? []` 通配在段内生效（`*.log`、`packages/*/dist`）。命中一个目录等于命中它整棵子树。
 匹配大小写敏感。
 
-- 发送端命中即不扫描、不供给（目录枚举与直接文件请求都拒绝）；接收端命中即不下载、不删除。
+- 发送端命中即不扫描、不供给（目录枚举与直接文件请求都拒绝）；接收端命中即不下载、
+  **也不删除** —— 所以事后新增一条模式，不会清掉接收端已有的那些文件。
 - `.local-mirror`（自身状态目录）永远排除，无法取消忽略。
-- `.git`、`.DS_Store` 默认排除，加 `!` 前缀可重新纳入同步，例如
-  `local-mirror --send -p <目录> --gen-key -i '!.git'`。`.git` 仓库的复制宜使用
-  git push/fetch，而非文件级镜像。
+
+### 默认忽略项
+
+都是项目能自己重新生成、且往往烤死了产出机器绝对路径的构建产物与依赖目录：
+
+| 生态 | 默认排除 |
+| --- | --- |
+| JS/TS | `node_modules`、`.next`、`.nuxt`、`.svelte-kit`、`.turbo`、`.vite` |
+| Rust、Maven、Gradle | `target`、`.gradle` |
+| Python | `__pycache__`、`.venv`、`venv`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache` |
+| macOS | `.DS_Store` |
+
+加 `!` 前缀可单独纳入：`-i '!node_modules'`。Go 没有约定的产物目录，因此没有为它
+排除任何东西。
+
+`dist`、`build`、`out`、`vendor`、`Pods` **刻意不入**默认项：它们常被刻意提交进仓库
+（有些库就发布 `dist/`，Go 的 `vendor/` 多是故意入库，`build` 还可能是源码目录名），
+在同步工具里默认排掉等于静默丢文件。需要时自己加：`-i 'dist,build'`。
+
+`.git` **会同步**。它带着历史、分支、remote，以及你未提交的改动 —— 这是 `git clone`
+拿不到的。代价是实时复制一个版本控制数据库可能抓到不一致的瞬间，所以首次推送期间
+别在源端跑 git 命令，推完自检一下：
+
+```bash
+find <目录> -maxdepth 2 -name .git | while read -r g; do
+  r=$(dirname "$g"); LC_ALL=C git -C "$r" fsck --no-dangling | grep -v '^notice:' \
+    && echo "$r 需要检查"
+done
+```
+
+悬空对象是正常的。`git status` 干净才是强信号 —— 它意味着每个被跟踪文件的哈希都与
+`.git` 记录一致。想改回排除 `.git`，用 `-i '.git'`。
 
 ## 同步什么
 
