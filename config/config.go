@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"local-mirror/pkg/utils"
 )
 
 const (
@@ -148,8 +150,8 @@ func LoadIgnoreList(startPath string) error {
 			negated[neg] = true // 非默认项的 ! 属无操作（该项本就不在列表里）
 			return nil
 		}
-		if _, err := filepath.Match(p, "x"); err != nil {
-			return fmt.Errorf("invalid ignore pattern %q: %w", p, err)
+		if err := utils.ValidateIgnorePattern(p); err != nil {
+			return err
 		}
 		adds = append(adds, p)
 		return nil
@@ -287,8 +289,12 @@ func PrintUsage(w io.Writer) {
 	fmt.Fprintf(w, "                               changes are pushed in real time, this is the backstop (default 1800)\n")
 	fmt.Fprintf(w, "  -f, --filebuffersize uint    transfer chunk size in bytes, source side (default 65536)\n")
 	fmt.Fprintf(w, "  -a, --alias string           instance name shown in discovery lists; defaults to hostname\n")
-	fmt.Fprintf(w, "  -i, --ignore string          extra ignore patterns (comma-separated), matched per path\n")
-	fmt.Fprintf(w, "                               segment, * ? [] globs supported. Server: never scanned or\n")
+	fmt.Fprintf(w, "  -i, --ignore string          extra ignore patterns (comma-separated). A name without a\n")
+	fmt.Fprintf(w, "                               slash matches that path segment at any depth (node_modules);\n")
+	fmt.Fprintf(w, "                               a pattern containing a slash is anchored at the sync root\n")
+	fmt.Fprintf(w, "                               (src-tauri/target), where ** spans any number of segments.\n")
+	fmt.Fprintf(w, "                               * ? [] globs apply within a segment. Matching a directory\n")
+	fmt.Fprintf(w, "                               covers its whole subtree. Server: never scanned or\n")
 	fmt.Fprintf(w, "                               served; client: never downloaded or deleted.\n")
 	fmt.Fprintf(w, "                               Defaults: .local-mirror (forced), plus .git and .DS_Store\n")
 	fmt.Fprintf(w, "                               (removable — prefix with ! to sync them, e.g. -i '!.git').\n")

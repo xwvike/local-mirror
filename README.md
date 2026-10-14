@@ -167,7 +167,18 @@ Two independent axes: **direction** (`--send` / `--receive`) and **transport**
 ## Ignore patterns
 
 Patterns come from `-i` and/or a `.local-mirror/ignore` file (one per line, `#`
-comments). Matched per path segment at any depth; `* ? []` globs supported.
+comments). There are two forms:
+
+- **A name without a slash** matches that path segment at any depth: `node_modules`
+  excludes every directory with that name, wherever it sits. A trailing slash is
+  allowed and changes nothing (`target/` is the same as `target`).
+- **A pattern containing a slash** is matched against the path, anchored at the sync
+  root: `src-tauri/target` excludes only that one subtree, not same-named
+  directories elsewhere. A leading slash is optional, and `**` spans any number of
+  segments, so `**/src-tauri/target` matches at any depth.
+
+`* ? []` globs apply within a segment (`*.log`, `packages/*/dist`). Matching a
+directory covers its whole subtree. Matching is case-sensitive.
 
 - On the source, a match is never scanned or served (enumeration and direct file
   requests both refused). On the sink, never downloaded and never deleted.
