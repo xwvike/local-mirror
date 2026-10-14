@@ -278,12 +278,23 @@ local-mirror --heat -p /path/to/source
 ──────────────────────────────────────────────────────
   Status      ● running   pid 62289 · up 3h12m
   Direction   send · source   (listen)
+  Listen      IPv4 + IPv6   (0.0.0.0:52345)
   Link        ● serving 192.168.1.50:54012
   Encryption  on (Noise NNpsk0)
   Transfer    ▶ docs/report.pdf  ██████████░░░░░░  4.2 MB / 8.1 MB  5.3 MB/s
   Totals      1.2 GB / 3841 files    Errors 0
 ──────────────────────────────────────────────────────
 ```
+
+`Listen` 一行列出**仍在 accept** 的地址族。套接字可以还绑着、而进程已经不再
+accept：内核照样完成 TCP 三次握手，所以从外面探测端口显示"通"，但每个客户端
+连上之后都在等一个永远不会来的回应。出现这种情况时这一行会直说：
+
+```
+  Listen      IPv4 + IPv6 not accepting   (0.0.0.0:52345)   ← that address family is bound but unserved
+```
+
+前台运行时的状态区显示同一行。
 
 `--heat`：发送端按活跃度为每个目录评分，热目录实时监听（tier1），冷目录延迟轮询
 （tier2）。表按热度从高到低排列，可用于确认活跃目录是否处于实时监听。

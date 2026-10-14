@@ -101,6 +101,12 @@ func liveFrame(s status.Snapshot, recent []string, p termstyle.Palette, width in
 		row("Link", fmt.Sprintf("%s○ %s%s", p.Dim, waitingText(s), p.Reset))
 	}
 
+	// 监听存活：某个地址族停止 accept 时，套接字仍绑着、端口探测仍然通，
+	// 只有这一行能看出来（见 statusview.go 的 listenRow）
+	if ls := listenRow(&s, p, true); ls != "" {
+		row("Listen", ls)
+	}
+
 	if s.CurrentFile != "" {
 		row("Transfer", fmt.Sprintf("%s▶%s %s", p.Cyan, p.Reset, s.CurrentFile))
 		row("", fmt.Sprintf("%s  %s / %s  %s%s%s",

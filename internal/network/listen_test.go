@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"local-mirror/internal/status"
 )
 
 // freePort 找一个当前空闲的 TCP 端口（存在竞态，测试用途足够）
@@ -252,6 +254,73 @@ func TestValidatePeerAddr(t *testing.T) {
 	for _, addr := range bad {
 		if err := ValidatePeerAddr(addr); err == nil {
 			t.Errorf("ValidatePeerAddr(%q) = nil, want an error", addr)
+		}
+	}
+}
+
+// TestListenFamiliesReportsHalfDead 半边停服必须能被探针看出来。
+// 这是本项目出过的真实故障：一侧 accept 循环没了，套接字仍绑着、内核照常
+// 完成三次握手（外部端口探测显示"通"）、启动横幅照常写着 IPv4 + IPv6，
+// 客户端却只能连上后干等到自己超时。当时唯一的线索在服务端日志里
+func TestListenFamiliesReportsHalfDead(t *testing.T) {
+	if !ipv6Supported() {
+		t.Skip("host has no IPv6")
+	}
+	l4, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l6, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		l4.Close()
+		t.Skip("no IPv6 loopback")
+	}
+	m := newMultiListener(l4, deadListener{l6}) // v6 侧的循环立刻退出
+	defer m.Close()
+
+	// 等那一侧的协程收尾（它会立刻拿到 ErrClosed 并退出）
+	deadline := time.Now().Add(2 * time.Second)
+	var fams []status.ListenFamily
+	for time.Now().Before(deadline) {
+		fams = m.families()
+		if len(fams) == 2 && !fams[1].Live {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(fams) != 2 {
+		t.Fatalf("want one entry per address family, got %d", len(fams))
+	}
+	if fams[0].Family != "IPv4" || fams[1].Family != "IPv6" {
+		t.Errorf("address families mislabelled: %q / %q", fams[0].Family, fams[1].Family)
+	}
+	if !fams[0].Live {
+		t.Error("the healthy IPv4 side should still report Live")
+	}
+	if fams[1].Live {
+		t.Error("the IPv6 side stopped accepting but still reports Live — the half-dead state is invisible again")
+	}
+}
+
+// TestListenFamiliesAllLiveAtStart 正常双栈启动时两侧都在收
+func TestListenFamiliesAllLiveAtStart(t *testing.T) {
+	if !ipv6Supported() {
+		t.Skip("host has no IPv6")
+	}
+	port := freePort(t)
+	l, _, err := ListenAvailable(port, 5)
+	if err != nil {
+		t.Skipf("no free port: %v", err)
+	}
+	defer l.Close()
+	m, ok := l.(*multiListener)
+	if !ok {
+		t.Fatalf("ListenAvailable should always wrap in multiListener, got %T", l)
+	}
+	for _, f := range m.families() {
+		if !f.Live {
+			t.Errorf("%s should be accepting right after bind", f.Family)
 		}
 	}
 }

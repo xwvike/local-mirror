@@ -308,12 +308,25 @@ finds instances started with absolute paths.
 ──────────────────────────────────────────────────────
   Status      ● running   pid 62289 · up 3h12m
   Direction   send · source   (listen)
+  Listen      IPv4 + IPv6   (0.0.0.0:52345)
   Link        ● serving 192.168.1.50:54012
   Encryption  on (Noise NNpsk0)
   Transfer    ▶ docs/report.pdf  ██████████░░░░░░  4.2 MB / 8.1 MB  5.3 MB/s
   Totals      1.2 GB / 3841 files    Errors 0
 ──────────────────────────────────────────────────────
 ```
+
+The `Listen` row names the address families that are **still accepting**. A socket
+can stay bound while the process has stopped accepting on it: the kernel completes
+the TCP handshake anyway, so an outside port probe reports the port as open while
+every client connects and then waits for a reply that never comes. When that
+happens, the row says so:
+
+```
+  Listen      IPv4 + IPv6 not accepting   (0.0.0.0:52345)   ← that address family is bound but unserved
+```
+
+The foreground status area shows the same row.
 
 `--heat`: a source scores each directory by activity, watches hot ones in real
 time (tier1) and polls cold ones lazily (tier2). The table lists directories
