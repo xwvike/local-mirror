@@ -24,14 +24,30 @@ import (
 
 type ScoreWatch struct {
 	Watcher *fsnotify.Watcher
-	// tier1Limit 实时 watch 名额上限（按描述符预算推算，见 InitWatcher）
+	// tier1Limit 实时 watch 的描述符预算上限（单位是描述符而非目录数：
+	// darwin 上 kqueue 为目录及其每个条目各占一个，一个几百条目的目录
+	// 就能吃掉几百个单位）
 	tier1Limit int
 	// fdCeiling 本进程的描述符额度，0 = 探针不可用（Windows）则不做水位收缩
 	fdCeiling int
 	// tier1Scale 名额收缩分母，随描述符水位在 [1, tier1ScaleMax] 间翻倍/减半
-	tier1Scale    int
+	tier1Scale int
+	// tier1Budget 本轮规划定下的预算（effectiveTier1Limit 的结果）。
+	// 事件路径共用它做准入，不自己调水位——否则每个新目录都会触发一次
+	// 迟滞判断与日志
+	tier1Budget int
+	// usedWatches tier1 当前已花掉的描述符单位。规划器与事件路径共用
+	// 这一个账本：事件路径过去完全不看预算，批量建目录能让 watch 无上限
+	// 增长直到进程描述符耗尽
+	usedWatches int
+	// fdProbe 实测描述符水位的节流缓存
+	fdProbe fdWaterMark
+	// deferred/lastDeferLog 因预算不足降级到 tier2 的累计数与上次汇报时刻
+	deferred      int
+	lastDeferLog  time.Time
 	tier2Interval time.Duration
-	// mu 保护 heatMap/tier1/tier2：事件处理、定期扫描、tier2 轮询三个 goroutine 都会访问
+	// mu 保护 heatMap/tier1/tier2/usedWatches/fdProbe：
+	// 事件处理、定期扫描、tier2 轮询三个 goroutine 都会访问
 	mu      sync.Mutex
 	heatMap map[string]*HeatScore
 	tier1   []*HeatScore
@@ -45,6 +61,54 @@ type HeatScore struct {
 	Deepth     int
 	Score      float64
 	EventCount int
+	// WatchCost 该目录的实时 watch 记在账上的描述符单位；0 = 未监视（在 tier2）
+	WatchCost int
+}
+
+// fdProbeTTL 实测水位的缓存时长：事件路径上每个新目录都要查水位，而
+// openFDCount 要列一遍 /dev/fd（代价随已打开数线性增长），不能每次都读
+const fdProbeTTL = 250 * time.Millisecond
+
+// fdWaterMark 节流的描述符水位探针
+type fdWaterMark struct {
+	last time.Time
+	open int
+	ok   bool
+}
+
+func (f *fdWaterMark) level() (int, bool) {
+	if f.ok && time.Since(f.last) < fdProbeTTL {
+		return f.open, true
+	}
+	n, ok := openFDCount()
+	f.last, f.open, f.ok = time.Now(), n, ok
+	return n, ok
+}
+
+// watchCostOf 一个目录的实时 watch 要占多少描述符单位。
+// darwin 的 kqueue 为目录及其每个条目各占一个；inotify 的 watch 不占描述符
+func watchCostOf(entries int) int {
+	if utils.BaseOSInfo().OS == "darwin" {
+		return entries + 1
+	}
+	return 1
+}
+
+// admitWatch 判断再花 cost 个描述符单位建一个实时 watch 是否安全。
+// 两道闸：预算账本（预估）与实测 fd 水位（真相）。后者不可省——除了本模块
+// 的 Add，fsnotify 的 kqueue 后端还会为已监视目录里之后新建的每个文件自动
+// 再开一个描述符（sendCreateIfNew → internalWatch → addWatch），这条路
+// 任何账本都看不见。调用方须持 sw.mu
+func (sw *ScoreWatch) admitWatch(cost int) bool {
+	if sw.usedWatches+cost > sw.tier1Budget {
+		return false
+	}
+	if sw.fdCeiling > 0 {
+		if open, ok := sw.fdProbe.level(); ok && (open+cost)*100 >= sw.fdCeiling*fdHighWaterPct {
+			return false
+		}
+	}
+	return true
 }
 
 var GlobalScoreWatch *ScoreWatch
@@ -120,6 +184,7 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 	GlobalScoreWatch = &ScoreWatch{
 		Watcher:       watcher,
 		tier1Limit:    _maxWatches / 2,
+		tier1Budget:   _maxWatches / 2,
 		fdCeiling:     fdCeiling,
 		tier1Scale:    1,
 		tier2Interval: 30 * time.Second,
@@ -129,7 +194,9 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 		ctx:           ctx,
 		cancel:        cancel,
 	}
-	log.Infof("watcher: tier1 quota %d directories (fd limit %d, reserve %d)",
+	// 单位是描述符而非目录数：darwin 上一个几百条目的目录就吃掉几百个单位，
+	// 所以真正享受实时监控的目录数远小于这个值（其余走 tier2 轮询）
+	log.Infof("watcher: real-time watch budget %d descriptor units (fd limit %d, reserve %d)",
 		GlobalScoreWatch.tier1Limit, fdCeiling, fdReserve)
 
 	err := GlobalScoreWatch.collectAll()
@@ -271,10 +338,13 @@ func (sw *ScoreWatch) performScan() {
 	oldTier1 := sw.tier1
 	newTier1 := make([]*HeatScore, 0, len(dirs))
 	var newTier2 []*HeatScore
-	usedWatches := 0
-	tier1Limit := sw.effectiveTier1Limit()
+	// tier1 整体重建，账本随之归零并在循环里按实际建立的 watch 重新累加；
+	// tier1Budget 留给事件路径（addHeat）共用，两边花的是同一份预算
+	sw.usedWatches = 0
+	sw.tier1Budget = sw.effectiveTier1Limit()
 	for i, heat := range dirs {
-		if usedWatches >= tier1Limit {
+		heat.WatchCost = 0
+		if sw.usedWatches >= sw.tier1Budget {
 			// 剩余的低分目录全部进入 tier2 轮询
 			newTier2 = append(newTier2, dirs[i:]...)
 			break
@@ -293,13 +363,9 @@ func (sw *ScoreWatch) performScan() {
 			}
 			continue
 		}
-		switch utils.BaseOSInfo().OS {
-		case "darwin":
-			// kqueue 为目录及其每个条目各占一个描述符
-			usedWatches += len(entries) + 1
-		default:
-			usedWatches++
-		}
+		// kqueue 为目录及其每个条目各占一个描述符；inotify 的 watch 不占。
+		// 开销只在 Add 成功后才记账——失败的注册不该白占预算
+		cost := watchCostOf(len(entries))
 		if err := sw.Watcher.Add(fullPath); err != nil {
 			// 注册失败（inotify/kqueue 限额耗尽、per-user 限额被多任务争用、单个大目录
 			// 使 fd 预算超限等）不能让该目录从两级监控里凭空消失——它没进 newTier1，若直接
@@ -309,6 +375,8 @@ func (sw *ScoreWatch) performScan() {
 			newTier2 = append(newTier2, heat)
 			continue
 		}
+		heat.WatchCost = cost
+		sw.usedWatches += cost
 		newTier1 = append(newTier1, heat)
 	}
 	sw.tier1 = newTier1
@@ -358,6 +426,10 @@ func (sw *ScoreWatch) removeOldWatchers(oldTier1, newTier1 []*HeatScore) {
 			if err := sw.Watcher.Remove(watchPath); err != nil {
 				log.Warnf("Failed to remove path %s from watcher: %v", watchPath, err)
 			}
+			// 离开 tier1 的目录不再记账。此处无需递减 usedWatches：
+			// 调用方（performScan）已把账本归零并只按 newTier1 重新累加，
+			// 而这些条目不在 newTier1 里
+			heat.WatchCost = 0
 		}
 	}
 }
@@ -531,17 +603,58 @@ func (sw *ScoreWatch) addHeat(path string, node *tree.Node) {
 	sw.heatMap[path] = heatScore
 	sw.mu.Unlock()
 
+	// 描述符开销要先算出来才能做准入（darwin 上整体移入的目录可能一上来就
+	// 带着几百个条目）。ReadDir 放在锁外
+	fullPath := filepath.Join(config.StartPath, path)
+	cost := 1
+	if utils.BaseOSInfo().OS == "darwin" {
+		entries, err := os.ReadDir(fullPath)
+		if err != nil {
+			// 读不了就按最小开销估，真正的闸是下面的实测水位
+			log.Debugf("addHeat: cannot size %s for the watch budget: %v", path, err)
+		}
+		cost = watchCostOf(len(entries))
+	}
+
+	// 准入检查：事件路径过去完全不看预算，批量建目录（pnpm install 之类）
+	// 能让 watch 数无上限增长，直到进程描述符耗尽、连 accept 都拿不到描述符
+	// ——那会让整个地址族停服。超预算就直接进 tier2 轮询兜底
+	sw.mu.Lock()
+	if !sw.admitWatch(cost) {
+		sw.tier2 = append(sw.tier2, heatScore)
+		sw.noteDeferred()
+		sw.mu.Unlock()
+		return
+	}
+	sw.mu.Unlock()
+
 	// 只有 Watcher.Add 成功才进 tier1 实时监听；失败则降级进 tier2 轮询，而不是以为在
 	// 实时 watch、实则漏掉该目录的所有事件（COR-04）。Add 放在锁外（可能有 IO/阻塞）。
-	err := sw.Watcher.Add(filepath.Join(config.StartPath, path))
+	err := sw.Watcher.Add(fullPath)
 	sw.mu.Lock()
 	if err != nil {
 		log.Warnf("Failed to watch new directory %s, falling back to tier2 polling: %v", path, err)
 		sw.tier2 = append(sw.tier2, heatScore)
 	} else {
+		heatScore.WatchCost = cost
+		sw.usedWatches += cost
 		sw.tier1 = append(sw.tier1, heatScore)
 	}
 	sw.mu.Unlock()
+}
+
+// noteDeferred 记录一次"因预算不足而降级到 tier2"。批量建目录时这会发生
+// 几万次，逐条打日志反而会淹掉有用信息：累计计数、最多每 30 秒汇报一次。
+// 调用方须持 sw.mu
+func (sw *ScoreWatch) noteDeferred() {
+	sw.deferred++
+	if time.Since(sw.lastDeferLog) < 30*time.Second {
+		return
+	}
+	sw.lastDeferLog = time.Now()
+	log.Warnf("watcher: %d new directories deferred to tier2 polling since start "+
+		"(real-time watch budget %d descriptor units, %d in use); bulk directory creation "+
+		"such as a dependency install trips this", sw.deferred, sw.tier1Budget, sw.usedWatches)
 }
 
 // recordEvent 把一次文件系统事件反馈进所属目录的热度：事件计数递增、
@@ -569,6 +682,13 @@ func (sw *ScoreWatch) removeHeat(path string) {
 		delete(sw.heatMap, path)
 		for i, tierHeat := range sw.tier1 {
 			if tierHeat.Path == path {
+				// 归还预算：目录没了（kqueue 的描述符由 fsnotify 自己在
+				// NOTE_DELETE 时关闭），账本不还就会越用越紧，最终把实时
+				// 监控饿死在"预算已满"上
+				sw.usedWatches -= tierHeat.WatchCost
+				if sw.usedWatches < 0 {
+					sw.usedWatches = 0
+				}
 				sw.tier1 = append(sw.tier1[:i], sw.tier1[i+1:]...)
 				break
 			}
