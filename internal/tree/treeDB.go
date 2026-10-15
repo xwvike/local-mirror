@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -657,7 +658,41 @@ const ChangedDirRetention = time.Hour
 // addChangedDir 把一批变更目录写入 changed_dirs 桶。
 // 必须以落库时刻做 key：若用事件发生时间，节流延迟会让记录"出现在过去"，
 // 客户端按时间窗游标查询时正好跳过它们
+// changeInflight 正在提交的 changed_dirs 记录键（unix 秒 → 在途写事务数）。
+// 记录键在提交前就定了，提交（含 fsync）之后才对查询可见；查询方据此不越过
+// 尚未提交的秒，否则覆盖点会跨过一条稍后才可见的记录（见 ChangeLogSettled）
+var (
+	changeInflightMu sync.Mutex
+	changeInflight   = map[int64]int{}
+)
+
+// ChangeLogSettled 返回时刻 t：键早于 t 的变更记录都已提交，之后也不会再有
+// 这些秒的写入。取当前秒（还没过完，之后仍可能写入）与在途写事务键中的较小者。
+// 与 addChangedDir 在同一把锁下取时刻，写方要么先登记（t 不越过它），要么后取键
+// （键不早于 t），二者必居其一
+func ChangeLogSettled() int64 {
+	changeInflightMu.Lock()
+	defer changeInflightMu.Unlock()
+	t := time.Now().Unix()
+	for k := range changeInflight {
+		t = min(t, k)
+	}
+	return t
+}
+
 func addChangedDir(paths []string) error {
+	changeInflightMu.Lock()
+	stamp := time.Now().Unix()
+	changeInflight[stamp]++
+	changeInflightMu.Unlock()
+	defer func() {
+		changeInflightMu.Lock()
+		if changeInflight[stamp]--; changeInflight[stamp] <= 0 {
+			delete(changeInflight, stamp)
+		}
+		changeInflightMu.Unlock()
+	}()
+
 	err := DB.Update(func(tx *bolt.Tx) error {
 		changedDirsBucket := tx.Bucket([]byte("changed_dirs"))
 		if changedDirsBucket == nil {
@@ -678,7 +713,7 @@ func addChangedDir(paths []string) error {
 		}
 
 		timeStampBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(timeStampBytes, uint64(time.Now().Unix()))
+		binary.BigEndian.PutUint64(timeStampBytes, uint64(stamp))
 
 		// 同一秒内可能已有记录，合并而不是覆盖
 		if existing := changedDirsBucket.Get(timeStampBytes); existing != nil {
