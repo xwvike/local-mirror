@@ -110,11 +110,13 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 				itemFailures[v.Path]++
 				if itemFailures[v.Path] > maxItemRetries {
 					blacklist[v.Path] = true
+					noteRetry(path)
 					log.Errorf("%s failed %d times in a row, giving it up for this round (other files unaffected)", v.Path, itemFailures[v.Path]-1)
 				}
 				return err
 			}
 			log.Errorf("Error processing diff item %v: %v", v, err)
+			noteRetry(path)
 			continue
 		}
 		recordChangedDir(v.Path, &batch)
@@ -331,6 +333,7 @@ func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 			}
 			if retries[v.Path] > maxDirRetries {
 				log.Errorf("directory %s failed %d times in a row, giving up this round", v.Path, retries[v.Path]-1)
+				noteRetry(v.Path)
 				continue
 			}
 			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
@@ -343,6 +346,7 @@ func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 			// §5.1：非连接错误（Diff/DB 等）跳过该目录、继续同步其余目录（一个坏目录不该
 			// 拖垮整轮），但计入错误统计——别让「某目录本轮没同步成」静默地当成成功
 			status.RecordError()
+			noteRetry(v.Path)
 		}
 	}
 	return nil
