@@ -43,6 +43,7 @@ changelog:
       - "^docs"
       - "^test"
       - "^ci"
+      - "^Merge branch" # --no-ff 合并提交只是分支边界，真正的改动已逐条列出
 
 homebrew_casks:
   - name: local-mirror

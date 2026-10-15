@@ -72,3 +72,61 @@ func TestRotatingWriterReopenSize(t *testing.T) {
 		t.Errorf("重开后 size=%d，应为已有文件大小 50", w.size)
 	}
 }
+
+// TestRotatingWriterSelfHealsAfterFailedOpen 轮转后重开失败过的 writer，
+// 下一次 Write 应自愈重开而不是永久静默丢日志。
+// 旧行为：open() 失败时 w.file 仍指向已关闭的句柄，此后每次 Write 都写在
+// 关闭的 fd 上，本进程余生的日志全丢——而排障恰恰靠日志
+func TestRotatingWriterSelfHealsAfterFailedOpen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "error.log")
+	w, err := newRotatingWriter(path, 100, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { w.Close() })
+
+	// 模拟"轮转中关掉了旧句柄、重开却失败"后留下的状态
+	if err := w.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w.file = nil
+
+	if _, err := w.Write([]byte("after failure\n")); err != nil {
+		t.Fatalf("Write 未自愈: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "after failure") {
+		t.Errorf("自愈后的写入没落盘，文件内容=%q", data)
+	}
+}
+
+// TestRotatingWriterClosedStaysClosed 显式 Close 之后不得自愈重开：
+// Windows 上要靠 Close 释放句柄，TempDir 清理才能成功
+func TestRotatingWriterClosedStaysClosed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "error.log")
+	w, err := newRotatingWriter(path, 100, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("must not reopen\n")); err == nil {
+		t.Fatal("Close 之后的 Write 应当报错，不应重开文件")
+	}
+	if w.file != nil {
+		t.Error("Close 之后 w.file 应为 nil")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "must not reopen") {
+		t.Error("Close 之后的写入竟然落盘了")
+	}
+}

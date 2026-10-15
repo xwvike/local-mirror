@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"runtime"
-	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -64,7 +63,6 @@ type client struct {
 	Version        uint16       // 客户端协议版本
 	Connected      bool         // 当前是否已连接
 	Conn           net.Conn     // 客户端连接
-	SessionMap     sync.Map     // 活跃的会话列表
 	dirCache       *dirSnapshot // 分页遍历的已排序目录快照（PERF-01），仅本客户端消息循环访问
 }
 
@@ -241,7 +239,6 @@ func (s *fileServer) serveConn(conn net.Conn, first *prereadMessage) {
 		Version:        0,
 		Connected:      false,
 		Conn:           conn,
-		SessionMap:     sync.Map{},
 	}
 
 	// sessionCounted 确保这条连接在 status 里最多计一次 up/down：握手成功才
