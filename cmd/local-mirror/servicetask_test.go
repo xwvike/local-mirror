@@ -74,12 +74,12 @@ func TestUpsertTaskYAML(t *testing.T) {
 func TestRemoveTaskYAML(t *testing.T) {
 	existing := []byte("# my config\ntasks:\n  # photos share\n  - name: photos\n    send: true\n    path: /srv/photos\n    secret: k0\n  - receive: true\n    listen: true\n    path: /srv/backup\n    secret: k1\n")
 
-	out, removed, left, err := removeTaskYAML(existing, "/srv/nope")
+	out, removed, _, err := removeTaskYAML(existing, "/srv/nope")
 	if err != nil || removed || string(out) != string(existing) {
 		t.Fatalf("removing an unknown dir must change nothing: removed=%v err=%v", removed, err)
 	}
 
-	out, removed, left, err = removeTaskYAML(existing, "/srv/backup")
+	out, removed, left, err := removeTaskYAML(existing, "/srv/backup")
 	if err != nil || !removed || left != 1 {
 		t.Fatalf("removed=%v left=%d err=%v", removed, left, err)
 	}
