@@ -3,6 +3,8 @@ package network
 import (
 	"fmt"
 	"local-mirror/internal/tree"
+	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -48,8 +50,27 @@ func TestHandshakeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeHandshake: %v", err)
 	}
-	if got != orig {
+	if !reflect.DeepEqual(got, orig) {
 		t.Errorf("往返结果不符: %+v != %+v", got, orig)
+	}
+}
+
+// 源端忽略列表随握手尾部往返；"/" 分隔的路径模式按本机分隔符还原
+func TestHandshakeSourceIgnoresRoundTrip(t *testing.T) {
+	orig := HandshakeMessage{Version: 3, MinVersion: 3, UUID: 9, Role: 1,
+		FeatureBits: FeatureBulkPush | FeatureSourceIgnores,
+		Ignores:     []string{".local-mirror", "node_modules", filepath.Join("build", "out")}}
+	got, err := decodeHandshake(encodeHandshake(orig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, orig) {
+		t.Errorf("往返结果不符: %+v != %+v", got, orig)
+	}
+	// 截断的列表是坏包，不能当成「没有忽略项」放过——那样汇端会删掉本该保护的路径
+	b := encodeHandshake(orig)
+	if _, err := decodeHandshake(b[:len(b)-3]); err == nil {
+		t.Error("truncated ignore list decoded without error")
 	}
 }
 

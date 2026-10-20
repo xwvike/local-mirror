@@ -72,6 +72,23 @@ const (
 // 双方都置位才会用到 MsgTypeBulk*——旧版源端收到不认识的消息类型不作应答
 const FeatureBulkPush uint64 = 1 << 0
 
+// FeatureSourceIgnores 能力位：源端在握手应答尾部附上自己生效的忽略列表
+// （HandshakeMessage.Ignores），汇端据此不删除源端忽略的路径——它们不在源端树里
+// 是因为被忽略，而不是被删了（rsync 的 exclude 同样保护接收端不被删）。
+// 汇端置位表示自己会遵守；源端据此对不遵守的旧版汇端告警
+const FeatureSourceIgnores uint64 = 1 << 1
+
+// LegacySourceIgnores 对端源端没给忽略列表（v2.10.1 及更早）时假定的列表：
+// 历代默认忽略项的并集。v2.9 及更早默认忽略 .git，v2.10 改为忽略 node_modules 等
+// 依赖与构建目录，旧源端的树里因此少了这些目录；不加保护，汇端开着 --allow-delete
+// 会把自己本地的这些目录当作上游已删除而删掉。宁可多保留，不可误删
+var LegacySourceIgnores = []string{
+	".git", ".DS_Store",
+	"node_modules", ".next", ".nuxt", ".svelte-kit", ".turbo", ".vite",
+	"target", ".gradle",
+	"__pycache__", ".venv", "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+}
+
 // 错误码（ErrorMessage.Code）。客户端据此区分可重试/永久失败，
 // 服务端 handler 用 wireError 构造；未归类的错误一律 ErrCodeInternal。
 // 与消息类型同理：删除的码留空洞不复用——v2.0.x 的对端仍按原编号发送，
@@ -108,6 +125,9 @@ type HandshakeMessage struct {
 	UUID        uint32 // 实例标识
 	Role        uint8  // 角色
 	FeatureBits uint64 // 能力位（见 FeatureBulkPush），双方都置位的能力才启用
+	// Ignores 源端生效忽略列表，仅当 FeatureBits 含 FeatureSourceIgnores 时出现在消息体
+	// 尾部（2 字节条数 + 逐条 2 字节长度前缀，"/" 分隔），旧版解码器读不到也不在意
+	Ignores []string
 }
 
 // 文件请求消息
@@ -244,6 +264,12 @@ func encodeHandshake(msg HandshakeMessage) []byte {
 	_ = binary.Write(buf, binary.BigEndian, msg.UUID)
 	_ = binary.Write(buf, binary.BigEndian, msg.Role)
 	_ = binary.Write(buf, binary.BigEndian, msg.FeatureBits)
+	if msg.FeatureBits&FeatureSourceIgnores != 0 {
+		_ = binary.Write(buf, binary.BigEndian, uint16(len(msg.Ignores)))
+		for _, p := range msg.Ignores {
+			writeWirePath(buf, p)
+		}
+	}
 	return buf.Bytes()
 }
 
@@ -264,6 +290,20 @@ func decodeHandshake(data []byte) (HandshakeMessage, error) {
 	}
 	if err := binary.Read(buf, binary.BigEndian, &msg.FeatureBits); err != nil {
 		return msg, err
+	}
+	if msg.FeatureBits&FeatureSourceIgnores != 0 {
+		var n uint16
+		if err := binary.Read(buf, binary.BigEndian, &n); err != nil {
+			return msg, fmt.Errorf("source ignore list: %w", err)
+		}
+		msg.Ignores = make([]string, 0, n)
+		for range n {
+			p, err := readWirePath(buf)
+			if err != nil {
+				return msg, fmt.Errorf("source ignore list: %w", err)
+			}
+			msg.Ignores = append(msg.Ignores, p)
+		}
 	}
 	return msg, nil
 }

@@ -65,7 +65,8 @@ var (
 	// IgnoreFileList 生效的忽略列表：forced + default（去掉被 ! 取消的）+ -i/--ignore
 	// + .local-mirror/ignore 文件，合并去重后的结果（见 LoadIgnoreList，启动时调用
 	// 一次，不热加载）。匹配按路径段进行，每段支持 * ? [] 通配符（见 utils.IsIgnored）。
-	// 服务端命中即不扫描/不监听（不进树），客户端命中即不同步（不下载也不删除）。
+	// 服务端命中即不扫描/不监听（不进树），并经握手告知客户端，客户端不删本地同名路径；
+	// 客户端命中即不同步（不下载也不删除）。
 	// 未调用 LoadIgnoreList 前即 forced + default
 	IgnoreFileList = append(append([]string{}, forcedIgnores...), defaultIgnores...)
 )

@@ -181,8 +181,14 @@ comments). There are two forms:
 directory covers its whole subtree. Matching is case-sensitive.
 
 - On the source, a match is never scanned or served (enumeration and direct file
-  requests both refused). On the sink, never downloaded and never deleted — so
-  adding a pattern later does not remove what the sink already has.
+  requests both refused), and the sink never deletes its own copy of it: a path
+  the source ignores is missing upstream because it is ignored, not because it was
+  deleted. On the sink, never downloaded and never deleted. Either way, adding a
+  pattern later does not remove what the sink already has.
+- Sinks older than v2.10.2 do not know the source's ignores: with `--allow-delete`
+  they delete their own copies of whatever the source ignores (including the
+  default ignores below, new in v2.10). **Upgrade sinks before sources.** The
+  source logs a warning when an older sink connects.
 - `.local-mirror` (own state dir) is always excluded and cannot be un-ignored.
 
 ### Default ignores
