@@ -56,6 +56,20 @@ type Node struct {
 	// PermRollup 仅出现在线格式的目录条目上：计入权限的子树 rollup（见 PermDirHashes）。
 	// 不落库；旧版对端忽略它，照旧比对 Hash 里不含权限的 rollup
 	PermRollup string `json:"perm_rollup,omitempty"`
+	// HashRacy 哈希是在 mtime 的同一精度刻度内算的（见 RacyHash）：启动校准不复用它，
+	// 重算一次。粗精度文件系统上，之后同一刻度内的同尺寸改动不改变 mtime
+	HashRacy bool `json:"hash_racy,omitempty"`
+}
+
+// mtimeGranularity 常见文件系统里最粗的 mtime 精度（FAT 为 2 秒）
+const mtimeGranularity = 2 * time.Second
+
+// RacyHash 在 hashStart 开始读取的内容，其哈希能否凭 size+mtime 不变而复用。
+// 与 git 的 racy-clean 同理：读取时离 mtime 不到一个精度刻度，此后同一刻度内的改动
+// 在粗精度文件系统上留下同样的 mtime，size 也没变的话就被当成没改。mtime 在未来
+// （时钟回拨）同样不可信
+func RacyHash(mtime, hashStart time.Time) bool {
+	return hashStart.Sub(mtime) < mtimeGranularity
 }
 
 type Children struct {
