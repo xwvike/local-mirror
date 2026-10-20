@@ -142,13 +142,15 @@ func runTaskOnce(ctx context.Context, exe string, t config.TaskConfig, ref *chil
 	if t.Secret != "" {
 		args = append(args, "--secret-stdin")
 	}
+	// stdin 同时是存活信号：写端在本进程里一直开着，本进程无论怎么退出（包括 kill -9，
+	// 来不及转发信号），内核都会关掉它，子进程读到 EOF 随之退出，不留孤儿占着同步根
+	args = append(args, "--supervised")
 	cmd := exec.Command(exe, args...)
 	cmd.Env = os.Environ()
-	// 无口令时 stdin 显式空设备；有口令时是管道——两种情况都非 TTY，
-	// 子进程确定性走非交互路径（发现、无色输出）
-	cmd.Stdin = nil
-	if t.Secret != "" {
-		cmd.Stdin = strings.NewReader(t.Secret + "\n")
+	// stdin 是管道而非 TTY，子进程确定性走非交互路径（发现、无色输出）
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return -1, err
 	}
 
 	stdout, err := cmd.StdoutPipe()
@@ -161,6 +163,14 @@ func runTaskOnce(ctx context.Context, exe string, t config.TaskConfig, ref *chil
 	}
 	if err := cmd.Start(); err != nil {
 		return -1, err
+	}
+	// 写完口令不关管道：Wait 在子进程退出后替我们关
+	if t.Secret != "" {
+		if _, err := io.WriteString(stdin, t.Secret+"\n"); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return -1, fmt.Errorf("passing the key to the task: %w", err)
+		}
 	}
 	ref.set(cmd)
 	defer ref.set(nil)

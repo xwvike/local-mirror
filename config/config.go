@@ -86,6 +86,7 @@ var (
 	RealityIP      *string
 	Secret         *string
 	SecretStdin    *bool
+	Supervised     *bool
 	Path           *string
 	Alias          *string
 	Ignore         *string
@@ -466,6 +467,10 @@ func init() {
 	// 口令既不进 argv（ps 可见）也不进环境变量（/proc/<pid>/environ 可见），
 	// 由父进程写入子进程 stdin 的第一行。
 	SecretStdin = flag.Bool("secret-stdin", false, "read the transport key from the first line of stdin (internal: supervisor to child)")
+
+	// --supervised 同属内部通道：stdin 是监督进程一直开着的管道，读到 EOF 即父进程已不在
+	//（含被 kill -9），子进程随之优雅退出，不留孤儿继续占着同步根
+	Supervised = flag.Bool("supervised", false, "exit when stdin closes (internal: supervisor to child)")
 
 	// 密钥自管理（公网化支柱 C）：监听端生成强随机 key，消灭弱口令
 	GenKey = flag.Bool("gen-key", false, "generate a strong random key into .local-mirror/key (reusing an existing one) and print it to the terminal; exits unless run flags are given")

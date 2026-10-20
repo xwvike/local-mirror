@@ -67,7 +67,7 @@ func taskFromRunFlags(runArgs []string, existing []byte) (*serviceTask, error) {
 	if !*config.SendFlag && !*config.ReceiveFlag && !set["m"] && !set["mode"] {
 		return nil, fmt.Errorf("a direction is required: --send and/or --receive")
 	}
-	for _, name := range []string{"status", "heat", "all", "show-key", "secret-stdin", "version", "v"} {
+	for _, name := range []string{"status", "heat", "all", "show-key", "secret-stdin", "supervised", "version", "v"} {
 		if set[name] {
 			return nil, fmt.Errorf("--%s is not a sync option and cannot be installed as a service", name)
 		}
