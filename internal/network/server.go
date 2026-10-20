@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -358,6 +359,24 @@ func (s *fileServer) dispatchError(conn net.Conn, c *client, err error) (closed 
 	return false
 }
 
+// legacySinksWarned 已告警过的旧版汇端（按实例），每个进程只说一次
+var legacySinksWarned sync.Map
+
+// warnLegacySink 汇端不认源端忽略列表（v2.10.1 及更早）时告警：本端忽略的路径不在树里，
+// 对端开着 --allow-delete 就会把它自己本地的这些路径当成已删除。本端不知道对端是否
+// 开了删除，只能提醒升级
+func warnLegacySink(h HandshakeMessage) {
+	if h.FeatureBits&FeatureSourceIgnores != 0 {
+		return
+	}
+	if _, seen := legacySinksWarned.LoadOrStore(h.UUID, struct{}{}); seen {
+		return
+	}
+	log.Warnf("sink %08x runs an older version that does not honor this source's ignore list: "+
+		"if it runs with --allow-delete it deletes its own copies of ignored paths (node_modules, .venv, target, your -i patterns, ...); "+
+		"upgrade the sink", h.UUID)
+}
+
 func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*HandshakeMessage, error) {
 	// 版本拒绝前先回一条结构化错误再断连：对端（v3+）能在自己的日志里
 	// 看到人话，而不是一个原因不明的 EOF。解码失败多半是旧版（v2 及更早，
@@ -405,8 +424,10 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*Handshak
 		MinVersion:  config.MinProtocolVersion,
 		UUID:        config.InstanceID,
 		Role:        config.RoleSend,
-		FeatureBits: FeatureBulkPush,
+		FeatureBits: FeatureBulkPush | FeatureSourceIgnores,
+		Ignores:     config.IgnoreFileList,
 	}
+	warnLegacySink(handshakeMsg)
 	handshakeBytes := encodeHandshake(receiveHandshake)
 	if err := sendMessage(conn, MsgTypeHandshake, handshakeBytes); err != nil {
 		return nil, fmt.Errorf("%w, error sending handshake message: %v", appError.ErrConnection, err)

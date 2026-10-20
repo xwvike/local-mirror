@@ -142,13 +142,15 @@ func runTaskOnce(ctx context.Context, exe string, t config.TaskConfig, ref *chil
 	if t.Secret != "" {
 		args = append(args, "--secret-stdin")
 	}
+	// stdin 同时是存活信号：写端在本进程里一直开着，本进程无论怎么退出（包括 kill -9，
+	// 来不及转发信号），内核都会关掉它，子进程读到 EOF 随之退出，不留孤儿占着同步根
+	args = append(args, "--supervised")
 	cmd := exec.Command(exe, args...)
 	cmd.Env = os.Environ()
-	// 无口令时 stdin 显式空设备；有口令时是管道——两种情况都非 TTY，
-	// 子进程确定性走非交互路径（发现、无色输出）
-	cmd.Stdin = nil
-	if t.Secret != "" {
-		cmd.Stdin = strings.NewReader(t.Secret + "\n")
+	// stdin 是管道而非 TTY，子进程确定性走非交互路径（发现、无色输出）
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return -1, err
 	}
 
 	stdout, err := cmd.StdoutPipe()
@@ -161,6 +163,14 @@ func runTaskOnce(ctx context.Context, exe string, t config.TaskConfig, ref *chil
 	}
 	if err := cmd.Start(); err != nil {
 		return -1, err
+	}
+	// 写完口令不关管道：Wait 在子进程退出后替我们关
+	if t.Secret != "" {
+		if _, err := io.WriteString(stdin, t.Secret+"\n"); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return -1, fmt.Errorf("passing the key to the task: %w", err)
+		}
 	}
 	ref.set(cmd)
 	defer ref.set(nil)
@@ -179,11 +189,30 @@ func runTaskOnce(ctx context.Context, exe string, t config.TaskConfig, ref *chil
 	return code, nil
 }
 
+// prefixMaxLine 转发时单行保留的上限，超出部分丢弃
+const prefixMaxLine = 64 * 1024
+
+// prefixLines 按行加前缀转发子进程输出，必须一直读到 EOF：一旦停读，管道缓冲
+// （约 64KB）写满后子进程的下一次日志写入就会永久阻塞，而 logrus 写日志时持锁，
+// 所有要写日志的 goroutine 跟着卡住，整个同步静默冻结。原先用 bufio.Scanner，
+// 遇到超过上限的一行就返回 false 退出读循环，正是这种停读。超长行现在截断转发
 func prefixLines(r io.Reader, w io.Writer, name string) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		fmt.Fprintf(w, "[%s] %s\n", name, sc.Text())
+	br := bufio.NewReaderSize(r, prefixMaxLine)
+	for {
+		line, isPrefix, err := br.ReadLine()
+		if err != nil {
+			return
+		}
+		if !isPrefix {
+			fmt.Fprintf(w, "[%s] %s\n", name, line)
+			continue
+		}
+		fmt.Fprintf(w, "[%s] %s … (line truncated)\n", name, line)
+		for isPrefix { // 丢弃这一行的剩余部分
+			if _, isPrefix, err = br.ReadLine(); err != nil {
+				return
+			}
+		}
 	}
 }
 

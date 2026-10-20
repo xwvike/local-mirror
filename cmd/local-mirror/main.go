@@ -189,6 +189,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "local-mirror: %v\n", err)
 		os.Exit(2)
 	}
+	// 口令行（若有）已读走，stdin 余下的只剩监督进程的存活信号
+	if *config.Supervised {
+		app.WatchParent(os.Stdin)
+	}
 
 	// 三级安全阶梯（对所有同步方生效，不再只在 --allow-delete 时检查）：
 	// 关键路径（~、/、系统目录，真实路径解引用后判定）默认连"只同步"都拒绝

@@ -74,12 +74,12 @@ func TestUpsertTaskYAML(t *testing.T) {
 func TestRemoveTaskYAML(t *testing.T) {
 	existing := []byte("# my config\ntasks:\n  # photos share\n  - name: photos\n    send: true\n    path: /srv/photos\n    secret: k0\n  - receive: true\n    listen: true\n    path: /srv/backup\n    secret: k1\n")
 
-	out, removed, left, err := removeTaskYAML(existing, "/srv/nope")
+	out, removed, _, err := removeTaskYAML(existing, "/srv/nope")
 	if err != nil || removed || string(out) != string(existing) {
 		t.Fatalf("removing an unknown dir must change nothing: removed=%v err=%v", removed, err)
 	}
 
-	out, removed, left, err = removeTaskYAML(existing, "/srv/backup")
+	out, removed, left, err := removeTaskYAML(existing, "/srv/backup")
 	if err != nil || !removed || left != 1 {
 		t.Fatalf("removed=%v left=%d err=%v", removed, left, err)
 	}
@@ -131,5 +131,27 @@ func TestInspectConfigBrokenIsNotBlank(t *testing.T) {
 	}
 	if got, _, _ := inspectConfig(filepath.Join(dir, "absent.yml")); got != cfgMissing {
 		t.Errorf("absent file: state %d, want missing", got)
+	}
+}
+
+// defaults 开着 allow_delete 时，没给 --allow-delete 装上的任务必须显式写 false，不能继承
+func TestUpsertTaskYAMLPinsAllowFlagsAgainstDefaults(t *testing.T) {
+	existing := []byte("defaults:\n  allow_delete: true\ntasks:\n  - send: true\n    path: /srv/a\n")
+	out, err := upsertTaskYAML(existing, config.TaskConfig{Receive: true, Listen: true, Path: "/srv/b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseMultiConfig(out, "/etc/local-mirror/config.yml")
+	if err != nil {
+		t.Fatalf("result is not a valid config: %v\n%s", err, out)
+	}
+	if len(cfg.Tasks) != 2 || cfg.Tasks[1].AllowDelete {
+		t.Errorf("installed task inherited allow_delete from defaults:\n%s", out)
+	}
+	if !cfg.Tasks[0].AllowDelete {
+		t.Error("existing task lost its inherited allow_delete")
+	}
+	if strings.Contains(string(out), "allow_critical") {
+		t.Errorf("allow_critical written although defaults do not enable it:\n%s", out)
 	}
 }

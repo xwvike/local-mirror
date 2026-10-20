@@ -182,6 +182,7 @@ func BuildFileTree(path string) error {
 		wg.Go(func() {
 			for node := range nodeChan {
 				if !node.IsDir && node.Hash == "" {
+					hashStart := time.Now()
 					if hash, err := utils.CalcBlake3(filepath.Join(path, node.Path)); err != nil {
 						// 哈希缺失的节点仍进树：客户端会确定性跳过它（不发注定失败的
 						// 请求），但因节点存在，镜像侧已有副本不会被 --allow-delete 误删。
@@ -190,6 +191,7 @@ func BuildFileTree(path string) error {
 						log.Errorf("cannot read %s (%v); the file is excluded from sync and recovers automatically once readable", node.Path, err)
 					} else {
 						node.Hash = fmt.Sprintf("%x", hash)
+						node.HashRacy = RacyHash(node.ModTime, hashStart)
 						mu.Lock()
 						computedHashes++
 						mu.Unlock()
@@ -274,7 +276,7 @@ func BuildFileTree(path string) error {
 		mode := PermOf(info)
 		if old, ok := existing[relPath]; ok {
 			id = old.ID
-			if !info.IsDir() && old.Hash != "" &&
+			if !info.IsDir() && old.Hash != "" && !old.HashRacy &&
 				old.Size == uint64(info.Size()) && old.ModTime.Equal(info.ModTime()) {
 				hash = old.Hash
 				reusedHashes++

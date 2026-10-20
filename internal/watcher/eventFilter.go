@@ -320,6 +320,7 @@ func finalizeFileChange(absPath string) {
 		return
 	}
 	hash := ""
+	hashStart := time.Now()
 	if h, hashErr := utils.CalcBlake3(absPath); hashErr != nil {
 		// 与 buildFileTree 语义一致：空哈希节点照常落库（客户端确定性跳过、
 		// 不误删镜像侧副本），登记进不可读列表由恢复循环定期探测
@@ -339,6 +340,7 @@ func finalizeFileChange(absPath string) {
 		Size:     uint64(linfo.Size()),
 		ModTime:  linfo.ModTime(),
 		Hash:     hash,
+		HashRacy: hash != "" && tree.RacyHash(linfo.ModTime(), hashStart),
 		Depth:    strings.Count(relPath, string(filepath.Separator)),
 		Mode:     tree.PermOf(linfo),
 	}

@@ -67,7 +67,7 @@ func taskFromRunFlags(runArgs []string, existing []byte) (*serviceTask, error) {
 	if !*config.SendFlag && !*config.ReceiveFlag && !set["m"] && !set["mode"] {
 		return nil, fmt.Errorf("a direction is required: --send and/or --receive")
 	}
-	for _, name := range []string{"status", "heat", "all", "show-key", "secret-stdin", "version", "v"} {
+	for _, name := range []string{"status", "heat", "all", "show-key", "secret-stdin", "supervised", "version", "v"} {
 		if set[name] {
 			return nil, fmt.Errorf("--%s is not a sync option and cannot be installed as a service", name)
 		}
@@ -224,6 +224,17 @@ func upsertTaskYAML(existing []byte, t config.TaskConfig) ([]byte, error) {
 		root.Content = append(root.Content, strNode("tasks"), tasks)
 	}
 	item := taskNode(t)
+	// taskNode 只写开着的放行开关；defaults 里开着而本次安装没开时，不写就会继承
+	// defaults 的 true——没给 --allow-delete 的任务照样删文件。这里显式写 false 压住
+	for _, k := range []struct {
+		key string
+		on  bool
+	}{{"allow_delete", t.AllowDelete}, {"allow_critical", t.AllowCritical}} {
+		if !k.on && defaultsEnable(root, k.key) {
+			item.Content = append(item.Content, strNode(k.key),
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "false"})
+		}
+	}
 	replaced := false
 	for i, n := range tasks.Content {
 		if taskNodePath(n) == t.Path {
@@ -237,6 +248,23 @@ func upsertTaskYAML(existing []byte, t config.TaskConfig) ([]byte, error) {
 		tasks.Content = append(tasks.Content, item)
 	}
 	return encodeYAML(&doc)
+}
+
+// defaultsEnable 配置的 defaults 段是否把某个布尔开关设成了 true
+func defaultsEnable(root *yaml.Node, key string) bool {
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "defaults" || root.Content[i+1].Kind != yaml.MappingNode {
+			continue
+		}
+		d := root.Content[i+1]
+		for j := 0; j+1 < len(d.Content); j += 2 {
+			if d.Content[j].Value == key {
+				var on bool
+				return d.Content[j+1].Decode(&on) == nil && on
+			}
+		}
+	}
+	return false
 }
 
 // taskNodePath 取任务节点的 path（解析成绝对路径），用于判断是否同一同步根

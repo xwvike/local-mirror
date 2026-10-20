@@ -79,7 +79,7 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 	// 客户端忽略：命中项从 diff 中整体剔除——create/modify 不下载、
 	// delete 不删除、也不参与后面的重命名配对。服务端未忽略而客户端
 	// 忽略的条目由此对同步完全隐形（本地已有的副本也不会被碰）
-	diffs = filterIgnoredDiffs(diffs)
+	diffs = filterIgnoredDiffs(diffs, fileClient.SourceIgnores())
 
 	// 本目录的树写入攒成一批，处理完提交（见 tree.Batch）
 	var batch tree.Batch
@@ -110,11 +110,13 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 				itemFailures[v.Path]++
 				if itemFailures[v.Path] > maxItemRetries {
 					blacklist[v.Path] = true
+					noteRetry(path)
 					log.Errorf("%s failed %d times in a row, giving it up for this round (other files unaffected)", v.Path, itemFailures[v.Path]-1)
 				}
 				return err
 			}
 			log.Errorf("Error processing diff item %v: %v", v, err)
+			noteRetry(path)
 			continue
 		}
 		recordChangedDir(v.Path, &batch)
@@ -174,12 +176,19 @@ func rollupMatches(node tree.Node) bool {
 
 // filterIgnoredDiffs 剔除命中忽略列表的 diff 项。
 // 客户端忽略语义：不下载（create/modify）、不删除（delete）——
-// 即便服务端树里有该条目，也当它不存在；本地磁盘上的同名内容原样保留
-func filterIgnoredDiffs(diffs []DiffResult) []DiffResult {
+// 即便服务端树里有该条目，也当它不存在；本地磁盘上的同名内容原样保留。
+// 源端忽略的路径（sourceIgnores）同样不删：它们不在源端树里是因为被忽略，
+// 不是被删了。否则源端加一条 -i，或两端版本的默认忽略项不同，开着
+// --allow-delete 的汇端就会删掉自己本地的这些目录
+func filterIgnoredDiffs(diffs []DiffResult, sourceIgnores []string) []DiffResult {
 	kept := diffs[:0]
 	for _, d := range diffs {
 		if utils.IsIgnored(d.Path, config.IgnoreFileList) {
 			log.Debugf("ignoring diff item (%s): %s", d.Action, d.Path)
+			continue
+		}
+		if d.Action == "delete" && utils.IsIgnored(d.Path, sourceIgnores) {
+			log.Debugf("keeping %s: the source ignores it, so its absence upstream is not a deletion", d.Path)
 			continue
 		}
 		kept = append(kept, d)
@@ -331,6 +340,7 @@ func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 			}
 			if retries[v.Path] > maxDirRetries {
 				log.Errorf("directory %s failed %d times in a row, giving up this round", v.Path, retries[v.Path]-1)
+				noteRetry(v.Path)
 				continue
 			}
 			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
@@ -343,6 +353,7 @@ func drainNextLevel(fileClient *network.FileClient, recurseAll bool) error {
 			// §5.1：非连接错误（Diff/DB 等）跳过该目录、继续同步其余目录（一个坏目录不该
 			// 拖垮整轮），但计入错误统计——别让「某目录本轮没同步成」静默地当成成功
 			status.RecordError()
+			noteRetry(v.Path)
 		}
 	}
 	return nil

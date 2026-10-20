@@ -8,7 +8,7 @@ import (
 	"local-mirror/config"
 	"os"
 	"path/filepath"
-	"slices"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -56,6 +56,20 @@ type Node struct {
 	// PermRollup 仅出现在线格式的目录条目上：计入权限的子树 rollup（见 PermDirHashes）。
 	// 不落库；旧版对端忽略它，照旧比对 Hash 里不含权限的 rollup
 	PermRollup string `json:"perm_rollup,omitempty"`
+	// HashRacy 哈希是在 mtime 的同一精度刻度内算的（见 RacyHash）：启动校准不复用它，
+	// 重算一次。粗精度文件系统上，之后同一刻度内的同尺寸改动不改变 mtime
+	HashRacy bool `json:"hash_racy,omitempty"`
+}
+
+// mtimeGranularity 常见文件系统里最粗的 mtime 精度（FAT 为 2 秒）
+const mtimeGranularity = 2 * time.Second
+
+// RacyHash 在 hashStart 开始读取的内容，其哈希能否凭 size+mtime 不变而复用。
+// 与 git 的 racy-clean 同理：读取时离 mtime 不到一个精度刻度，此后同一刻度内的改动
+// 在粗精度文件系统上留下同样的 mtime，size 也没变的话就被当成没改。mtime 在未来
+// （时钟回拨）同样不可信
+func RacyHash(mtime, hashStart time.Time) bool {
+	return hashStart.Sub(mtime) < mtimeGranularity
 }
 
 type Children struct {
@@ -190,7 +204,81 @@ func AddNodes(nodes []*Node) error {
 	return update(func(tx *bolt.Tx) error { return addNodesTx(tx, nodes) })
 }
 
+// childrenCache 一个写事务内的 children 列表缓存：每个父目录的列表只解码一次、
+// 用集合判重、提交前写回一次。逐节点解码 / 判重 / 编码整份列表，会让 N 个子项的
+// 目录在一次重建或一轮同步里付 O(N²)——实测平铺 2 万文件的目录重建 19 秒，
+// 且纯汇端每 10 分钟就重建一次。
+//
+// 缓存期间 children 桶本身是陈旧的：同一事务里要直接读写该桶的操作（删除）
+// 之前必须先 flush
+type childrenCache struct {
+	bucket *bolt.Bucket
+	lists  map[string]*childList
+}
+
+type childList struct {
+	ch    Children
+	ids   map[string]struct{}
+	dirty bool
+}
+
+func newChildrenCache(bucket *bolt.Bucket) *childrenCache {
+	return &childrenCache{bucket: bucket, lists: map[string]*childList{}}
+}
+
+// add 把 childID 挂到 parentID 下，已在列表里则不动；返回是否新挂上
+func (c *childrenCache) add(parentID, childID string) (bool, error) {
+	l, ok := c.lists[parentID]
+	if !ok {
+		l = &childList{ch: Children{ParentID: parentID, ChildIDs: []string{}}}
+		if data := c.bucket.Get([]byte(parentID)); data != nil {
+			if err := json.Unmarshal(data, &l.ch); err != nil {
+				return false, err
+			}
+		}
+		l.ids = make(map[string]struct{}, len(l.ch.ChildIDs))
+		for _, id := range l.ch.ChildIDs {
+			l.ids[id] = struct{}{}
+		}
+		c.lists[parentID] = l
+	}
+	if _, dup := l.ids[childID]; dup {
+		return false, nil
+	}
+	l.ids[childID] = struct{}{}
+	l.ch.ChildIDs = append(l.ch.ChildIDs, childID)
+	l.dirty = true
+	return true, nil
+}
+
+// flush 写回改过的列表并清空缓存
+func (c *childrenCache) flush() error {
+	for pid, l := range c.lists {
+		if !l.dirty {
+			continue
+		}
+		data, err := json.Marshal(l.ch)
+		if err != nil {
+			return err
+		}
+		if err := c.bucket.Put([]byte(pid), data); err != nil {
+			return err
+		}
+	}
+	c.lists = map[string]*childList{}
+	return nil
+}
+
 func addNodesTx(tx *bolt.Tx, nodes []*Node) error {
+	cc := newChildrenCache(tx.Bucket([]byte("children")))
+	if err := addNodesCached(tx, cc, nodes); err != nil {
+		return err
+	}
+	return cc.flush()
+}
+
+// addNodesCached 同 addNodesTx，children 列表的修改记在 cc 里，由调用方 flush
+func addNodesCached(tx *bolt.Tx, cc *childrenCache, nodes []*Node) error {
 	log.Debug("Adding nodes to the database:", len(nodes))
 	var dirCount uint64
 	var fileCount uint64
@@ -223,23 +311,11 @@ func addNodesTx(tx *bolt.Tx, nodes []*Node) error {
 			if node.Path != "." {
 				if pid := pathIndexBucket.Get([]byte(filepath.Dir(node.Path))); pid != nil {
 					node.ParentID = string(pid)
-					var ch Children
-					if cd := childrenBucket.Get(pid); cd != nil {
-						if err := json.Unmarshal(cd, &ch); err != nil {
-							return err
-						}
-					} else {
-						ch = Children{ParentID: string(pid), ChildIDs: []string{}}
+					added, err := cc.add(string(pid), node.ID)
+					if err != nil {
+						return err
 					}
-					if !slices.Contains(ch.ChildIDs, node.ID) {
-						ch.ChildIDs = append(ch.ChildIDs, node.ID)
-						cd, err := json.Marshal(ch)
-						if err != nil {
-							return err
-						}
-						if err := childrenBucket.Put(pid, cd); err != nil {
-							return err
-						}
+					if added {
 						log.Warnf("repaired orphaned node linkage: %s", node.Path)
 					}
 				}
@@ -279,21 +355,7 @@ func addNodesTx(tx *bolt.Tx, nodes []*Node) error {
 			fileCount++
 		}
 		if node.ParentID != "" {
-			childrenData := childrenBucket.Get([]byte(node.ParentID))
-			var children Children
-			if childrenData != nil {
-				if err := json.Unmarshal(childrenData, &children); err != nil {
-					return err
-				}
-			} else {
-				children = Children{ParentID: node.ParentID, ChildIDs: []string{}}
-			}
-			children.ChildIDs = append(children.ChildIDs, node.ID)
-			childrenData, err = json.Marshal(children)
-			if err != nil {
-				return err
-			}
-			if err := childrenBucket.Put([]byte(node.ParentID), childrenData); err != nil {
+			if _, err := cc.add(node.ParentID, node.ID); err != nil {
 				return err
 			}
 		}
@@ -657,7 +719,41 @@ const ChangedDirRetention = time.Hour
 // addChangedDir 把一批变更目录写入 changed_dirs 桶。
 // 必须以落库时刻做 key：若用事件发生时间，节流延迟会让记录"出现在过去"，
 // 客户端按时间窗游标查询时正好跳过它们
+// changeInflight 正在提交的 changed_dirs 记录键（unix 秒 → 在途写事务数）。
+// 记录键在提交前就定了，提交（含 fsync）之后才对查询可见；查询方据此不越过
+// 尚未提交的秒，否则覆盖点会跨过一条稍后才可见的记录（见 ChangeLogSettled）
+var (
+	changeInflightMu sync.Mutex
+	changeInflight   = map[int64]int{}
+)
+
+// ChangeLogSettled 返回时刻 t：键早于 t 的变更记录都已提交，之后也不会再有
+// 这些秒的写入。取当前秒（还没过完，之后仍可能写入）与在途写事务键中的较小者。
+// 与 addChangedDir 在同一把锁下取时刻，写方要么先登记（t 不越过它），要么后取键
+// （键不早于 t），二者必居其一
+func ChangeLogSettled() int64 {
+	changeInflightMu.Lock()
+	defer changeInflightMu.Unlock()
+	t := time.Now().Unix()
+	for k := range changeInflight {
+		t = min(t, k)
+	}
+	return t
+}
+
 func addChangedDir(paths []string) error {
+	changeInflightMu.Lock()
+	stamp := time.Now().Unix()
+	changeInflight[stamp]++
+	changeInflightMu.Unlock()
+	defer func() {
+		changeInflightMu.Lock()
+		if changeInflight[stamp]--; changeInflight[stamp] <= 0 {
+			delete(changeInflight, stamp)
+		}
+		changeInflightMu.Unlock()
+	}()
+
 	err := DB.Update(func(tx *bolt.Tx) error {
 		changedDirsBucket := tx.Bucket([]byte("changed_dirs"))
 		if changedDirsBucket == nil {
@@ -678,7 +774,7 @@ func addChangedDir(paths []string) error {
 		}
 
 		timeStampBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(timeStampBytes, uint64(time.Now().Unix()))
+		binary.BigEndian.PutUint64(timeStampBytes, uint64(stamp))
 
 		// 同一秒内可能已有记录，合并而不是覆盖
 		if existing := changedDirsBucket.Get(timeStampBytes); existing != nil {

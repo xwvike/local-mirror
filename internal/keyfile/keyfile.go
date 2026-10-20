@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"local-mirror/pkg/utils"
+
 	"github.com/zeebo/blake3"
 )
 
@@ -89,12 +91,9 @@ func write(path, key string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("failed to create state dir for key file: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(key+"\n"), 0600); err != nil {
+	// 原子写：--force 换 key 时写到一半失败（磁盘满等）不能把旧 key 一起毁掉
+	if err := utils.WriteFileAtomic(path, []byte(key+"\n"), 0600); err != nil {
 		return fmt.Errorf("failed to write key file %s: %w", path, err)
-	}
-	// WriteFile 不改已有文件的权限，显式收紧到 600（即便目录本身更宽）
-	if err := os.Chmod(path, 0600); err != nil {
-		return fmt.Errorf("failed to tighten key file permissions: %w", err)
 	}
 	return nil
 }

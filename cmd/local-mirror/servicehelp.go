@@ -110,26 +110,6 @@ func runAsDesc(runAsUser string, userScope bool) string {
 	}
 }
 
-// effectiveConfigHint 查看合并后生效配置的命令
-func effectiveConfigHint(userScope bool) string {
-	switch runtime.GOOS {
-	case "linux":
-		if detectInit() == initProcd {
-			return "cat /etc/init.d/local-mirror   # 日志：logread -e local-mirror"
-		}
-		if userScope {
-			return "systemctl --user cat local-mirror"
-		}
-		return "systemctl cat local-mirror"
-	case "darwin":
-		if userScope {
-			return fmt.Sprintf("launchctl print gui/%d/%s", os.Getuid(), serviceLabel)
-		}
-		return fmt.Sprintf("sudo launchctl print system/%s", serviceLabel)
-	}
-	return ""
-}
-
 // installTargetUser 系统级 unit 里 User= 的兜底人选。
 //
 // 系统级安装必然要 sudo，此时 user.Current() 返回的是 root——直接用它会生成

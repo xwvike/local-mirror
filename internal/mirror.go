@@ -308,6 +308,9 @@ func fullScan(fileClient *network.FileClient) error {
 		}
 	}
 
+	// 全量扫描覆盖整棵树，之前登记的变更重试随之作废；本轮失败的目录会重新登记
+	resetRetries()
+
 	NextLevel.Clear()
 	NextLevel.Push(DiffResult{
 		Path:   ".",
@@ -361,12 +364,18 @@ func TrackingChanges(fileClient *network.FileClient) error {
 		return nil
 	}
 
-	if len(change) == 0 {
+	// 上一轮没处理成功的目录与本轮新变更一起处理（见 changeretry.go）：
+	// 游标会推过它们的变更，不重试就只能等全量扫描
+	due := beginRetryRound()
+	if len(change) == 0 && len(due) == 0 {
 		// 长轮询保活返回，无变更；推进游标到服务端已覆盖时刻
 		lastChangeCursor = coveredUntil
 		return nil
 	}
-	allPaths := extractMinimalPathsFromChanges(change)
+	if len(due) > 0 {
+		log.Infof("retrying %d director(ies) that failed in the previous change-tracking round", len(due))
+	}
+	allPaths := extractMinimalPathsFromChanges(append(change, due...))
 	NextLevel.Clear()
 	// 本次变更批次内共享的失败隔离状态；不跨多次 TrackingChanges 调用持续，
 	// 一个文件持续失败时下次心跳周期会重新尝试（成本很低，且能自愈）
@@ -383,6 +392,7 @@ func TrackingChanges(fileClient *network.FileClient) error {
 			continue
 		}
 		log.Errorf("Error processing directory %s: %v", v, err)
+		noteRetry(v)
 		if errors.Is(err, appError.ErrConnection) {
 			if reconnectErr := fileClient.Reconnect(); reconnectErr != nil {
 				return err

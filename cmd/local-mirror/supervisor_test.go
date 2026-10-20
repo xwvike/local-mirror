@@ -65,3 +65,21 @@ func TestTaskArgsDirectionFirst(t *testing.T) {
 		}
 	}
 }
+
+// TestPrefixLinesSurvivesOverlongLine 超长的一行不能让转发停读：停读后管道写满，
+// 子进程下一次写日志就永久阻塞。原先 bufio.Scanner 遇到超过 1MB 的行即退出读循环
+func TestPrefixLinesSurvivesOverlongLine(t *testing.T) {
+	in := "before\n" + strings.Repeat("x", 2<<20) + "\nafter\n\nlast-no-newline"
+	var out strings.Builder
+	prefixLines(strings.NewReader(in), &out, "t")
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("want 5 forwarded lines, got %d: %q", len(lines), out.String()[:min(200, out.Len())])
+	}
+	if lines[0] != "[t] before" || lines[2] != "[t] after" || lines[3] != "[t] " || lines[4] != "[t] last-no-newline" {
+		t.Errorf("unexpected lines around the long one: %q / %q / %q / %q", lines[0], lines[2], lines[3], lines[4])
+	}
+	if !strings.HasSuffix(lines[1], "(line truncated)") || len(lines[1]) > prefixMaxLine+64 {
+		t.Errorf("overlong line should be truncated, got %d bytes", len(lines[1]))
+	}
+}

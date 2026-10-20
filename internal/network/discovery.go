@@ -303,6 +303,9 @@ func discoveryRespondLoop(conn *net.UDPConn, self DiscoveredServer, key []byte) 
 		if err != nil {
 			return // socket 已被 stop() 关闭
 		}
+		if !onLink(raddr.IP) {
+			continue
+		}
 		reply, ok := handleProbe(buf[:n], config.ProtocolVersion, self, key)
 		if !ok {
 			continue
@@ -311,6 +314,33 @@ func discoveryRespondLoop(conn *net.UDPConn, self DiscoveredServer, key []byte) 
 			log.Debugf("failed to send discovery reply to %s: %v", raddr, err)
 		}
 	}
+}
+
+// interfaceAddrs 测试可替换
+var interfaceAddrs = net.InterfaceAddrs
+
+// onLink 探测源地址是否与本机同一链路：回环，或落在某块网卡的子网内。
+// 发现只为局域网而设，本端口却绑在所有接口上：公网来的探测一律不答。否则在公网
+// 上它就是个反射放大器（36 字节探测换最多约 610 字节应答，约 17 倍，源地址可伪造），
+// 明文模式下还把同步路径答给任何人。按网卡子网而非私有地址段判断，用公网段做
+// 局域网的环境照样能发现
+func onLink(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	addrs, err := interfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- 客户端扫描器 ----

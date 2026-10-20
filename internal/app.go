@@ -1,6 +1,7 @@
 package app
 
 import (
+	"io"
 	"local-mirror/config"
 	"local-mirror/internal/tree"
 	"local-mirror/internal/watcher"
@@ -11,6 +12,20 @@ import (
 	"github.com/fsnotify/fsnotify"
 	log "github.com/sirupsen/logrus"
 )
+
+// parentGone 监督进程消失时关闭（见 WatchParent）
+var parentGone = make(chan struct{})
+
+// WatchParent 子进程模式：r 是监督进程整个生命周期都开着写端的 stdin 管道。
+// 父进程无论怎么退出（包括 kill -9 来不及转发信号），内核都会关掉写端，这里读到
+// EOF 就让 App 返回，走与收到 SIGTERM 相同的收尾。阻塞读，不轮询、不额外唤醒
+func WatchParent(r io.Reader) {
+	go func() {
+		_, _ = io.Copy(io.Discard, r)
+		log.Warn("supervisor is gone (stdin closed), shutting down")
+		close(parentGone)
+	}()
+}
 
 func App() {
 	if err := tree.BuildFileTree(config.StartPath); err != nil {
@@ -57,5 +72,8 @@ func App() {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	select {
+	case <-sigChan:
+	case <-parentGone:
+	}
 }

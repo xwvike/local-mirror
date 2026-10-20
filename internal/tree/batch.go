@@ -68,10 +68,26 @@ func (b *Batch) Commit() {
 			}
 		}
 		if err := update(func(tx *bolt.Tx) error {
+			// 整批共用一份 children 缓存（见 childrenCache）：大目录逐文件排队时，
+			// 每个文件各解码一遍父目录的整份列表就是 O(N²)
+			cc := newChildrenCache(tx.Bucket([]byte("children")))
 			for _, op := range b.ops {
-				if err := op.apply(tx); err != nil {
+				if op.add != nil {
+					if err := addNodesCached(tx, cc, []*Node{op.add}); err != nil {
+						return err
+					}
+					continue
+				}
+				// 删除直接读写 children 桶，先把缓存写回
+				if err := cc.flush(); err != nil {
 					return err
 				}
+				if err := deleteNodesTx(tx, []string{op.del}); err != nil {
+					return err
+				}
+			}
+			if err := cc.flush(); err != nil {
+				return err
 			}
 			return b.putMeta(tx)
 		}); err != nil {

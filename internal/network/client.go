@@ -32,7 +32,7 @@ func localHandshake() HandshakeMessage {
 		MinVersion:  config.MinProtocolVersion,
 		UUID:        config.InstanceID,
 		Role:        config.RoleReceive,
-		FeatureBits: FeatureBulkPush,
+		FeatureBits: FeatureBulkPush | FeatureSourceIgnores,
 	}
 }
 
@@ -228,11 +228,21 @@ type FileClient struct {
 	realityVersion   uint16
 	realityID        uint32
 	peerFeatures     uint64
+	sourceIgnores    []string // 握手时源端给的忽略列表（见 SourceIgnores）
 	State            ConnectionState
 }
 
 // SupportsBulkPush 对端（源）是否支持首次全量推送
 func (c *FileClient) SupportsBulkPush() bool { return c.peerFeatures&FeatureBulkPush != 0 }
+
+// SourceIgnores 上游源端忽略的路径模式：汇端不得删除命中它们的本地路径。
+// 旧版源端没给列表时退回 LegacySourceIgnores
+func (c *FileClient) SourceIgnores() []string {
+	if c.peerFeatures&FeatureSourceIgnores == 0 {
+		return LegacySourceIgnores
+	}
+	return c.sourceIgnores
+}
 
 func NewFileClient(realityAddr string, serverAlias string) (*FileClient, error) {
 	log.Info("Creating file client, server address:", realityAddr)
@@ -373,6 +383,7 @@ func (c *FileClient) Handshake() error {
 	c.realityVersion = handshakeResponse.Version
 	c.realityID = handshakeResponse.UUID
 	c.peerFeatures = handshakeResponse.FeatureBits
+	c.sourceIgnores = handshakeResponse.Ignores
 	c.State = Online
 	log.Infof("Received handshake response: version: %d (agreed %d), realityID: %d",
 		handshakeResponse.Version, agreed, handshakeResponse.UUID)
@@ -746,7 +757,7 @@ func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 			if err := tree.ApplyPerm(partialPath, false, perm); err != nil {
 				log.Warnf("failed to set permissions %o on %s: %v", perm, filePath, err)
 			}
-			if err := os.Rename(partialPath, fullPath); err != nil {
+			if err := placeFile(partialPath, fullPath); err != nil {
 				return "", fmt.Errorf("error renaming partial file to %s: %w", fullPath, err)
 			}
 			os.Remove(metaPath)

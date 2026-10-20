@@ -227,3 +227,25 @@ func TestDiscoverLoopback(t *testing.T) {
 		t.Errorf("Addr() = %s", got.Addr())
 	}
 }
+
+// 应答器只答同一链路的探测：公网源地址（可伪造，反射放大）一律不答
+func TestDiscoveryOnLink(t *testing.T) {
+	saved := interfaceAddrs
+	defer func() { interfaceAddrs = saved }()
+	_, lan, _ := net.ParseCIDR("192.168.1.10/24")
+	_, publicLAN, _ := net.ParseCIDR("203.0.113.5/28")
+	interfaceAddrs = func() ([]net.Addr, error) { return []net.Addr{lan, publicLAN}, nil }
+
+	for ip, want := range map[string]bool{
+		"127.0.0.1":    true,
+		"192.168.1.77": true,
+		"203.0.113.9":  true, // 公网段做局域网
+		"192.168.2.1":  false,
+		"8.8.8.8":      false,
+		"203.0.113.99": false,
+	} {
+		if got := onLink(net.ParseIP(ip)); got != want {
+			t.Errorf("onLink(%s) = %v, want %v", ip, got, want)
+		}
+	}
+}

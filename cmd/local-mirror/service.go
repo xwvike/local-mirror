@@ -13,6 +13,7 @@ import (
 
 	"local-mirror/config"
 	"local-mirror/internal/keyfile"
+	"local-mirror/pkg/utils"
 
 	"golang.org/x/term"
 )
@@ -174,11 +175,11 @@ func serviceInstall(userScope bool, explicitConfig, explicitRunAs string, dryRun
 				fmt.Fprintf(os.Stderr, "local-mirror: cannot create %s: %v\n", filepath.Dir(cfgPath), err)
 				os.Exit(1)
 			}
-			if err := os.WriteFile(cfgPath, newData, 0600); err != nil {
+			// 原子写：配置里是全部任务（含口令），写到一半失败不能把原配置毁掉
+			if err := utils.WriteFileAtomic(cfgPath, newData, 0600); err != nil {
 				fmt.Fprintf(os.Stderr, "local-mirror: cannot write %s: %v\n(系统级安装需要 root 权限，请使用 sudo)\n", cfgPath, err)
 				os.Exit(1)
 			}
-			_ = os.Chmod(cfgPath, 0600) // WriteFile 不改已有文件的权限
 			fmt.Printf("任务已写入配置 %s（同步根 %s）\n", cfgPath, st.task.Path)
 		}
 	} else {
@@ -503,7 +504,7 @@ func serviceRemove(userScope bool, explicitConfig string, dryRun bool, runArgs [
 		fmt.Printf("[dry-run] 将从 %s 删除同步目录 %s 的任务（剩 %d 个）\n", cfgPath, root, left)
 		return
 	}
-	if err := os.WriteFile(cfgPath, out, 0600); err != nil {
+	if err := utils.WriteFileAtomic(cfgPath, out, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "local-mirror: cannot write %s: %v\n", cfgPath, err)
 		os.Exit(1)
 	}
