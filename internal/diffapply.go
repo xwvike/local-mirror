@@ -50,8 +50,27 @@ func createNodeFromDiff(v DiffResult, hash string) *tree.Node {
 	}
 }
 
-// processDiffItem handles a single diff item (file or directory)
-func processDiffItem(v DiffResult, fileClient *network.FileClient, b *tree.Batch) error {
+// errQueued processDiffItem 没有当场下载文件，而是把它排进了本目录的批量下载（见 fileQueue），
+// 结果稍后由 fetchQueued 交给同一套单项处理
+var errQueued = errors.New("queued for batched download")
+
+// fileQueue 一个目录里待批量下载的文件。对端支持 FeatureFetchBatch 时 getDirectory 先处理完
+// 目录里的其余各项（删除、建目录、权限、类型互换的移除），把要下载的文件攒在这里一次取回；
+// 同一目录的各项路径互不相同，推迟下载不改变任何一项的结果
+type fileQueue []DiffResult
+
+// downloadFile 下载一个文件：q 非空时只排进批量下载，否则当场逐个下载
+func downloadFile(v DiffResult, fileClient *network.FileClient, b *tree.Batch, q *fileQueue) error {
+	if q != nil {
+		*q = append(*q, v)
+		return errQueued
+	}
+	return processFileDiff(v, fileClient, b)
+}
+
+// processDiffItem handles a single diff item (file or directory).
+// q 非空时文件下载排进批量下载并返回 errQueued（见 fileQueue）
+func processDiffItem(v DiffResult, fileClient *network.FileClient, b *tree.Batch, q *fileQueue) error {
 	switch v.Action {
 	case "delete":
 		// 默认不删除：仅增量同步，本地多余文件保留。
@@ -98,7 +117,7 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient, b *tree.Batch
 			warnUnreadableOnce(v.Path)
 			return nil
 		}
-		return processFileDiff(v, fileClient, b)
+		return downloadFile(v, fileClient, b, q)
 
 	case "chmod":
 		full, err := safety.SafeResolve(config.StartPath, v.Path)
@@ -127,7 +146,7 @@ func processDiffItem(v DiffResult, fileClient *network.FileClient, b *tree.Batch
 			warnUnreadableOnce(v.Path)
 			return nil
 		}
-		return processFileDiff(v, fileClient, b)
+		return downloadFile(v, fileClient, b, q)
 
 	default:
 		log.Warnf("Unknown action type: %s", v.Action)
@@ -194,33 +213,54 @@ func humanBytes(b uint64) string {
 	}
 }
 
+// checkDiskSpace 磁盘空间预检：free 容不下 v 外加预留余量就返回 ErrDiskFull，由调用方
+// 按目录聚合提示
+func checkDiskSpace(v DiffResult, free uint64) error {
+	if free < v.Size+diskReserve {
+		return fmt.Errorf("%w: %s needs %s but only %s is free (reserve %s)",
+			appError.ErrDiskFull, v.Path, humanBytes(v.Size), humanBytes(free), humanBytes(diskReserve))
+	}
+	return nil
+}
+
 func processFileDiff(v DiffResult, fileClient *network.FileClient, b *tree.Batch) error {
 	// 磁盘空间预检：不够就不发请求、不写分片，返回 ErrDiskFull 由调用方
 	// 按目录聚合提示。探测失败（极少见）时放行，交给写入时的兜底识别
-	if free, ferr := utils.DiskFree(config.StartPath); ferr == nil && free < v.Size+diskReserve {
-		return fmt.Errorf("%w: %s needs %s but only %s is free (reserve %s)",
-			appError.ErrDiskFull, v.Path, humanBytes(v.Size), humanBytes(free), humanBytes(diskReserve))
+	if free, ferr := utils.DiskFree(config.StartPath); ferr == nil {
+		if err := checkDiskSpace(v, free); err != nil {
+			return err
+		}
 	}
 
 	hash, err := fileClient.DownloadFile(v.Path, v.Mode)
 	if err != nil {
-		if errors.Is(err, appError.ErrConnection) {
-			fileClient.ConnectionClose()
-			return err
-		}
-		// 权限拒绝是永久失败（上游修好前重试恒败）：按"上游不可读"处理，
-		// 每路径提示一次后本轮直接跳过，不再反复请求刷日志。
-		// 上游恢复可读后由 watcher 补哈希、变更推送自动恢复同步
-		var re *network.RealityError
-		if errors.As(err, &re) && re.Code == network.ErrCodePermissionDenied {
-			warnUnreadableOnce(v.Path)
-			return nil
-		}
-		status.RecordError()
-		log.Errorf("Error downloading file %s: %v", v.Path, err)
+		return downloadFailed(v, err, fileClient)
+	}
+	fileDownloaded(v, hash, b)
+	return nil
+}
+
+// downloadFailed 归类一个文件的下载失败，返回交给调用方单项处理的错误（nil = 视为已处理）
+func downloadFailed(v DiffResult, err error, conn interface{ ConnectionClose() }) error {
+	if errors.Is(err, appError.ErrConnection) {
+		conn.ConnectionClose()
 		return err
 	}
+	// 权限拒绝是永久失败（上游修好前重试恒败）：按"上游不可读"处理，
+	// 每路径提示一次后本轮直接跳过，不再反复请求刷日志。
+	// 上游恢复可读后由 watcher 补哈希、变更推送自动恢复同步
+	var re *network.RealityError
+	if errors.As(err, &re) && re.Code == network.ErrCodePermissionDenied {
+		warnUnreadableOnce(v.Path)
+		return nil
+	}
+	status.RecordError()
+	log.Errorf("Error downloading file %s: %v", v.Path, err)
+	return err
+}
 
+// fileDownloaded 文件已校验并落到最终位置后的收尾
+func fileDownloaded(v DiffResult, hash string, b *tree.Batch) {
 	// 保真：把镜像文件的 mtime 设为服务端源文件的 mtime。
 	// createNodeFromDiff 随后 stat 磁盘，DB 记录的即这个 mtime，与磁盘一致，
 	// 重启校准时不会因时间戳不符而误判为已变化
@@ -229,6 +269,70 @@ func processFileDiff(v DiffResult, fileClient *network.FileClient, b *tree.Batch
 	b.Add(createNodeFromDiff(v, hash), true)
 	status.RecordFile(v.Path, v.Size)
 	log.Infof("File downloaded successfully: %s", v.Path)
+}
+
+// fetchBatchMax 一次批量下载请求的文件数上限：请求体保持小巧，连接中断时
+// 也只有这一批里没处理到的文件需要重来
+const fetchBatchMax = 256
+
+// fileFetcher 批量下载所需的连接能力（*network.FileClient 实现；单测可替换）
+type fileFetcher interface {
+	FetchFiles(files []network.FetchFile, done func(i int, hash string, err error)) error
+	ConnectionClose()
+}
+
+// fetchQueued 批量取回本目录排队的文件（FeatureFetchBatch），每批只付一个往返。
+// 每个文件的处理与 processFileDiff 逐项一致：磁盘空间预检（每批探一次可用空间，按批内
+// 已接纳的大小累计扣减，等同逐个预检时前面的文件已写入）、失败归类、mtime 对齐、入批。
+// 每个文件的结果交给 handle（与 processDiffItem 的结果同一套单项处理）；handle 或下载
+// 返回连接错误时立即返回该错误，剩余文件留给重连后的重试
+func fetchQueued(fileClient fileFetcher, q fileQueue, b *tree.Batch, handle func(DiffResult, error) error) error {
+	for len(q) > 0 {
+		chunk := q[:min(len(q), fetchBatchMax)]
+		q = q[len(chunk):]
+
+		free, ferr := utils.DiskFree(config.StartPath)
+		var admitted []DiffResult
+		var files []network.FetchFile
+		var need uint64
+		for _, v := range chunk {
+			if ferr == nil {
+				if err := checkDiskSpace(v, free-min(need, free)); err != nil {
+					if abort := handle(v, err); abort != nil {
+						return abort
+					}
+					continue
+				}
+			}
+			need += v.Size
+			admitted = append(admitted, v)
+			files = append(files, network.FetchFile{Path: v.Path, Perm: v.Mode})
+		}
+
+		var abort error
+		err := fileClient.FetchFiles(files, func(i int, hash string, err error) {
+			v := admitted[i]
+			if err != nil {
+				err = downloadFailed(v, err, fileClient)
+			} else {
+				fileDownloaded(v, hash, b)
+			}
+			if a := handle(v, err); a != nil && abort == nil {
+				abort = a
+			}
+		})
+		if err != nil {
+			// 流已不可续读（能归到某个文件的已随它回调过，handle 据此计入单项失败）
+			fileClient.ConnectionClose()
+			if abort != nil {
+				return abort
+			}
+			return err
+		}
+		if abort != nil {
+			return abort
+		}
+	}
 	return nil
 }
 

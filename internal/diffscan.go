@@ -91,18 +91,15 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 	log.Infof("Diff count for %s: %d", path, len(diffs))
 	diffDirs := make(map[string]bool)
 	diskFullSkipped := 0
-	for _, v := range diffs {
-		if blacklist[v.Path] {
-			// 已确认持续失败，本轮不再尝试，让其余正常项能被处理到
-			continue
-		}
-		if err := processDiffItem(v, fileClient, &batch); err != nil {
+	// handle 单项结果的处理，逐项处理与批量下载共用。返回非 nil 即本次调用到此为止
+	handle := func(v DiffResult, err error) error {
+		if err != nil {
 			// 磁盘空间不足：跳过该文件继续处理其余项（小文件可能仍装得下），
 			// 目录处理完后聚合成一条提示，避免逐文件刷屏
 			if errors.Is(err, appError.ErrDiskFull) {
 				diskFullSkipped++
 				log.Debugf("skipped for low disk space: %v", err)
-				continue
+				return nil
 			}
 			// 连接断了：无论是否拉黑，这次调用都不能继续复用这个连接处理
 			// 剩余项，必须整体返回交给上层重连后重试；其他错误跳过单项继续
@@ -117,13 +114,38 @@ func getDirectory(fileClient *network.FileClient, path string, recurseAll bool, 
 			}
 			log.Errorf("Error processing diff item %v: %v", v, err)
 			noteRetry(path)
-			continue
+			return nil
 		}
 		recordChangedDir(v.Path, &batch)
 		// 只有新建/类型互换的目录要强制下钻；chmod 的目录交给下面的 rollup 剪枝判定
 		if v.IsDir && (v.Action == "create" || v.Action == "retype") {
 			diffDirs[v.Path] = true
 			NextLevel.Push(v)
+		}
+		return nil
+	}
+	// 对端支持批量下载时，文件先排队、目录其余各项处理完后一次取回（见 fileQueue）：
+	// 逐个请求每个文件都要付一个往返，广域网上一百个小文件就是二十多秒
+	var queue *fileQueue
+	if fileClient.SupportsFetchBatch() {
+		queue = new(fileQueue)
+	}
+	for _, v := range diffs {
+		if blacklist[v.Path] {
+			// 已确认持续失败，本轮不再尝试，让其余正常项能被处理到
+			continue
+		}
+		err := processDiffItem(v, fileClient, &batch, queue)
+		if errors.Is(err, errQueued) {
+			continue
+		}
+		if abort := handle(v, err); abort != nil {
+			return abort
+		}
+	}
+	if queue != nil {
+		if err := fetchQueued(fileClient, *queue, &batch, handle); err != nil {
+			return err
 		}
 	}
 	if diskFullSkipped > 0 {

@@ -171,3 +171,55 @@ func decodeBulkEnd(data []byte) (BulkEndMessage, error) {
 	err := binary.Read(buf, binary.BigEndian, &msg.Bytes)
 	return msg, err
 }
+
+// FetchRequestMessage 批量下载请求（需协商 FeatureFetchBatch）：增量同步一次取回一组文件。
+// 源端按请求顺序对每项恰好应答一次——给得出就是一个文件条目（BulkEntry，其后紧跟同一会话的
+// FileData 与 FileComplete），给不出就是一条 Error（错误码同单文件请求）——最后以 BulkEnd 收尾
+type FetchRequestMessage struct {
+	Items []FetchItem
+}
+
+// FetchItem 批量下载中的一项。Offset 同 FileRequest：汇端已有分片时的续传起点
+type FetchItem struct {
+	Path   string
+	Offset uint64
+}
+
+// fetchItemMinBytes 一项在线格式上的最小长度（2 字节路径长度前缀 + 8 字节偏移）
+const fetchItemMinBytes = 10
+
+func encodeFetchRequest(msg FetchRequestMessage) []byte {
+	buf := new(bytes.Buffer)
+	_ = binary.Write(buf, binary.BigEndian, uint32(len(msg.Items)))
+	for _, it := range msg.Items {
+		writeWirePath(buf, it.Path)
+		_ = binary.Write(buf, binary.BigEndian, it.Offset)
+	}
+	return buf.Bytes()
+}
+
+func decodeFetchRequest(data []byte) (FetchRequestMessage, error) {
+	var msg FetchRequestMessage
+	buf := bytes.NewReader(data)
+	var n uint32
+	if err := binary.Read(buf, binary.BigEndian, &n); err != nil {
+		return msg, err
+	}
+	// 超过剩余字节所能容纳的计数必然是伪造的，在分配前拒绝
+	if uint64(n) > uint64(buf.Len()/fetchItemMinBytes) {
+		return msg, fmt.Errorf("fetch item count %d exceeds plausible max for %d remaining bytes", n, buf.Len())
+	}
+	msg.Items = make([]FetchItem, 0, n)
+	for range n {
+		var it FetchItem
+		var err error
+		if it.Path, err = readWirePath(buf); err != nil {
+			return msg, err
+		}
+		if err := binary.Read(buf, binary.BigEndian, &it.Offset); err != nil {
+			return msg, err
+		}
+		msg.Items = append(msg.Items, it)
+	}
+	return msg, nil
+}

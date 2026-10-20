@@ -256,6 +256,7 @@ type servedFile struct {
 	hash     [32]byte // 起始哈希（续传提示），权威哈希由 sendFileData 流式算出
 	fullPath string
 	offset   uint64
+	node     *tree.Node // 放行它的树节点（推送条目据此带上权限与 mtime）
 }
 
 // openServeFile 执行文件服务的全部校验并打开文件，单文件请求与首次全量推送共用。
@@ -346,7 +347,7 @@ func openServeFile(reqPath string, offset uint64) (*servedFile, func(), error) {
 			return nil, nil, fmt.Errorf("error seeking file %s at offset %d", reqPath, offset)
 		}
 	}
-	return &servedFile{file: file, info: fileInfo, hash: fileHash, fullPath: fullPath, offset: offset}, release, nil
+	return &servedFile{file: file, info: fileInfo, hash: fileHash, fullPath: fullPath, offset: offset, node: node}, release, nil
 }
 
 // sendFileData 发送一个会话的文件数据。session.file 的关闭由调用方

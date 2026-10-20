@@ -125,7 +125,7 @@ func (s *fileServer) handleBulkStart(c *client, body []byte) error {
 		if n.Path == req.ResumePath && req.ResumeOffset <= n.Size {
 			offset = req.ResumeOffset
 		}
-		sent, err := s.pushFile(conn, n, offset)
+		sent, err := s.pushFile(conn, n.Path, offset)
 		if err != nil {
 			var we *wireError
 			if errors.As(err, &we) || !errors.Is(err, appError.ErrConnection) {
@@ -152,9 +152,11 @@ func (s *fileServer) handleBulkStart(c *client, body []byte) error {
 	return nil
 }
 
-// pushFile 推送一个文件条目及其数据，返回本次实际发送的字节数（续传时不含已有部分）
-func (s *fileServer) pushFile(conn net.Conn, n tree.Node, offset uint64) (uint64, error) {
-	sf, release, err := openServeFile(n.Path, offset)
+// pushFile 推送一个文件条目及其数据，返回本次实际发送的字节数（续传时不含已有部分）。
+// 给不出（openServeFile 拒绝或失败）时什么都没发，返回的错误不带 ErrConnection，调用方
+// 可以跳过它继续推送；条目发出之后的失败一律是 ErrConnection（流已无法收尾）
+func (s *fileServer) pushFile(conn net.Conn, path string, offset uint64) (uint64, error) {
+	sf, release, err := openServeFile(path, offset)
 	if err != nil {
 		return 0, err
 	}
@@ -163,23 +165,23 @@ func (s *fileServer) pushFile(conn net.Conn, n tree.Node, offset uint64) (uint64
 
 	sessionID, err := utils.RandomString(16)
 	if err != nil {
-		return 0, fmt.Errorf("error generating session ID for file %s", n.Path)
+		return 0, fmt.Errorf("error generating session ID for file %s", path)
 	}
 	var id [16]byte
 	copy(id[:], sessionID)
 	size := uint64(sf.info.Size())
 	entry := BulkEntryMessage{
 		Kind:      BulkEntryFile,
-		Path:      n.Path,
-		Mode:      n.Mode,
-		ModTime:   n.ModTime.UnixNano(),
+		Path:      path,
+		Mode:      sf.node.Mode,
+		ModTime:   sf.node.ModTime.UnixNano(),
 		Size:      size,
 		Offset:    sf.offset,
 		SessionID: id,
 		FileHash:  sf.hash,
 	}
 	if err := sendMessage(conn, MsgTypeBulkEntry, encodeBulkEntry(entry)); err != nil {
-		return 0, fmt.Errorf("%w, error sending bulk entry %s: %v", appError.ErrConnection, n.Path, err)
+		return 0, fmt.Errorf("%w, error sending bulk entry %s: %v", appError.ErrConnection, path, err)
 	}
 	sess := &session{ID: id, FilePath: sf.fullPath, FileSize: size, Offset: sf.offset, file: sf.file}
 	if err := s.sendFileData(conn, sess); err != nil {
@@ -190,4 +192,44 @@ func (s *fileServer) pushFile(conn net.Conn, n tree.Node, offset uint64) (uint64
 		return 0, err
 	}
 	return size - sf.offset, nil
+}
+
+// handleFetch 批量下载（FeatureFetchBatch）：按请求顺序逐个推送，每项恰好应答一次——
+// 成功是 pushFile 发出的文件条目与数据流，给不出则是一条结构化 Error（与单文件请求同码），
+// 之后照常推下一项；最后以 BulkEnd 收尾。整批只有一个请求，推送期间不读 socket，
+// 汇端也只读不写，与首次全量推送同一套流式机制，不存在双向互等。
+// 放行规则、限流槽、起始哈希与权威哈希都与单文件请求相同（同走 openServeFile/sendFileData）
+func (s *fileServer) handleFetch(c *client, body []byte) error {
+	if err := requireHandshake(c); err != nil {
+		return err
+	}
+	req, err := decodeFetchRequest(body)
+	if err != nil {
+		return fmt.Errorf("%w, error decoding fetch request: %v", appError.ErrConnection, err)
+	}
+	conn := &bufferedConn{Conn: c.Conn, w: bufio.NewWriterSize(c.Conn, 256<<10)}
+	var end BulkEndMessage
+	for _, it := range req.Items {
+		sent, err := s.pushFile(conn, it.Path, it.Offset)
+		if err != nil {
+			if errors.Is(err, appError.ErrConnection) {
+				return err
+			}
+			logServeError(err)
+			if err := sendMessage(conn, MsgTypeError, encodeErrorMessage(errorMessageOf(err))); err != nil {
+				return fmt.Errorf("%w, error sending fetch error for %s: %v", appError.ErrConnection, it.Path, err)
+			}
+			continue
+		}
+		end.Files++
+		end.Bytes += sent
+	}
+	if err := sendMessage(conn, MsgTypeBulkEnd, encodeBulkEnd(end)); err != nil {
+		return fmt.Errorf("%w, error sending fetch end: %v", appError.ErrConnection, err)
+	}
+	if err := conn.w.Flush(); err != nil {
+		return fmt.Errorf("%w, error flushing fetch: %v", appError.ErrConnection, err)
+	}
+	log.Debugf("Fetch for %s done: %d/%d files, %d bytes", c.Addr, end.Files, len(req.Items), end.Bytes)
+	return nil
 }
