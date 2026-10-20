@@ -746,7 +746,7 @@ func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 			if err := tree.ApplyPerm(partialPath, false, perm); err != nil {
 				log.Warnf("failed to set permissions %o on %s: %v", perm, filePath, err)
 			}
-			if err := os.Rename(partialPath, fullPath); err != nil {
+			if err := placeFile(partialPath, fullPath); err != nil {
 				return "", fmt.Errorf("error renaming partial file to %s: %w", fullPath, err)
 			}
 			os.Remove(metaPath)
