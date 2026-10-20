@@ -40,6 +40,26 @@ type TaskConfig struct {
 	AllowCritical  bool     `yaml:"allow_critical"` // 允许在关键路径上同步（--allow-critical）
 	CoolDown       int64    `yaml:"cooldown"`       // 全量扫描间隔（-c）
 	FileBufferSize uint64   `yaml:"filebuffersize"` // 传输分块（-f）
+
+	// 两个放行开关在 YAML 里是否显式写了：显式的 false 也要能压过 defaults 的 true，
+	// 单看零值分不出「没写」与「写了 false」
+	allowDeleteSet, allowCriticalSet bool
+}
+
+// UnmarshalYAML 记下放行开关是否显式出现。用旧式回调接口而非 *yaml.Node：
+// 回调沿用外层解码器，KnownFields 拒绝未知字段的校验仍然生效
+func (t *TaskConfig) UnmarshalYAML(unmarshal func(any) error) error {
+	type plain TaskConfig
+	if err := unmarshal((*plain)(t)); err != nil {
+		return err
+	}
+	var keys map[string]any
+	if err := unmarshal(&keys); err != nil {
+		return err
+	}
+	_, t.allowDeleteSet = keys["allow_delete"]
+	_, t.allowCriticalSet = keys["allow_critical"]
+	return nil
 }
 
 // MultiConfig --config 指定的 YAML 顶层结构
@@ -185,12 +205,16 @@ func resolveTaskDirection(t *TaskConfig, n int) error {
 }
 
 // applyDefaults 任务字段为零值时回退到 defaults 的同名字段。
-// name/direction/path 是任务身份，不参与回退
+// name/direction/path 是任务身份，不参与回退。上游地址只回退给需要它的任务：
+// listen 的任务不拨号，回退 connect 只会撞上「connect 与 listen 互斥」；两套方向
+// 词汇各回退各的，否则 defaults 里的一个地址就让另一套写法的任务报「不可混用」
 func applyDefaults(t, d *TaskConfig) {
-	if t.Connect == "" {
+	dirTask := t.Send || t.Receive || t.Connect != "" || t.Listen
+	legacyTask := t.Mode != "" || t.RealityIP != ""
+	if t.Connect == "" && !t.Listen && !legacyTask {
 		t.Connect = d.Connect
 	}
-	if t.RealityIP == "" {
+	if t.RealityIP == "" && !dirTask {
 		t.RealityIP = d.RealityIP
 	}
 	if len(t.Ignore) == 0 {
@@ -202,10 +226,11 @@ func applyDefaults(t, d *TaskConfig) {
 	if t.LogLevel == "" {
 		t.LogLevel = d.LogLevel
 	}
-	if !t.AllowDelete {
+	// 放行开关只在任务没写时回退：任务显式写 false 是在收窄 defaults，必须生效
+	if !t.allowDeleteSet {
 		t.AllowDelete = d.AllowDelete
 	}
-	if !t.AllowCritical {
+	if !t.allowCriticalSet {
 		t.AllowCritical = d.AllowCritical
 	}
 	if t.CoolDown == 0 {

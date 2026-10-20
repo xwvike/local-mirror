@@ -158,3 +158,57 @@ func TestLoadMultiConfigDupPathRelativeAbsolute(t *testing.T) {
 		t.Error("relative/absolute same-dir duplicate accepted")
 	}
 }
+
+// 任务显式写 false 必须压过 defaults 的 true：零值合并会让 allow_delete: false 照样删文件
+func TestTaskExplicitFalseOverridesDefaults(t *testing.T) {
+	cfg, err := ParseMultiConfig([]byte(`
+defaults:
+  allow_delete: true
+  allow_critical: true
+tasks:
+  - receive: true
+    path: /tmp/keep
+    allow_delete: false
+    allow_critical: false
+  - receive: true
+    path: /tmp/inherit
+`), "/etc/lm.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keep := cfg.Tasks[0]; keep.AllowDelete || keep.AllowCritical {
+		t.Errorf("explicit false overridden by defaults: %+v", keep)
+	}
+	if inh := cfg.Tasks[1]; !inh.AllowDelete || !inh.AllowCritical {
+		t.Errorf("unset fields did not inherit defaults: %+v", inh)
+	}
+}
+
+// defaults 的上游地址只给需要它的任务：listen 任务不拨号，另一套方向词汇的任务不受牵连
+func TestDefaultsUpstreamSkipsTasksThatCannotUseIt(t *testing.T) {
+	cfg, err := ParseMultiConfig([]byte(`
+defaults:
+  connect: 10.0.0.5
+tasks:
+  - receive: true
+    path: /tmp/dial
+  - receive: true
+    listen: true
+    path: /tmp/listen
+  - mode: mirror
+    realityip: 10.0.0.9
+    path: /tmp/legacy
+`), "/etc/lm.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Tasks[0].RealityIP; got != "10.0.0.5" {
+		t.Errorf("dialing task upstream = %q, want the default", got)
+	}
+	if l := cfg.Tasks[1]; l.RealityIP != "" || !l.Listen {
+		t.Errorf("listening task picked up the default upstream: %+v", l)
+	}
+	if got := cfg.Tasks[2].RealityIP; got != "10.0.0.9" {
+		t.Errorf("legacy task upstream = %q", got)
+	}
+}
