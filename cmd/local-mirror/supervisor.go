@@ -179,11 +179,30 @@ func runTaskOnce(ctx context.Context, exe string, t config.TaskConfig, ref *chil
 	return code, nil
 }
 
+// prefixMaxLine 转发时单行保留的上限，超出部分丢弃
+const prefixMaxLine = 64 * 1024
+
+// prefixLines 按行加前缀转发子进程输出，必须一直读到 EOF：一旦停读，管道缓冲
+// （约 64KB）写满后子进程的下一次日志写入就会永久阻塞，而 logrus 写日志时持锁，
+// 所有要写日志的 goroutine 跟着卡住，整个同步静默冻结。原先用 bufio.Scanner，
+// 遇到超过上限的一行就返回 false 退出读循环，正是这种停读。超长行现在截断转发
 func prefixLines(r io.Reader, w io.Writer, name string) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		fmt.Fprintf(w, "[%s] %s\n", name, sc.Text())
+	br := bufio.NewReaderSize(r, prefixMaxLine)
+	for {
+		line, isPrefix, err := br.ReadLine()
+		if err != nil {
+			return
+		}
+		if !isPrefix {
+			fmt.Fprintf(w, "[%s] %s\n", name, line)
+			continue
+		}
+		fmt.Fprintf(w, "[%s] %s … (line truncated)\n", name, line)
+		for isPrefix { // 丢弃这一行的剩余部分
+			if _, isPrefix, err = br.ReadLine(); err != nil {
+				return
+			}
+		}
 	}
 }
 
