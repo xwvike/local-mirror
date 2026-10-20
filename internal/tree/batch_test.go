@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"encoding/json"
 	"fmt"
 	"local-mirror/config"
 	"path/filepath"
@@ -212,4 +213,62 @@ func equal(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// 同一批里对同一目录增、删、再增：children 列表经缓存后必须与磁盘语义一致，
+// 不重复、不遗漏；同一路径重复写入也不得重复挂载（见 childrenCache）
+func TestBatchChildrenCacheInterleaved(t *testing.T) {
+	config.StartPath = t.TempDir()
+	InitDB()
+	defer DB.Close()
+
+	j := filepath.Join
+	if err := AddNodes([]*Node{
+		{ID: "root", Path: ".", IsDir: true},
+		{ID: "did", Path: "d", Name: "d", ParentID: "root", IsDir: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var b Batch
+	for i := range 5 {
+		name := fmt.Sprintf("f%d", i)
+		b.Add(&Node{ID: "id-" + name, Path: j("d", name), Name: name, ParentID: "did"}, true)
+	}
+	b.Delete(j("d", "f2"))
+	b.Add(&Node{ID: "id-f5", Path: j("d", "f5"), Name: "f5", ParentID: "did"}, true)
+	// 已有路径带新 ID 重复写入：按路径复用原 ID，不得在列表里多挂一份
+	b.Add(&Node{ID: "dup-f1", Path: j("d", "f1"), Name: "f1", ParentID: "did"}, true)
+	b.Commit()
+
+	kids, err := GetDirContents("d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, k := range kids {
+		names = append(names, k.Name)
+	}
+	sort.Strings(names)
+	want := []string{"f0", "f1", "f3", "f4", "f5"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("children of d = %v, want %v", names, want)
+	}
+
+	if err := DB.View(func(tx *bolt.Tx) error {
+		var ch Children
+		if err := json.Unmarshal(tx.Bucket([]byte("children")).Get([]byte("did")), &ch); err != nil {
+			return err
+		}
+		seen := map[string]bool{}
+		for _, id := range ch.ChildIDs {
+			if seen[id] {
+				t.Errorf("child id %s listed twice", id)
+			}
+			seen[id] = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

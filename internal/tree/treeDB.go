@@ -8,7 +8,6 @@ import (
 	"local-mirror/config"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"time"
 
@@ -191,7 +190,81 @@ func AddNodes(nodes []*Node) error {
 	return update(func(tx *bolt.Tx) error { return addNodesTx(tx, nodes) })
 }
 
+// childrenCache 一个写事务内的 children 列表缓存：每个父目录的列表只解码一次、
+// 用集合判重、提交前写回一次。逐节点解码 / 判重 / 编码整份列表，会让 N 个子项的
+// 目录在一次重建或一轮同步里付 O(N²)——实测平铺 2 万文件的目录重建 19 秒，
+// 且纯汇端每 10 分钟就重建一次。
+//
+// 缓存期间 children 桶本身是陈旧的：同一事务里要直接读写该桶的操作（删除）
+// 之前必须先 flush
+type childrenCache struct {
+	bucket *bolt.Bucket
+	lists  map[string]*childList
+}
+
+type childList struct {
+	ch    Children
+	ids   map[string]struct{}
+	dirty bool
+}
+
+func newChildrenCache(bucket *bolt.Bucket) *childrenCache {
+	return &childrenCache{bucket: bucket, lists: map[string]*childList{}}
+}
+
+// add 把 childID 挂到 parentID 下，已在列表里则不动；返回是否新挂上
+func (c *childrenCache) add(parentID, childID string) (bool, error) {
+	l, ok := c.lists[parentID]
+	if !ok {
+		l = &childList{ch: Children{ParentID: parentID, ChildIDs: []string{}}}
+		if data := c.bucket.Get([]byte(parentID)); data != nil {
+			if err := json.Unmarshal(data, &l.ch); err != nil {
+				return false, err
+			}
+		}
+		l.ids = make(map[string]struct{}, len(l.ch.ChildIDs))
+		for _, id := range l.ch.ChildIDs {
+			l.ids[id] = struct{}{}
+		}
+		c.lists[parentID] = l
+	}
+	if _, dup := l.ids[childID]; dup {
+		return false, nil
+	}
+	l.ids[childID] = struct{}{}
+	l.ch.ChildIDs = append(l.ch.ChildIDs, childID)
+	l.dirty = true
+	return true, nil
+}
+
+// flush 写回改过的列表并清空缓存
+func (c *childrenCache) flush() error {
+	for pid, l := range c.lists {
+		if !l.dirty {
+			continue
+		}
+		data, err := json.Marshal(l.ch)
+		if err != nil {
+			return err
+		}
+		if err := c.bucket.Put([]byte(pid), data); err != nil {
+			return err
+		}
+	}
+	c.lists = map[string]*childList{}
+	return nil
+}
+
 func addNodesTx(tx *bolt.Tx, nodes []*Node) error {
+	cc := newChildrenCache(tx.Bucket([]byte("children")))
+	if err := addNodesCached(tx, cc, nodes); err != nil {
+		return err
+	}
+	return cc.flush()
+}
+
+// addNodesCached 同 addNodesTx，children 列表的修改记在 cc 里，由调用方 flush
+func addNodesCached(tx *bolt.Tx, cc *childrenCache, nodes []*Node) error {
 	log.Debug("Adding nodes to the database:", len(nodes))
 	var dirCount uint64
 	var fileCount uint64
@@ -224,23 +297,11 @@ func addNodesTx(tx *bolt.Tx, nodes []*Node) error {
 			if node.Path != "." {
 				if pid := pathIndexBucket.Get([]byte(filepath.Dir(node.Path))); pid != nil {
 					node.ParentID = string(pid)
-					var ch Children
-					if cd := childrenBucket.Get(pid); cd != nil {
-						if err := json.Unmarshal(cd, &ch); err != nil {
-							return err
-						}
-					} else {
-						ch = Children{ParentID: string(pid), ChildIDs: []string{}}
+					added, err := cc.add(string(pid), node.ID)
+					if err != nil {
+						return err
 					}
-					if !slices.Contains(ch.ChildIDs, node.ID) {
-						ch.ChildIDs = append(ch.ChildIDs, node.ID)
-						cd, err := json.Marshal(ch)
-						if err != nil {
-							return err
-						}
-						if err := childrenBucket.Put(pid, cd); err != nil {
-							return err
-						}
+					if added {
 						log.Warnf("repaired orphaned node linkage: %s", node.Path)
 					}
 				}
@@ -280,21 +341,7 @@ func addNodesTx(tx *bolt.Tx, nodes []*Node) error {
 			fileCount++
 		}
 		if node.ParentID != "" {
-			childrenData := childrenBucket.Get([]byte(node.ParentID))
-			var children Children
-			if childrenData != nil {
-				if err := json.Unmarshal(childrenData, &children); err != nil {
-					return err
-				}
-			} else {
-				children = Children{ParentID: node.ParentID, ChildIDs: []string{}}
-			}
-			children.ChildIDs = append(children.ChildIDs, node.ID)
-			childrenData, err = json.Marshal(children)
-			if err != nil {
-				return err
-			}
-			if err := childrenBucket.Put([]byte(node.ParentID), childrenData); err != nil {
+			if _, err := cc.add(node.ParentID, node.ID); err != nil {
 				return err
 			}
 		}
