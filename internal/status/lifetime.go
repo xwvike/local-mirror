@@ -3,6 +3,7 @@ package status
 import (
 	"encoding/json"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -56,9 +57,16 @@ func FlushLifetime() {
 	flushLifetime()
 }
 
+// lifeWriteMu 串行化 stats.json 的落盘：多路传输可能同时跨过阈值，并发写同一个
+// .tmp 会把内容交错写坏，坏文件在下次启动时被当作缺失，终身计数归零。
+// 快照与落盘同在这把锁内，最后落盘的也就一定是最新的计数
+var lifeWriteMu sync.Mutex
+
 // flushLifetime 快照终身计数（持锁）后在锁外原子落盘，避免写盘 I/O 占着 mu。
 // 临时文件 + rename，读端不会读到半个 JSON
 func flushLifetime() {
+	lifeWriteMu.Lock()
+	defer lifeWriteMu.Unlock()
 	mu.Lock()
 	if !enabled || lifePath == "" {
 		mu.Unlock()
