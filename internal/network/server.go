@@ -320,6 +320,10 @@ func (s *fileServer) serveConn(conn net.Conn, first *prereadMessage) {
 			if closed := s.dispatchError(conn, client, s.handleBulkStart(client, bodyBytes)); closed {
 				return
 			}
+		case MsgTypeFetchRequest:
+			if closed := s.dispatchError(conn, client, s.handleFetch(client, bodyBytes)); closed {
+				return
+			}
 		default:
 			log.Errorf("Unknown message type: %d", msgType)
 		}
@@ -334,29 +338,38 @@ func (s *fileServer) dispatchError(conn net.Conn, c *client, err error) (closed 
 	if err == nil {
 		return false
 	}
-	var we *wireError
-	isWire := errors.As(err, &we)
-	// "查不到"是对查询的正常应答而非故障：客户端按变更日志或分页快照来访时，
-	// 目录/文件可能已被删除。按 error 记会把常规的创建后删除刷成满屏告警
-	if isWire && we.Code == ErrCodeNotFound {
-		log.Debug(err)
-	} else {
-		log.Error(err)
-	}
+	logServeError(err)
 	if errors.Is(err, appError.ErrConnection) {
 		conn.Close()
 		status.RecordError()
 		log.Warnf("Connection closed for %s due to error: %v", c.Addr, err)
 		return true
 	}
-	msg := ErrorMessage{Code: ErrCodeInternal, Message: err.Error()}
-	if isWire {
-		msg = ErrorMessage{Code: we.Code, Path: we.Path, Message: we.Message}
-	}
-	if serr := sendMessage(conn, MsgTypeError, encodeErrorMessage(msg)); serr != nil {
+	if serr := sendMessage(conn, MsgTypeError, encodeErrorMessage(errorMessageOf(err))); serr != nil {
 		log.Error("Error sending error response:", serr)
 	}
 	return false
+}
+
+// logServeError 记一条 handler 错误。"查不到"是对查询的正常应答而非故障：客户端按变更日志
+// 或分页快照来访时，目录/文件可能已被删除。按 error 记会把常规的创建后删除刷成满屏告警
+func logServeError(err error) {
+	var we *wireError
+	if errors.As(err, &we) && we.Code == ErrCodeNotFound {
+		log.Debug(err)
+	} else {
+		log.Error(err)
+	}
+}
+
+// errorMessageOf 把 handler 错误编码为下发的结构化错误：wireError 携带的码原样透传，
+// 未归类错误落 ErrCodeInternal
+func errorMessageOf(err error) ErrorMessage {
+	var we *wireError
+	if errors.As(err, &we) {
+		return ErrorMessage{Code: we.Code, Path: we.Path, Message: we.Message}
+	}
+	return ErrorMessage{Code: ErrCodeInternal, Message: err.Error()}
 }
 
 // legacySinksWarned 已告警过的旧版汇端（按实例），每个进程只说一次
@@ -424,7 +437,7 @@ func (s *fileServer) handleHandshake(conn net.Conn, bodyBytes []byte) (*Handshak
 		MinVersion:  config.MinProtocolVersion,
 		UUID:        config.InstanceID,
 		Role:        config.RoleSend,
-		FeatureBits: FeatureBulkPush | FeatureSourceIgnores,
+		FeatureBits: sourceFeatures,
 		Ignores:     config.IgnoreFileList,
 	}
 	warnLegacySink(handshakeMsg)

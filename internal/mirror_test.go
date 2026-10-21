@@ -16,12 +16,12 @@ func TestProcessDiffItemSkipsUnreadableUpstream(t *testing.T) {
 		Hash:   "", // 服务端扫描时哈希失败
 		Size:   123,
 	}
-	if err := processDiffItem(v, nil, &tree.Batch{}); err != nil {
+	if err := processDiffItem(v, nil, &tree.Batch{}, nil); err != nil {
 		t.Fatalf("空哈希文件应被跳过而非报错: %v", err)
 	}
 	// modify 同样跳过
 	v.Action = "modify"
-	if err := processDiffItem(v, nil, &tree.Batch{}); err != nil {
+	if err := processDiffItem(v, nil, &tree.Batch{}, nil); err != nil {
 		t.Fatalf("空哈希文件的 modify 应被跳过而非报错: %v", err)
 	}
 }

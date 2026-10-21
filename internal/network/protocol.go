@@ -35,6 +35,8 @@ import (
 //
 // 交互模型：严格同步请求-响应，单连接单飞行请求（客户端串行化一切）。
 // 该不变量是冻结面的一部分：协议没有请求 ID，无法在一条连接上并发。
+// 需要一次取回多项时用「一个请求、流式多条应答」（首次全量推送、批量下载），
+// 不在连接上叠发请求：应答流期间源端只写不读、汇端只读不写，两边不会互等。
 // ===================================================================
 
 // 协议常量定义
@@ -60,6 +62,7 @@ const (
 	MsgTypeBulkStartRequest     uint16 = 0x0012 // 首次全量推送：开始推送
 	MsgTypeBulkEntry            uint16 = 0x0013 // 推送流中的一个目录或文件（文件后随 FileData/FileComplete）
 	MsgTypeBulkEnd              uint16 = 0x0014 // 推送流结束
+	MsgTypeFetchRequest         uint16 = 0x0015 // 批量下载：一组文件，源端按序推送（需协商 FeatureFetchBatch）
 
 	// 头部大小
 	HeaderSize = 12 // 消息头部大小（魔术字4字节 + 类型2字节 + 长度4字节 + 保留字段2字节）
@@ -77,6 +80,18 @@ const FeatureBulkPush uint64 = 1 << 0
 // 是因为被忽略，而不是被删了（rsync 的 exclude 同样保护接收端不被删）。
 // 汇端置位表示自己会遵守；源端据此对不遵守的旧版汇端告警
 const FeatureSourceIgnores uint64 = 1 << 1
+
+// FeatureFetchBatch 能力位：源端能应答 MsgTypeFetchRequest（增量同步一次取回一组文件，
+// 应答复用首次全量推送的条目与数据流格式）。旧版源端收到不认识的消息类型不作应答，
+// 汇端必须见到对端置位才发，否则仍逐个 FileRequest
+const FeatureFetchBatch uint64 = 1 << 2
+
+// sinkFeatures / sourceFeatures 本端作为汇（发起握手）与作为源（应答握手）申报的能力位。
+// 变量而非常量只为测试能分别模拟两个方向上的旧版对端
+var (
+	sinkFeatures   = FeatureBulkPush | FeatureSourceIgnores | FeatureFetchBatch
+	sourceFeatures = FeatureBulkPush | FeatureSourceIgnores | FeatureFetchBatch
+)
 
 // LegacySourceIgnores 对端源端没给忽略列表（v2.10.1 及更早）时假定的列表：
 // 历代默认忽略项的并集。v2.9 及更早默认忽略 .git，v2.10 改为忽略 node_modules 等

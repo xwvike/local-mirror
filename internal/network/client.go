@@ -32,7 +32,7 @@ func localHandshake() HandshakeMessage {
 		MinVersion:  config.MinProtocolVersion,
 		UUID:        config.InstanceID,
 		Role:        config.RoleReceive,
-		FeatureBits: FeatureBulkPush | FeatureSourceIgnores,
+		FeatureBits: sinkFeatures,
 	}
 }
 
@@ -234,6 +234,11 @@ type FileClient struct {
 
 // SupportsBulkPush 对端（源）是否支持首次全量推送
 func (c *FileClient) SupportsBulkPush() bool { return c.peerFeatures&FeatureBulkPush != 0 }
+
+// SupportsFetchBatch 增量同步能否批量下载（两端都置位 FeatureFetchBatch）
+func (c *FileClient) SupportsFetchBatch() bool {
+	return c.peerFeatures&sinkFeatures&FeatureFetchBatch != 0
+}
 
 // SourceIgnores 上游源端忽略的路径模式：汇端不得删除命中它们的本地路径。
 // 旧版源端没给列表时退回 LegacySourceIgnores
@@ -566,21 +571,29 @@ func (c *FileClient) DownloadFile(filePath string, perm uint32) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("%w: failed to decode file response: %v", appError.ErrConnection, err)
 	}
-	serverHash := fmt.Sprintf("%x", fileResponse.FileHash)
+	return receiveRequested(conn, filePath, perm, offset, prevMeta, fileResponse.SessionID, fileResponse.FileSize, fileResponse.FileHash)
+}
+
+// receiveRequested 接收一个按汇端请求开始的文件会话（单文件请求与批量下载共用）。
+// offset/prevMeta 是发请求时据本地分片算出的续传起点与其记录的服务端指纹；
+// id/size/startHash 来自源端的应答（FileResponse 或批量下载的文件条目）
+func receiveRequested(conn net.Conn, filePath string, perm uint32, offset uint64, prevMeta *partialMeta,
+	id [16]byte, size uint64, startHash [32]byte) (string, error) {
+	serverHash := fmt.Sprintf("%x", startHash)
 
 	// 续传有效性：分片记录的服务端文件指纹必须与本次响应一致，
 	// 否则服务端文件在中断期间变过，本次数据流是新文件的中段，无法拼接
 	resume := offset > 0 && prevMeta != nil &&
-		prevMeta.Hash == serverHash && prevMeta.Size == fileResponse.FileSize
+		prevMeta.Hash == serverHash && prevMeta.Size == size
 	if offset > 0 && !resume {
-		discardPartial(partialPath, metaPath)
+		discardPartial(partialPaths(filePath))
 		if err := drainFileSession(conn); err != nil {
 			return "", fmt.Errorf("%w: failed to drain stale session: %v", appError.ErrConnection, err)
 		}
 		return "", fmt.Errorf("partial data for %s is stale, will restart from offset 0 on next attempt", filePath)
 	}
 
-	return receiveFile(conn, fileSession{Path: filePath, Perm: perm, ID: fileResponse.SessionID, Size: fileResponse.FileSize,
+	return receiveFile(conn, fileSession{Path: filePath, Perm: perm, ID: id, Size: size,
 		StartHash: serverHash, Offset: offset, Resume: resume})
 }
 

@@ -133,3 +133,100 @@ func FindBulkResume() (string, uint64) {
 	}
 	return "", 0
 }
+
+// FetchFile 批量下载中的一个文件。Perm 同 DownloadFile 的 perm（上游权限位，0 = 未知）
+type FetchFile struct {
+	Path string
+	Perm uint32
+}
+
+// FetchFiles 增量同步的批量下载（需对端支持，见 SupportsFetchBatch）：一个请求取回整组文件，
+// 源端连续推送，N 个文件只付一个往返，而不是逐个 FileRequest 的 N 个。每个文件的接收与
+// DownloadFile 完全相同（receiveRequested → receiveFile：整文件哈希校验、覆盖前快照、
+// 落盘前的符号链接复验、分片续传与过期分片的处理）。
+//
+// done 对每个文件回调一次（本地就拒绝的在发请求前回调，其余按请求顺序）：err 为 nil 时
+// 文件已落到最终位置、hash 为其十六进制哈希；否则为该文件的失败（源端给不出时是
+// *RealityError）。返回值只报流已不可续读的连接错误（appError.ErrConnection），调用方须
+// 关闭连接；能归到某个文件的连接错误已先随该文件回调过，其后的文件不再回调
+func (c *FileClient) FetchFiles(files []FetchFile, done func(i int, hash string, err error)) error {
+	// 请求里的每一项：在 files 中的下标，以及发请求时据本地分片定下的续传起点
+	type pending struct {
+		i      int
+		offset uint64
+		prev   *partialMeta
+	}
+	var req FetchRequestMessage
+	var pend []pending
+	for i, f := range files {
+		// 同 DownloadFile：路径来自服务端下发的目录树，越界的连请求都不发
+		if _, err := safety.SafeJoin(config.StartPath, f.Path); err != nil {
+			done(i, "", fmt.Errorf("refusing to download out-of-root path: %w", err))
+			continue
+		}
+		partialPath, metaPath := partialPaths(f.Path)
+		if err := os.MkdirAll(filepath.Dir(partialPath), 0755); err != nil {
+			done(i, "", fmt.Errorf("failed to create partial dir: %w", err))
+			continue
+		}
+		offset, prev := loadPartialState(partialPath, metaPath)
+		req.Items = append(req.Items, FetchItem{Path: f.Path, Offset: offset})
+		pend = append(pend, pending{i: i, offset: offset, prev: prev})
+	}
+	if len(pend) == 0 {
+		return nil
+	}
+	fail := func(k int, err error) error {
+		done(pend[k].i, "", err)
+		return err
+	}
+
+	conn, err := c.connectionManage.GetConnection()
+	if err != nil {
+		return fail(0, fmt.Errorf("%w: failed to get connection: %v", appError.ErrConnection, err))
+	}
+	if err := sendMessage(conn, MsgTypeFetchRequest, encodeFetchRequest(req)); err != nil {
+		return fail(0, fmt.Errorf("%w: failed to send fetch request: %v", appError.ErrConnection, err))
+	}
+	for k, p := range pend {
+		f := files[p.i]
+		msgType, body, err := receiveMessage(conn)
+		if err != nil {
+			return fail(k, fmt.Errorf("%w: failed to receive message: %v", appError.ErrConnection, err))
+		}
+		switch msgType {
+		case MsgTypeError:
+			// 服务端已无法提供该文件（如已被删除），分片不再有保留价值
+			discardPartial(partialPaths(f.Path))
+			done(p.i, "", realityErrorFrom(body))
+		case MsgTypeBulkEntry:
+			e, err := decodeBulkEntry(body)
+			if err != nil {
+				return fail(k, fmt.Errorf("%w: failed to decode fetch entry: %v", appError.ErrConnection, err))
+			}
+			// 应答必须与请求逐项对齐：错位说明流已不可信，按连接错误断开重来
+			if e.Kind != BulkEntryFile || e.Path != f.Path || e.Offset != p.offset {
+				return fail(k, fmt.Errorf("%w: fetch entry %q (kind %d, offset %d) does not match request %q (offset %d)",
+					appError.ErrConnection, e.Path, e.Kind, e.Offset, f.Path, p.offset))
+			}
+			hash, err := receiveRequested(conn, f.Path, f.Perm, p.offset, p.prev, e.SessionID, e.Size, e.FileHash)
+			if err != nil && errors.Is(err, appError.ErrConnection) {
+				return fail(k, err)
+			}
+			done(p.i, hash, err)
+		default:
+			return fail(k, fmt.Errorf("%w: unexpected message type %d during fetch", appError.ErrConnection, msgType))
+		}
+	}
+	msgType, body, err := receiveMessage(conn)
+	if err != nil {
+		return fmt.Errorf("%w: failed to receive fetch end: %v", appError.ErrConnection, err)
+	}
+	if msgType != MsgTypeBulkEnd {
+		return fmt.Errorf("%w: expected fetch end, got message type %d", appError.ErrConnection, msgType)
+	}
+	if _, err := decodeBulkEnd(body); err != nil {
+		return fmt.Errorf("%w: failed to decode fetch end: %v", appError.ErrConnection, err)
+	}
+	return nil
+}
