@@ -87,6 +87,17 @@ var specs = []Spec{
 		},
 	},
 	{
+		Name:        "tiny",
+		Description: "500 files of 1-16 KiB in 25 directories (smoke test)",
+		layout: func(r *rand.Rand) []File {
+			files := make([]File, 0, 500)
+			for i := range 500 {
+				files = append(files, File{Path: fmt.Sprintf("d%02d/f%03d.bin", i/20, i), Size: 1024 + r.Int64N(16384-1024+1)})
+			}
+			return files
+		},
+	},
+	{
 		Name:        "large",
 		Description: "4 files of 1 GiB",
 		layout: func(*rand.Rand) []File {

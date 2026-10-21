@@ -61,12 +61,13 @@ func cmdRun(args []string) error {
 	env := fl.String("env", "loopback", "environment label written into every record")
 	toolsFlag := fl.String("tools", "local-mirror,rsync", "tools to run")
 	datasets := fl.String("datasets", "small,mixed,large", "datasets to run")
-	scenarios := fl.String("scenarios", "initial,steady,change", "initial: empty replica; steady: idle cost (continuous) / no-op run (one-shot); change: per-change latency")
+	scenarios := fl.String("scenarios", "initial,steady,change", "initial: empty replica; steady: idle cost (continuous) / no-op run (one-shot); change: per-change latency; burst: 1,000 new files at once, then their removal")
 	trials := fl.Int("trials", 3, "trials per tool and dataset")
 	changes := fl.Int("changes", 30, "changes per trial in the change scenario")
 	idle := fl.Duration("idle", 10*time.Minute, "idle window for continuous tools")
 	lmBin := fl.String("local-mirror", "", "local-mirror binary")
 	rsyncBin := fl.String("rsync", "rsync", "rsync binary")
+	stBin := fl.String("syncthing", "syncthing", "syncthing binary")
 	outPath := fl.String("out", "", "JSON Lines output file (appended)")
 	fl.Parse(args)
 	if *ws == "" || *outPath == "" {
@@ -83,6 +84,10 @@ func cmdRun(args []string) error {
 			tools = append(tools, &localMirrorTool{bin: *lmBin})
 		case "rsync":
 			tools = append(tools, rsyncTool{bin: *rsyncBin})
+		case "syncthing":
+			tools = append(tools, &syncthingTool{bin: *stBin, name: "syncthing", watchDelay: 10})
+		case "syncthing-tuned":
+			tools = append(tools, &syncthingTool{bin: *stBin, name: "syncthing-tuned", watchDelay: 1})
 		default:
 			return fmt.Errorf("unknown tool %q", name)
 		}
@@ -167,9 +172,15 @@ func (r *runner) trial(t tool, spec dataset.Spec, src string, entries []dataset.
 	logf("%s %s trial %d", t.Name(), spec.Name, trial)
 
 	var touched []change
+	var burstRoot string
 	defer func() {
 		if t.Continuous() {
 			t.Stop()
+		}
+		if burstRoot != "" {
+			if err := os.RemoveAll(burstRoot); err != nil {
+				logf("remove %s failed: %v", burstRoot, err)
+			}
 		}
 		if err := restoreSource(spec, src, touched); err != nil {
 			logf("restore %s failed: %v", src, err)
@@ -230,6 +241,7 @@ func (r *runner) trial(t tool, spec dataset.Spec, src string, entries []dataset.
 	if sc["change"] && spec.Name != "large" {
 		rng := rand.New(rand.NewPCG(uint64(trial), 42))
 		used := map[string]bool{}
+		jitter := rand.New(rand.NewPCG(uint64(trial), 7)) // 与 rng 分开，不影响各工具拿到的变更序列
 		for i := range r.changes {
 			c := r.pickChange(spec, entries, rng, used, trial, i)
 			if err := c.apply(src); err != nil {
@@ -255,11 +267,107 @@ func (r *runner) trial(t tool, spec dataset.Spec, src string, entries []dataset.
 			rec.Scenario, rec.Trial, rec.Op = "change", trial, c.op
 			r.emit(t, spec.Name, rec)
 			if t.Continuous() {
-				time.Sleep(2 * time.Second)
+				// 间隔带随机零头：固定间隔会让变更总落在秒边界的同一相位，
+				// 对按秒处理的程序（local-mirror 的变更日志按秒定型）
+				// 测出的永远是同一个偏差，而不是真实分布
+				time.Sleep(2*time.Second + time.Duration(jitter.Int64N(int64(time.Second))))
+			}
+		}
+	}
+
+	// burst：一次写入 burstFiles 个新文件（解压、构建产物落盘、git checkout 的形态），
+	// 计到副本全部到齐；再整目录删除，计到副本里消失
+	if sc["burst"] {
+		dir := fmt.Sprintf("burst-%d", trial)
+		burstRoot = filepath.Join(src, dir)
+		rng := rand.New(rand.NewPCG(uint64(trial), 99))
+		files := make([]dataset.Entry, burstFiles)
+		for i := range files {
+			files[i].Path = fmt.Sprintf("%s/d%02d/b%04d.bin", dir, i/100, i)
+			files[i].Size = r.changeSizes[0] + rng.Int64N(r.changeSizes[1]-r.changeSizes[0]+1)
+		}
+		for _, op := range []string{"create", "delete"} {
+			if t.Continuous() {
+				r.mon.Reset()
+			}
+			t0 := time.Now()
+			if op == "delete" {
+				if err := os.RemoveAll(burstRoot); err != nil {
+					return err
+				}
+			} else {
+				for i, e := range files {
+					sum, err := dataset.WriteFile(filepath.Join(src, filepath.FromSlash(e.Path)), "burst/"+e.Path, e.Size)
+					if err != nil {
+						return err
+					}
+					files[i].SHA256 = sum
+				}
+			}
+			var rec record
+			if t.Continuous() {
+				ok := waitBurst(dst, files, op == "delete", r.opTimeout)
+				cpu, _, _ := r.mon.Window()
+				rec = record{WallS: time.Since(t0).Seconds(), CPUS: cpu.Seconds(), TimedOut: !ok}
+			} else {
+				var err error
+				if rec, err = r.oneShot(t, src, dst); err != nil {
+					return err
+				}
+				rec.WallS = time.Since(t0).Seconds()
+				if !waitBurst(dst, files, op == "delete", 0) {
+					return fmt.Errorf("%s did not propagate burst %s", t.Name(), op)
+				}
+			}
+			if op == "create" && !rec.TimedOut {
+				ok := verifyTree(filepath.Join(dst, dir), rebase(files, dir), false) == nil
+				rec.Verified = &ok
+			}
+			rec.Scenario, rec.Trial, rec.Op = "burst", trial, op
+			r.emit(t, spec.Name, rec)
+			if t.Continuous() {
+				time.Sleep(3 * time.Second)
 			}
 		}
 	}
 	return nil
+}
+
+// burstFiles burst 场景一次写入的文件数
+const burstFiles = 1000
+
+// waitBurst 等 burst 的文件全部出现在副本里（gone 时等它们全部消失）
+func waitBurst(dst string, files []dataset.Entry, gone bool, timeout time.Duration) bool {
+	if !gone {
+		return waitTree(dst, files, timeout)
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		left := false
+		for _, e := range files {
+			if _, err := os.Lstat(filepath.Join(dst, filepath.FromSlash(e.Path))); err == nil {
+				left = true
+				break
+			}
+		}
+		if !left {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// rebase 把条目路径改成相对 dir 的形式，供 verifyTree 校验子树
+func rebase(files []dataset.Entry, dir string) []dataset.Entry {
+	out := make([]dataset.Entry, len(files))
+	for i, e := range files {
+		out[i] = e
+		out[i].Path = strings.TrimPrefix(e.Path, dir+"/")
+	}
+	return out
 }
 
 func (r *runner) oneShot(t tool, src, dst string) (record, error) {
@@ -346,8 +454,10 @@ func (c change) waitReplica(dst string, timeout time.Duration) bool {
 
 // restoreSource 撤销变更场景对源数据集的改动，并清掉被测程序写入的状态目录
 func restoreSource(spec dataset.Spec, src string, touched []change) error {
-	if err := os.RemoveAll(filepath.Join(src, ".local-mirror")); err != nil {
-		return err
+	for _, d := range toolStateDirs {
+		if err := os.RemoveAll(filepath.Join(src, d)); err != nil {
+			return err
+		}
 	}
 	sizes := map[string]int64{}
 	for _, f := range spec.Files() {
@@ -378,11 +488,8 @@ func waitTree(dst string, entries []dataset.Entry, timeout time.Duration) bool {
 	pending := make([]dataset.Entry, len(entries))
 	copy(pending, entries)
 	deadline := time.Now().Add(timeout)
-	next := 0
-	for len(pending) > 0 {
-		if time.Now().After(deadline) {
-			return false
-		}
+	next, swept := 0, 0
+	for {
 		checked := 0
 		for checked < 500 && len(pending) > 0 {
 			if next >= len(pending) {
@@ -398,12 +505,30 @@ func waitTree(dst string, entries []dataset.Entry, timeout time.Duration) bool {
 			}
 			checked++
 		}
+		if len(pending) == 0 {
+			return true
+		}
+		// 先查后判超时：timeout 为 0 时也至少查满一轮（一次性工具跑完后的核对）
+		if swept += checked; swept >= len(entries) && time.Now().After(deadline) {
+			return false
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return true
 }
 
-// verifyTree 逐文件比对内容，并确认没有多余文件（被测程序的 .local-mirror 除外）
+// toolStateDirs 被测程序在同步根里放的状态目录，不属于数据集
+var toolStateDirs = []string{".local-mirror", ".stfolder", ".stversions"}
+
+func isToolStateDir(rel string) bool {
+	for _, d := range toolStateDirs {
+		if rel == d {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyTree 逐文件比对内容，并确认没有多余文件（被测程序的状态目录除外）
 func verifyTree(root string, entries []dataset.Entry, strictExtras bool) error {
 	want := make(map[string]dataset.Entry, len(entries))
 	for _, e := range entries {
@@ -416,7 +541,7 @@ func verifyTree(root string, entries []dataset.Entry, strictExtras bool) error {
 		rel, _ := filepath.Rel(root, p)
 		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			if rel == ".local-mirror" && !strictExtras {
+			if isToolStateDir(rel) && !strictExtras {
 				return filepath.SkipDir
 			}
 			return nil
