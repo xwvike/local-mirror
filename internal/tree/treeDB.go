@@ -163,6 +163,8 @@ func InitDB() {
 		log.Error("bbolt: failed to initialize database:", err)
 		os.Exit(1)
 	}
+	// 换了库（测试里同一进程会反复初始化），旧库算出的 rollup 一律作废
+	invalidateRollups()
 	log.Info("Database initialized successfully")
 }
 
@@ -292,6 +294,7 @@ func addNodesCached(tx *bolt.Tx, cc *childrenCache, nodes []*Node) error {
 	}
 	for _, node := range nodes {
 		log.Debugf("Adding node: %s, Path: %s, ParentID: %s", node.ID, node.Path, node.ParentID)
+		recordNodeChange(node.Path)
 
 		// 同一路径重复写入视为更新：复用已有节点ID并保留父子关系，
 		// 避免 nodes 桶残留孤儿节点、children 列表出现重复引用
@@ -403,12 +406,19 @@ func addNodesCached(tx *bolt.Tx, cc *childrenCache, nodes []*Node) error {
 	return nil
 }
 
-// update 执行一次写事务，成功后令 DirHashes 的 rollup 缓存失效
+// update 执行一次写事务。事务里增删改过的节点路径由 recordNodeChange 收集，
+// 提交成功后登记给 rollup 缓存，下次取 DirHashes 时只重算这些路径的祖先链；
+// 事务失败则什么都没改，收集的路径随之丢弃
 func update(fn func(tx *bolt.Tx) error) error {
-	if err := DB.Update(fn); err != nil {
+	var changed []string
+	if err := DB.Update(func(tx *bolt.Tx) error {
+		txChanged = &changed
+		defer func() { txChanged = nil }()
+		return fn(tx)
+	}); err != nil {
 		return err
 	}
-	bumpTreeGen()
+	markRollupsDirty(changed)
 	return nil
 }
 
@@ -532,6 +542,7 @@ func deleteNodesTx(tx *bolt.Tx, nodePaths []string) error {
 			} else {
 				totalFileCount++
 			}
+			recordNodeChange(node.Path)
 			// 删除路径索引
 			pathIndexBucket.Delete([]byte(node.Path))
 		}
@@ -631,61 +642,80 @@ func HasPath(path string) (bool, error) {
 }
 
 func GetDirContents(dirPath string) ([]Node, error) {
-	var contents = make([]Node, 0)
-	return contents, DB.View(func(tx *bolt.Tx) error {
-		nodesBucket := tx.Bucket([]byte("nodes"))
-		childrenBucket := tx.Bucket([]byte("children"))
-		pathIndexBucket := tx.Bucket([]byte("path_index"))
-
-		pathID := string(pathIndexBucket.Get([]byte(dirPath)))
-		if pathID == "" {
-			return fmt.Errorf("%w: %s", ErrDirNotFound, dirPath)
-		}
-		childrenIds := childrenBucket.Get([]byte(pathID))
-		if childrenIds == nil {
-			return nil // 目录下没有子节点
-		}
-		var children Children
-		if err := json.Unmarshal(childrenIds, &children); err != nil {
-			return err
-		}
-		for _, childID := range children.ChildIDs {
-			nodeData := nodesBucket.Get([]byte(childID))
-			if nodeData == nil {
-				continue // 跳过不存在的节点
-			}
-			var node Node
-			if err := json.Unmarshal(nodeData, &node); err != nil {
-				return err
-			}
-			contents = append(contents, node)
-		}
-		return nil
+	contents := make([]Node, 0)
+	err := DB.View(func(tx *bolt.Tx) error {
+		var err error
+		contents, err = dirContentsTx(tx, dirPath, contents)
+		return err
 	})
+	return contents, err
+}
+
+// dirContentsTx 在已有事务里列出目录的直接子节点，追加到 contents 后返回
+func dirContentsTx(tx *bolt.Tx, dirPath string, contents []Node) ([]Node, error) {
+	nodesBucket := tx.Bucket([]byte("nodes"))
+	childrenBucket := tx.Bucket([]byte("children"))
+	pathIndexBucket := tx.Bucket([]byte("path_index"))
+
+	pathID := string(pathIndexBucket.Get([]byte(dirPath)))
+	if pathID == "" {
+		return contents, fmt.Errorf("%w: %s", ErrDirNotFound, dirPath)
+	}
+	childrenIds := childrenBucket.Get([]byte(pathID))
+	if childrenIds == nil {
+		return contents, nil // 目录下没有子节点
+	}
+	var children Children
+	if err := json.Unmarshal(childrenIds, &children); err != nil {
+		return contents, err
+	}
+	for _, childID := range children.ChildIDs {
+		nodeData := nodesBucket.Get([]byte(childID))
+		if nodeData == nil {
+			continue // 跳过不存在的节点
+		}
+		var node Node
+		if err := json.Unmarshal(nodeData, &node); err != nil {
+			return contents, err
+		}
+		contents = append(contents, node)
+	}
+	return contents, nil
 }
 
 func GetNodeByPath(path string) (*Node, error) {
-	var node Node
+	var node *Node
 	err := DB.View(func(tx *bolt.Tx) error {
-		pathIndexBucket := tx.Bucket([]byte("path_index"))
-		nodesBucket := tx.Bucket([]byte("nodes"))
-
-		nodeID := pathIndexBucket.Get([]byte(path))
-		if nodeID == nil {
-			return fmt.Errorf("node not found for path: %s", path)
-		}
-
-		nodeData := nodesBucket.Get(nodeID)
-		if nodeData == nil {
-			return fmt.Errorf("node data not found for ID: %s", string(nodeID))
-		}
-
-		if err := json.Unmarshal(nodeData, &node); err != nil {
-			return err
-		}
-		return nil
+		var err error
+		node, err = nodeByPathTx(tx, path)
+		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+	return node, nil
+}
+
+// errNodeNotFound 路径不在树里（nodeByPathTx 的返回，调用方据此区分"没有"与读库出错）
+var errNodeNotFound = errors.New("node not found")
+
+// nodeByPathTx 在已有事务里按路径取节点
+func nodeByPathTx(tx *bolt.Tx, path string) (*Node, error) {
+	pathIndexBucket := tx.Bucket([]byte("path_index"))
+	nodesBucket := tx.Bucket([]byte("nodes"))
+
+	nodeID := pathIndexBucket.Get([]byte(path))
+	if nodeID == nil {
+		return nil, fmt.Errorf("%w for path: %s", errNodeNotFound, path)
+	}
+
+	nodeData := nodesBucket.Get(nodeID)
+	if nodeData == nil {
+		return nil, fmt.Errorf("node data not found for ID: %s", string(nodeID))
+	}
+
+	var node Node
+	if err := json.Unmarshal(nodeData, &node); err != nil {
 		return nil, err
 	}
 	return &node, nil

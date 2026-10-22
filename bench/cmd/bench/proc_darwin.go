@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -46,3 +47,9 @@ func parsePSTime(s string) (time.Duration, error) {
 
 // maxRSS darwin 的 ru_maxrss 单位是字节
 func maxRSS(ru *syscall.Rusage) int64 { return ru.Maxrss }
+
+// listening 本机是否有进程在 TCP port 上监听
+func listening(port int) bool {
+	out, err := exec.Command("lsof", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN", "-t").Output()
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
+}

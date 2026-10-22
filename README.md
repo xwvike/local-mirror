@@ -337,6 +337,9 @@ The foreground status area shows the same row.
 `--heat`: a source scores each directory by activity, watches hot ones in real
 time (tier1) and polls cold ones lazily (tier2). The table lists directories
 hottest first and shows whether active directories are watched in real time.
+On macOS file events come from FSEvents, which watches the whole tree at no
+per-directory cost, so every directory is in tier1; the split matters on Linux,
+where real-time watches are capped by `fs.inotify.max_user_watches`.
 
 ## Service details
 

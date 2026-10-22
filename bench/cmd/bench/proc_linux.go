@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -48,3 +49,21 @@ func snapshotProcs() (map[int]procInfo, error) {
 
 // maxRSS linux 的 ru_maxrss 单位是 KiB
 func maxRSS(ru *syscall.Rusage) int64 { return ru.Maxrss * 1024 }
+
+// listening 本机是否有进程在 TCP port 上监听（/proc/net/tcp{,6} 里状态 0A）
+func listening(port int) bool {
+	want := fmt.Sprintf(":%04X", port)
+	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n")[1:] {
+			fs := strings.Fields(line)
+			if len(fs) > 3 && strings.HasSuffix(fs[1], want) && fs[3] == "0A" {
+				return true
+			}
+		}
+	}
+	return false
+}

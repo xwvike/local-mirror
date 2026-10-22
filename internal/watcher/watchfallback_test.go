@@ -22,7 +22,7 @@ func TestAddHeatWatchFailureFallsBackToTier2(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	sw := &ScoreWatch{Watcher: w, heatMap: make(map[string]*HeatScore), tier1Limit: 100}
+	sw := &ScoreWatch{Watcher: wrapFsnotify(w), heatMap: make(map[string]*HeatScore), tier1Limit: 100}
 
 	sw.addHeat("does/not/exist", &tree.Node{Path: "does/not/exist", Depth: 2})
 

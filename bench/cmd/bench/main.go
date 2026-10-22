@@ -3,6 +3,7 @@
 //	bench gen   -ws <dir> [-datasets small,mixed,large]
 //	bench run   -ws <dir> -out <file.jsonl> -local-mirror <bin> [-rsync <bin>] ...
 //	bench chart -out <file.md> <file.jsonl>...
+//	bench agent -ws <dir>    （由 bench run -remote 经 ssh 启动，不直接使用）
 package main
 
 import (
@@ -19,7 +20,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: bench gen|run|chart [flags]")
+		fmt.Fprintln(os.Stderr, "usage: bench gen|run|chart|agent [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -30,6 +31,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "chart":
 		err = cmdChart(os.Args[2:])
+	case "agent":
+		err = cmdAgent(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}

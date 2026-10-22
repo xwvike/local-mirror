@@ -24,7 +24,7 @@ func newTestWatch(t *testing.T, budget int) (*ScoreWatch, string) {
 	}
 	t.Cleanup(func() { w.Close() })
 	sw := &ScoreWatch{
-		Watcher: w, tier1Limit: budget, tier1Budget: budget, tier1Scale: 1,
+		Watcher: wrapFsnotify(w), tier1Limit: budget, tier1Budget: budget, tier1Scale: 1,
 		heatMap: make(map[string]*HeatScore),
 	}
 	sw.fdCeiling, _ = fdLimit()
@@ -44,10 +44,10 @@ func makeDir(t *testing.T, root, name string, files int) {
 	}
 }
 
-// TestWatchCostOfMatchesKqueue 预算的计价前提：darwin 上 kqueue 为目录及其
+// TestWatchCostMatchesKqueue 预算的计价前提：darwin 上 kqueue 为目录及其
 // 每个条目各占一个描述符。整套预算都建立在这个等式上，它要是变了，预算
 // 就会系统性地算错——所以用真实的 Add 盯住它
-func TestWatchCostOfMatchesKqueue(t *testing.T) {
+func TestWatchCostMatchesKqueue(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("kqueue 的按条目计价只适用于 darwin")
 	}
@@ -61,8 +61,8 @@ func TestWatchCostOfMatchesKqueue(t *testing.T) {
 	}
 	after, _ := openFDCount()
 
-	if got, want := after-before, watchCostOf(files); got != want {
-		t.Errorf("一个 %d 条目的目录实占 %d 个描述符，watchCostOf 记 %d——预算的计价前提已失效",
+	if got, want := after-before, sw.Watcher.WatchCost(files); got != want {
+		t.Errorf("一个 %d 条目的目录实占 %d 个描述符，WatchCost 记 %d——预算的计价前提已失效",
 			files, got, want)
 	}
 }

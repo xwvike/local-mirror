@@ -16,16 +16,29 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// 事件在 1 秒静默窗口内合并批量落库；缓存被监听 goroutine 和
+// 事件在静默窗口内合并批量落库；缓存被监听 goroutine 和
 // timer 回调 goroutine 同时读写，必须加锁
 var (
 	eventMu           sync.Mutex
 	createEventCache  []*tree.Node
 	createTimer       *time.Timer
 	createTimerActive bool
+	createBatchStart  time.Time
 	deleteEventCache  []string
 	deleteTimer       *time.Timer
 	deleteTimerActive bool
+	deleteBatchStart  time.Time
+)
+
+// 合并窗口直接计入每次变更的端到端延迟，取能吸收一次批量操作（解压、
+// 构建产物落盘）的最短值。删除窗口更长：它还要等删后快速重建的路径
+// 重新出现以撤销删除（见 cancelPendingDelete），太短会让汇端白删一次再重拉。
+// 窗口是防抖，持续的事件流会不断顺延；batchMaxWait 封顶，事件流不停时
+// 也按这个间隔落库，否则变更会一直憋到事件流停下
+const (
+	createFlushDelay = 250 * time.Millisecond
+	deleteFlushDelay = 500 * time.Millisecond
+	batchMaxWait     = 2 * time.Second
 )
 
 // 文件哈希按路径防抖：正在被流式写入的大文件会连发 Write 事件，若每个
@@ -33,7 +46,7 @@ var (
 // 同步根的变更检测实时性（真实网络测试实测 300MB 写入卡住 50 秒长轮询）。
 // 改为：事件只重置该路径的定时器，静默 hashDebounce 后在定时器 goroutine
 // 里做一次最终的 stat+哈希+落库，不阻塞事件主循环。
-const hashDebounce = 1 * time.Second
+const hashDebounce = 500 * time.Millisecond
 
 var (
 	pendingMu     sync.Mutex
@@ -70,7 +83,7 @@ func eventFilter(event fsnotify.Event) {
 	nodeDir := filepath.Dir(relPath)
 	fatherNode, err := tree.GetNodeByPath(nodeDir)
 	if err != nil {
-		// 父节点缺失通常是事件竞态的结果（典型：目录被删后 1 秒内重建，
+		// 父节点缺失通常是事件竞态的结果（典型：目录被删后在删除合并窗口内重建，
 		// 延迟的批量删除把重建的新子树清掉了）。丢弃事件会让服务端树与
 		// 磁盘永久脱节——热目录不做磁盘校验，只有重启才能愈合。改为从
 		// 最近的已知祖先按磁盘现状重建缺失链；本事件对应的条目会在重建
@@ -173,11 +186,13 @@ func eventFilter(event fsnotify.Event) {
 
 		eventMu.Lock()
 		deleteEventCache = append(deleteEventCache, relPath)
-		if deleteTimerActive {
-			deleteTimer.Stop()
+		if !deleteTimerActive {
+			deleteBatchStart = time.Now()
+			deleteTimer = time.AfterFunc(deleteFlushDelay, flushDeleteEvents)
+			deleteTimerActive = true
+		} else if time.Since(deleteBatchStart) < batchMaxWait {
+			deleteTimer.Reset(deleteFlushDelay)
 		}
-		deleteTimer = time.AfterFunc(1*time.Second, flushDeleteEvents)
-		deleteTimerActive = true
 		eventMu.Unlock()
 		// 变更日志由 flushDeleteEvents 在删除落库后记录
 	case event.Has(fsnotify.Chmod):
@@ -347,11 +362,13 @@ func finalizeFileChange(absPath string) {
 
 	eventMu.Lock()
 	createEventCache = append(createEventCache, newLeaf)
-	if createTimerActive {
-		createTimer.Stop()
+	if !createTimerActive {
+		createBatchStart = time.Now()
+		createTimer = time.AfterFunc(createFlushDelay, flushCreateEvents)
+		createTimerActive = true
+	} else if time.Since(createBatchStart) < batchMaxWait {
+		createTimer.Reset(createFlushDelay)
 	}
-	createTimer = time.AfterFunc(1*time.Second, flushCreateEvents)
-	createTimerActive = true
 	eventMu.Unlock()
 	// 变更日志由 flushCreateEvents 在节点落库后记录（先记后写会丢变更）
 }

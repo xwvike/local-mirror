@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	// recentChangedDirs 批次内的变更目录集合。用 map 而非 slice 去重：2 秒批窗内
+	// recentChangedDirs 批次内的变更目录集合。用 map 而非 slice 去重：批窗内
 	// 大批量目录变更（代码生成/解压/批量移动）时，slice + slices.Contains 追加第 N 项
 	// 要线扫前 N-1 项，总成本 O(N²)；map 键去重是 O(1)，落库时再转 slice（PERF-02）
 	recentChangedDirs    = make(map[string]struct{})
@@ -48,7 +48,12 @@ func broadcastChange() {
 	changeSignalCh = make(chan struct{})
 }
 
-// AddRecentChangedDir 记录发生变更的目录，2 秒节流后批量落库。
+// changedDirFlushDelay 变更目录的落库节流间隔，直接计入每次变更的端到端
+// 延迟。每次落库是一个 bolt 写事务（含 fsync），节流把事件风暴下的事务数
+// 封顶在每秒 1/changedDirFlushDelay 个
+const changedDirFlushDelay = 250 * time.Millisecond
+
+// AddRecentChangedDir 记录发生变更的目录，节流后批量落库。
 // 注意是节流不是防抖：持续的事件流不会不断推迟落库，
 // 否则客户端按时间窗查询时会错过这些迟到的记录。
 func AddRecentChangedDir(dirPath string) {
@@ -60,7 +65,7 @@ func AddRecentChangedDir(dirPath string) {
 	if addChangeTimerActive {
 		return
 	}
-	time.AfterFunc(2*time.Second, func() {
+	time.AfterFunc(changedDirFlushDelay, func() {
 		// 回调运行在独立 goroutine，取快照后再落库，避免与并发的 Add 竞争
 		mu.Lock()
 		batch := make([]string, 0, len(recentChangedDirs))
