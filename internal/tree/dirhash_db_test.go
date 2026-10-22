@@ -8,9 +8,9 @@ import (
 	"local-mirror/config"
 )
 
-// TestDirHashesThroughDB 验证 DirHashes 经真实 bbolt 树库 + generation 记忆化的完整链路：
+// TestDirHashesThroughDB 验证 DirHashes 经真实 bbolt 树库 + 缓存与增量重算的完整链路：
 //   - 从建好的树能算出各目录 rollup；
-//   - 一次树变更（DeleteNode）后，generation 自增使缓存失效，rollup 随之更新；
+//   - 一次树变更（DeleteNode）登记为待重算，rollup 随之更新；
 //   - 变更沿祖先链传播，无关子树不受影响。
 func TestDirHashesThroughDB(t *testing.T) {
 	root := t.TempDir()
@@ -53,7 +53,7 @@ func TestDirHashesThroughDB(t *testing.T) {
 		t.Fatal("memoized DirHashes returned inconsistent map")
 	}
 
-	// 删掉 a/b/f2.txt 的节点 → generation 自增 → 缓存失效
+	// 删掉 a/b/f2.txt 的节点 → 登记待重算 → 只重算它的祖先链
 	aOld, cOld := h1["a"], h1["c"]
 	abOld := h1["a/b"]
 	if err := DeleteNode("a/b/f2.txt"); err != nil {
