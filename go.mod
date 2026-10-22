@@ -3,6 +3,7 @@ module local-mirror
 go 1.25.0
 
 require (
+	github.com/ebitengine/purego v0.11.2
 	github.com/flynn/noise v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/sirupsen/logrus v1.9.3

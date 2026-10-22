@@ -33,7 +33,7 @@ func TestPerformScanPrunesMissingDir(t *testing.T) {
 	defer cancel()
 
 	sw := &ScoreWatch{
-		Watcher:    watcher,
+		Watcher:    wrapFsnotify(watcher),
 		tier1Limit: 1024,
 		heatMap: map[string]*HeatScore{
 			"live":  {Path: "live", Score: 50},

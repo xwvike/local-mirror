@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/fsnotify/fsnotify"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -34,7 +33,7 @@ func App() {
 
 	switch *config.Mode {
 	case "reality":
-		_watcher, err := fsnotify.NewWatcher()
+		_watcher, err := watcher.NewFSWatcher(config.StartPath)
 		if err != nil {
 			log.Fatal(err)
 		}

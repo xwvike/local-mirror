@@ -23,7 +23,7 @@ import (
 )
 
 type ScoreWatch struct {
-	Watcher *fsnotify.Watcher
+	Watcher fsWatcher
 	// tier1Limit 实时 watch 的描述符预算上限（单位是描述符而非目录数：
 	// darwin 上 kqueue 为目录及其每个条目各占一个，一个几百条目的目录
 	// 就能吃掉几百个单位）
@@ -54,6 +54,11 @@ type ScoreWatch struct {
 	tier2   []*HeatScore
 	ctx     context.Context
 	cancel  context.CancelFunc
+	// 事件源溢出后的磁盘核对：待核对的范围（同步根相对路径，"." 为整树）
+	// 与是否已有核对在跑。核对期间再来的请求并入下一轮
+	rescanMu      sync.Mutex
+	rescanPending map[string]struct{}
+	rescanRunning bool
 }
 
 type HeatScore struct {
@@ -83,15 +88,6 @@ func (f *fdWaterMark) level() (int, bool) {
 	n, ok := openFDCount()
 	f.last, f.open, f.ok = time.Now(), n, ok
 	return n, ok
-}
-
-// watchCostOf 一个目录的实时 watch 要占多少描述符单位。
-// darwin 的 kqueue 为目录及其每个条目各占一个；inotify 的 watch 不占描述符
-func watchCostOf(entries int) int {
-	if utils.BaseOSInfo().OS == "darwin" {
-		return entries + 1
-	}
-	return 1
 }
 
 // admitWatch 判断再花 cost 个描述符单位建一个实时 watch 是否安全。
@@ -143,7 +139,7 @@ func watchBudget(limit int, ok bool) int {
 	return min(max((limit-fdReserve)/2, minWatchBudget), maxWatchesCap)
 }
 
-func InitWatcher(watcher *fsnotify.Watcher) error {
+func InitWatcher(watcher fsWatcher) error {
 	_maxWatches := 10240
 	osType := utils.BaseOSInfo().OS
 	switch osType {
@@ -194,10 +190,14 @@ func InitWatcher(watcher *fsnotify.Watcher) error {
 		ctx:           ctx,
 		cancel:        cancel,
 	}
-	// 单位是描述符而非目录数：darwin 上一个几百条目的目录就吃掉几百个单位，
-	// 所以真正享受实时监控的目录数远小于这个值（其余走 tier2 轮询）
-	log.Infof("watcher: real-time watch budget %d descriptor units (fd limit %d, reserve %d)",
-		GlobalScoreWatch.tier1Limit, fdCeiling, fdReserve)
+	if watcher.WatchCost(1) == 0 {
+		log.Infof("watcher: native file events, every directory is watched in real time")
+	} else {
+		// 单位是描述符而非目录数：darwin 上一个几百条目的目录就吃掉几百个单位，
+		// 所以真正享受实时监控的目录数远小于这个值（其余走 tier2 轮询）
+		log.Infof("watcher: real-time watch budget %d descriptor units (fd limit %d, reserve %d)",
+			GlobalScoreWatch.tier1Limit, fdCeiling, fdReserve)
+	}
 
 	err := GlobalScoreWatch.collectAll()
 	if err != nil {
@@ -365,7 +365,7 @@ func (sw *ScoreWatch) performScan() {
 		}
 		// kqueue 为目录及其每个条目各占一个描述符；inotify 的 watch 不占。
 		// 开销只在 Add 成功后才记账——失败的注册不该白占预算
-		cost := watchCostOf(len(entries))
+		cost := sw.Watcher.WatchCost(len(entries))
 		if err := sw.Watcher.Add(fullPath); err != nil {
 			// 注册失败（inotify/kqueue 限额耗尽、per-user 限额被多任务争用、单个大目录
 			// 使 fd 预算超限等）不能让该目录从两级监控里凭空消失——它没进 newTier1，若直接
@@ -576,18 +576,97 @@ func (sw *ScoreWatch) handleEvents() {
 	log.Debug("ScoreWatch: Starting to handle events...")
 	for {
 		select {
-		case event, ok := <-sw.Watcher.Events:
+		case event, ok := <-sw.Watcher.Events():
 			if !ok {
 				return
 			}
 			eventFilter(event)
-		case err, ok := <-sw.Watcher.Errors:
+		case err, ok := <-sw.Watcher.Errors():
 			if !ok {
 				return
+			}
+			if errors.Is(err, fsnotify.ErrEventOverflow) {
+				// 事件队列溢出：这段时间的变化没报全，按磁盘核对受影响的目录
+				log.Warnf("watcher: %v", err)
+				sw.requestRescan(err)
+				continue
 			}
 			log.Errorf("watcher error: %v", err)
 		}
 	}
+}
+
+// requestRescan 事件源丢了事件（inotify 队列溢出、FSEvents 要求重扫子树）：
+// 那段时间的变化没有报全，热目录又不做磁盘校验，不核对的话这些变化要等到
+// 重启才会进树。按磁盘逐目录核对受影响的范围，差异照常合成事件
+func (sw *ScoreWatch) requestRescan(err error) {
+	scope := "."
+	var re *rescanError
+	if errors.As(err, &re) && re.Path != "" {
+		scope = utils.RelPath(config.StartPath, re.Path)
+	}
+	sw.rescanMu.Lock()
+	if sw.rescanPending == nil {
+		sw.rescanPending = map[string]struct{}{}
+	}
+	sw.rescanPending[scope] = struct{}{}
+	running := sw.rescanRunning
+	sw.rescanRunning = true
+	sw.rescanMu.Unlock()
+	if !running {
+		go sw.rescanLoop()
+	}
+}
+
+func (sw *ScoreWatch) rescanLoop() {
+	for {
+		sw.rescanMu.Lock()
+		scopes := sw.rescanPending
+		sw.rescanPending = nil
+		if len(scopes) == 0 {
+			sw.rescanRunning = false
+			sw.rescanMu.Unlock()
+			return
+		}
+		sw.rescanMu.Unlock()
+
+		sw.mu.Lock()
+		var dirs []string
+		for p := range sw.heatMap {
+			if inRescanScope(p, scopes) {
+				dirs = append(dirs, p)
+			}
+		}
+		sw.mu.Unlock()
+		// 父目录先于子目录：父目录里新出现的子目录会被整棵扫进树
+		sort.Strings(dirs)
+		var orphans []string
+		for _, d := range dirs {
+			if _, err := hasDirectoryChanged(d); err != nil {
+				if errors.Is(err, tree.ErrDirNotFound) {
+					orphans = append(orphans, d)
+				} else {
+					log.Warnf("rescan: failed to check %s: %v", d, err)
+				}
+			}
+		}
+		for _, p := range orphans {
+			sw.removeHeat(p)
+		}
+		log.Infof("watcher: rescanned %d directories after dropped file events", len(dirs))
+	}
+}
+
+func inRescanScope(dir string, scopes map[string]struct{}) bool {
+	if _, all := scopes["."]; all {
+		return true
+	}
+	for s := range scopes {
+		if dir == s || strings.HasPrefix(dir, s+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (sw *ScoreWatch) addHeat(path string, node *tree.Node) {
@@ -606,14 +685,15 @@ func (sw *ScoreWatch) addHeat(path string, node *tree.Node) {
 	// 描述符开销要先算出来才能做准入（darwin 上整体移入的目录可能一上来就
 	// 带着几百个条目）。ReadDir 放在锁外
 	fullPath := filepath.Join(config.StartPath, path)
-	cost := 1
-	if utils.BaseOSInfo().OS == "darwin" {
+	cost := sw.Watcher.WatchCost(0)
+	if sw.Watcher.WatchCost(1) != cost {
+		// 开销随条目数变（kqueue）才需要数一遍目录
 		entries, err := os.ReadDir(fullPath)
 		if err != nil {
 			// 读不了就按最小开销估，真正的闸是下面的实测水位
 			log.Debugf("addHeat: cannot size %s for the watch budget: %v", path, err)
 		}
-		cost = watchCostOf(len(entries))
+		cost = sw.Watcher.WatchCost(len(entries))
 	}
 
 	// 准入检查：事件路径过去完全不看预算，批量建目录（pnpm install 之类）
