@@ -4,24 +4,18 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 )
 
-// syncthingTool 两个 syncthing 实例经回环互连：源端文件夹 sendonly，副本 receiveonly。
+// syncthingTool 两个 syncthing 实例互连（回环或局域网）：源端文件夹 sendonly，副本 receiveonly。
 // 全局发现、本地广播、中继、NAT、使用统计、崩溃上报与自动升级一律关掉——它们只产生
 // 与测试无关的后台流量与 CPU。watchDelay 是文件监控的聚合延迟：默认 10 秒，1 秒为
 // 允许的最小值（tuned）
 type syncthingTool struct {
-	bin        string
 	name       string
 	watchDelay int
-	procs      []*exec.Cmd
-	logs       []*os.File
 }
 
 // 两个实例的固定端口：同步协议与 GUI（REST）各一个
@@ -30,71 +24,71 @@ const (
 	stSrcGUIPort, stDstGUIPort = 22111, 22112
 )
 
-func (t *syncthingTool) Name() string     { return t.name }
-func (t *syncthingTool) Continuous() bool { return true }
-func (t *syncthingTool) Version() string {
-	out, err := exec.Command(t.bin, "--version").Output()
-	if err != nil {
-		return "unknown"
-	}
-	f := strings.Fields(string(out))
-	if len(f) >= 2 {
-		return strings.TrimPrefix(f[1], "v")
-	}
-	return "unknown"
+func (t syncthingTool) Name() string     { return t.name }
+func (t syncthingTool) Continuous() bool { return true }
+func (t syncthingTool) Version(p *pair) string {
+	return pairVersion(p, func(s *side) string { return s.st }, 1)
 }
 
-func (t *syncthingTool) Start(src, dst, logDir string) ([]int, error) {
-	homes := [2]string{filepath.Join(logDir, "st-src"), filepath.Join(logDir, "st-dst")}
-	var ids [2]string
-	for i, h := range homes {
-		if out, err := exec.Command(t.bin, "generate", "--home="+h, "--no-port-probing").CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("syncthing generate: %v: %s", err, out)
-		}
-		out, err := exec.Command(t.bin, "device-id", "--home="+h).Output()
-		if err != nil {
-			return nil, fmt.Errorf("syncthing device-id: %w", err)
-		}
-		ids[i] = strings.TrimSpace(string(out))
-	}
-	ends := [2]struct {
+func (t syncthingTool) Start(p *pair) error {
+	type end struct {
+		s          *side
 		path, kind string
+		home, log  string
 		port, gui  int
-		self, peer string
-		peerPort   int
-	}{
-		{src, "sendonly", stSrcPort, stSrcGUIPort, ids[0], ids[1], stDstPort},
-		{dst, "receiveonly", stDstPort, stDstGUIPort, ids[1], ids[0], stSrcPort},
 	}
-	var pids []int
+	ends := [2]end{
+		{p.src, p.srcP.Src, "sendonly", filepath.Join(p.srcP.Log, "st-src"), filepath.Join(p.srcP.Log, "syncthing-0.log"), stSrcPort, stSrcGUIPort},
+		{p.dst, p.dstP.Dst, "receiveonly", filepath.Join(p.dstP.Log, "st-dst"), filepath.Join(p.dstP.Log, "syncthing-1.log"), stDstPort, stDstGUIPort},
+	}
+	var ids [2]string
 	for i, e := range ends {
-		// 文件夹标记须事先存在，否则 syncthing 视之为挂载丢失而拒绝同步
-		if err := os.MkdirAll(filepath.Join(e.path, ".stfolder"), 0o755); err != nil {
-			return nil, err
+		if err := e.s.call("exec", []string{e.s.st, "generate", "--home=" + e.home, "--no-port-probing"}, nil); err != nil {
+			return err
 		}
-		cfg := syncthingConfig(e.self, e.peer, e.path, e.kind, e.port, e.peerPort, e.gui, t.watchDelay)
-		if err := os.WriteFile(filepath.Join(homes[i], "config.xml"), []byte(cfg), 0o600); err != nil {
-			return nil, err
+		var out string
+		if err := e.s.call("exec", []string{e.s.st, "device-id", "--home=" + e.home}, &out); err != nil {
+			return err
 		}
-		log, err := os.Create(filepath.Join(logDir, fmt.Sprintf("syncthing-%d.log", i)))
-		if err != nil {
-			return nil, err
-		}
-		t.logs = append(t.logs, log)
-		cmd := exec.Command(t.bin, "serve", "--home="+homes[i], "--no-browser", "--no-restart")
-		cmd.Env = append(os.Environ(), "STNOUPGRADE=1")
-		cmd.Stdout, cmd.Stderr = log, log
-		if err := cmd.Start(); err != nil {
-			t.Stop()
-			return nil, err
-		}
-		t.procs = append(t.procs, cmd)
-		pids = append(pids, cmd.Process.Pid)
+		ids[i] = strings.TrimSpace(out)
 	}
-	return pids, nil
+	// 远端实例只监听，先起并等它绑好端口
+	order := []int{0, 1}
+	if p.dst.remote {
+		order = []int{1, 0}
+	}
+	for _, i := range order {
+		e := ends[i]
+		peer := ends[1-i]
+		// 本机的实例去连对端；远端的实例只监听，对端地址留 dynamic（发现已关，
+		// 等于不主动连），本机不必为它开防火墙
+		listen, peerAddr := "127.0.0.1", fmt.Sprintf("tcp://%s:%d", peer.s.addr, peer.port)
+		if e.s.remote {
+			listen, peerAddr = "0.0.0.0", "dynamic"
+		}
+		// 文件夹标记须事先存在，否则 syncthing 视之为挂载丢失而拒绝同步
+		if err := e.s.call("mkdir", filepath.Join(e.path, ".stfolder"), nil); err != nil {
+			return err
+		}
+		cfg := syncthingConfig(ids[i], ids[1-i], e.path, e.kind, listen, e.port, peerAddr, e.gui, t.watchDelay)
+		if err := e.s.call("write_file", map[string]any{"Path": filepath.Join(e.home, "config.xml"), "Data": []byte(cfg)}, nil); err != nil {
+			return err
+		}
+		var pid int
+		argv := []string{e.s.st, "serve", "--home=" + e.home, "--no-browser", "--no-restart"}
+		if err := e.s.call("start", procArgs{Argv: argv, Env: []string{"STNOUPGRADE=1"}, Log: e.log, Sig: int(syscall.SIGTERM)}, &pid); err != nil {
+			return fmt.Errorf("start syncthing on %s: %w", e.s.label, err)
+		}
+		if e.s.remote {
+			if err := waitListen(e.s, e.port); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
-func syncthingConfig(self, peer, path, kind string, port, peerPort, gui, watchDelay int) string {
+func syncthingConfig(self, peer, path, kind, listen string, port int, peerAddr string, gui, watchDelay int) string {
 	key := make([]byte, 16)
 	rand.Read(key)
 	device := func(id string, addr string) string {
@@ -117,7 +111,7 @@ func syncthingConfig(self, peer, path, kind string, port, peerPort, gui, watchDe
         <apikey>%s</apikey>
     </gui>
     <options>
-        <listenAddress>tcp://127.0.0.1:%d</listenAddress>
+        <listenAddress>tcp://%s:%d</listenAddress>
         <globalAnnounceEnabled>false</globalAnnounceEnabled>
         <localAnnounceEnabled>false</localAnnounceEnabled>
         <relaysEnabled>false</relaysEnabled>
@@ -130,31 +124,8 @@ func syncthingConfig(self, peer, path, kind string, port, peerPort, gui, watchDe
     </options>
 </configuration>
 `, path, kind, watchDelay, self, peer,
-		device(self, "dynamic"), device(peer, fmt.Sprintf("tcp://127.0.0.1:%d", peerPort)),
-		gui, hex.EncodeToString(key), port)
+		device(self, "dynamic"), device(peer, peerAddr),
+		gui, hex.EncodeToString(key), listen, port)
 }
 
-func (t *syncthingTool) Stop() error {
-	for _, cmd := range t.procs {
-		cmd.Process.Signal(syscall.SIGTERM)
-	}
-	for _, cmd := range t.procs {
-		done := make(chan struct{})
-		go func() { cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(15 * time.Second):
-			cmd.Process.Kill()
-			<-done
-		}
-	}
-	for _, f := range t.logs {
-		f.Close()
-	}
-	t.procs, t.logs = nil, nil
-	return nil
-}
-
-func (t *syncthingTool) Sync(string, string, func(int)) (*os.ProcessState, error) {
-	return nil, fmt.Errorf("continuous")
-}
+func (t syncthingTool) Sync(*pair) (record, error) { return record{}, fmt.Errorf("continuous") }
