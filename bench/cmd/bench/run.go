@@ -65,6 +65,7 @@ func cmdRun(args []string) error {
 	datasets := fl.String("datasets", "small,mixed,large", "datasets to run")
 	scenarios := fl.String("scenarios", "initial,steady,change", "initial: empty replica; steady: idle cost (continuous) / no-op run (one-shot); change: per-change latency; burst: 1,000 new files at once, then their removal")
 	trials := fl.Int("trials", 3, "trials per tool and dataset")
+	fromTrial := fl.Int("from-trial", 1, "first trial to run (resume an interrupted run; trials before it are skipped)")
 	changes := fl.Int("changes", 30, "changes per trial in the change scenario")
 	idle := fl.Duration("idle", 10*time.Minute, "idle window for continuous tools")
 	lmBin := fl.String("local-mirror", "", "local-mirror binary")
@@ -166,7 +167,7 @@ func cmdRun(args []string) error {
 				return err
 			}
 		}
-		for trial := 1; trial <= *trials; trial++ {
+		for trial := *fromTrial; trial <= *trials; trial++ {
 			order := tools
 			if trial%2 == 0 {
 				order = reversed(tools)
