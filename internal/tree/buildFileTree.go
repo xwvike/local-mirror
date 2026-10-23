@@ -8,7 +8,6 @@ import (
 	"local-mirror/pkg/utils"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -177,7 +176,7 @@ func BuildFileTree(path string) error {
 	var mu sync.Mutex
 
 	// 使用工作池处理节点收集
-	var workerCount = runtime.NumCPU()
+	var workerCount = hashWorkers()
 	nodeChan := make(chan *Node, 1000)
 	var wg sync.WaitGroup
 
