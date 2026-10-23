@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="318" viewBox="0 0 760 318" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect x="170" y="7" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="185" y="16" fill="#1f2328" font-size="12">local-mirror</text>
+<rect x="293.4" y="7" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="308.4" y="16" fill="#1f2328" font-size="12">rsync</text>
+<rect x="366.4" y="7" width="10" height="10" rx="2" fill="#1baf7a"/>
+<text x="381.4" y="16" fill="#1f2328" font-size="12">Syncthing</text>
+<line x1="170.0" y1="34" x2="170.0" y2="276" stroke="#e1e0d9" stroke-width="1"/>
+<text x="170.0" y="290" fill="#59636e" font-size="11" text-anchor="middle">0</text>
+<line x1="301.5" y1="34" x2="301.5" y2="276" stroke="#e1e0d9" stroke-width="1"/>
+<text x="301.5" y="290" fill="#59636e" font-size="11" text-anchor="middle">0.5</text>
+<line x1="433.0" y1="34" x2="433.0" y2="276" stroke="#e1e0d9" stroke-width="1"/>
+<text x="433.0" y="290" fill="#59636e" font-size="11" text-anchor="middle">1</text>
+<line x1="564.5" y1="34" x2="564.5" y2="276" stroke="#e1e0d9" stroke-width="1"/>
+<text x="564.5" y="290" fill="#59636e" font-size="11" text-anchor="middle">1.5</text>
+<line x1="696.0" y1="34" x2="696.0" y2="276" stroke="#e1e0d9" stroke-width="1"/>
+<text x="696.0" y="290" fill="#59636e" font-size="11" text-anchor="middle">2</text>
+<line x1="170.0" y1="34" x2="170.0" y2="276" stroke="#c3c2b7" stroke-width="1"/>
+<text x="158" y="59.0" fill="#1f2328" font-size="12" text-anchor="end">small · loopback</text>
+<path d="M170.0,38.0h0.0a2.6299999999999955,2.6299999999999955 0 0 1 2.6299999999999955,2.6299999999999955v4.7a2.6299999999999955,2.6299999999999955 0 0 1 -2.6299999999999955,2.6299999999999955h-0.0z" fill="#2a78d6"/>
+<text x="177.6" y="47" fill="#1f2328" font-size="10.5">≤ 0.01 s</text>
+<path d="M170.0,50.0h251.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-251.1z" fill="#eb6834"/>
+<text x="430.1" y="59" fill="#1f2328" font-size="10.5">0.97 s</text>
+<path d="M170.0,62.0h64.4a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-64.4z" fill="#1baf7a"/>
+<text x="243.4" y="71" fill="#1f2328" font-size="10.5">0.26 s</text>
+<text x="158" y="109.0" fill="#1f2328" font-size="12" text-anchor="end">small · Mac → Debian</text>
+<path d="M170.0,88.0h0.0a2.6299999999999955,2.6299999999999955 0 0 1 2.6299999999999955,2.6299999999999955v4.7a2.6299999999999955,2.6299999999999955 0 0 1 -2.6299999999999955,2.6299999999999955h-0.0z" fill="#2a78d6"/>
+<text x="177.6" y="97" fill="#1f2328" font-size="10.5">≤ 0.01 s</text>
+<path d="M170.0,100.0h458.9a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-458.9z" fill="#eb6834"/>
+<text x="637.9" y="109" fill="#1f2328" font-size="10.5">1.76 s</text>
+<path d="M170.0,112.0h130.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-130.1z" fill="#1baf7a"/>
+<text x="309.1" y="121" fill="#1f2328" font-size="10.5">0.51 s</text>
+<text x="158" y="159.0" fill="#1f2328" font-size="12" text-anchor="end">small · Debian → Mac</text>
+<path d="M170.0,138.0h0.0a2.6299999999999955,2.6299999999999955 0 0 1 2.6299999999999955,2.6299999999999955v4.7a2.6299999999999955,2.6299999999999955 0 0 1 -2.6299999999999955,2.6299999999999955h-0.0z" fill="#2a78d6"/>
+<text x="177.6" y="147" fill="#1f2328" font-size="10.5">≤ 0.01 s</text>
+<path d="M170.0,150.0h369.5a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-369.5z" fill="#eb6834"/>
+<text x="548.5" y="159" fill="#1f2328" font-size="10.5">1.42 s</text>
+<path d="M170.0,162.0h80.2a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-80.2z" fill="#1baf7a"/>
+<text x="259.2" y="171" fill="#1f2328" font-size="10.5">0.32 s</text>
+<text x="158" y="209.0" fill="#1f2328" font-size="12" text-anchor="end">mixed · Mac → Debian</text>
+<path d="M170.0,188.0h0.0a2.6299999999999955,2.6299999999999955 0 0 1 2.6299999999999955,2.6299999999999955v4.7a2.6299999999999955,2.6299999999999955 0 0 1 -2.6299999999999955,2.6299999999999955h-0.0z" fill="#2a78d6"/>
+<text x="177.6" y="197" fill="#1f2328" font-size="10.5">≤ 0.01 s</text>
+<path d="M170.0,200.0h109.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-109.1z" fill="#eb6834"/>
+<text x="288.1" y="209" fill="#1f2328" font-size="10.5">0.43 s</text>
+<path d="M170.0,212.0h24.9a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-24.9z" fill="#1baf7a"/>
+<text x="203.9" y="221" fill="#1f2328" font-size="10.5">0.11 s</text>
+<text x="158" y="259.0" fill="#1f2328" font-size="12" text-anchor="end">mixed · Debian → Mac</text>
+<path d="M170.0,238.0h0.0a2.6299999999999955,2.6299999999999955 0 0 1 2.6299999999999955,2.6299999999999955v4.7a2.6299999999999955,2.6299999999999955 0 0 1 -2.6299999999999955,2.6299999999999955h-0.0z" fill="#2a78d6"/>
+<text x="177.6" y="247" fill="#1f2328" font-size="10.5">≤ 0.01 s</text>
+<path d="M170.0,250.0h90.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-90.7z" fill="#eb6834"/>
+<text x="269.7" y="259" fill="#1f2328" font-size="10.5">0.36 s</text>
+<path d="M170.0,262.0h19.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-19.7z" fill="#1baf7a"/>
+<text x="198.7" y="271" fill="#1f2328" font-size="10.5">0.09 s</text>
+<text x="750" y="310" fill="#59636e" font-size="11" text-anchor="end">CPU seconds, both ends</text>
+</svg>

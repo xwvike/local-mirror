@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="378" viewBox="0 0 760 378" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect x="170" y="7" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="185" y="16" fill="#1f2328" font-size="12">local-mirror</text>
+<rect x="293.4" y="7" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="308.4" y="16" fill="#1f2328" font-size="12">rsync</text>
+<rect x="366.4" y="7" width="10" height="10" rx="2" fill="#1baf7a"/>
+<text x="381.4" y="16" fill="#1f2328" font-size="12">Syncthing</text>
+<text x="170.0" y="34" fill="#59636e" font-size="12" font-weight="600">Time</text>
+<line x1="170.0" y1="44" x2="170.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="170.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">0</text>
+<line x1="226.0" y1="44" x2="226.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="226.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">40</text>
+<line x1="282.0" y1="44" x2="282.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="282.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">80</text>
+<line x1="338.0" y1="44" x2="338.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="338.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">120</text>
+<line x1="394.0" y1="44" x2="394.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="394.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">160</text>
+<line x1="170.0" y1="44" x2="170.0" y2="336" stroke="#c3c2b7" stroke-width="1"/>
+<text x="158" y="69.0" fill="#1f2328" font-size="12" text-anchor="end">small · loopback</text>
+<path d="M170.0,48.0h53.5a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-53.5z" fill="#2a78d6"/>
+<text x="232.5" y="57" fill="#1f2328" font-size="10.5">41.1 s</text>
+<path d="M170.0,60.0h26.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-26.1z" fill="#eb6834"/>
+<text x="205.1" y="69" fill="#1f2328" font-size="10.5">21.5 s</text>
+<path d="M170.0,72.0h220.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-220.0z" fill="#1baf7a"/>
+<line x1="380.0" y1="83" x2="384.0" y2="71" stroke="#ffffff" stroke-width="2"/>
+<line x1="385.0" y1="83" x2="389.0" y2="71" stroke="#ffffff" stroke-width="2"/>
+<text x="399.0" y="81" fill="#1f2328" font-size="10.5">726 s</text>
+<text x="158" y="119.0" fill="#1f2328" font-size="12" text-anchor="end">small · Mac → Debian</text>
+<path d="M170.0,98.0h45.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-45.0z" fill="#2a78d6"/>
+<text x="224.0" y="107" fill="#1f2328" font-size="10.5">35.0 s</text>
+<path d="M170.0,110.0h14.2a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-14.2z" fill="#eb6834"/>
+<text x="193.2" y="119" fill="#1f2328" font-size="10.5">13.0 s</text>
+<path d="M170.0,122.0h220.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-220.0z" fill="#1baf7a"/>
+<line x1="380.0" y1="133" x2="384.0" y2="121" stroke="#ffffff" stroke-width="2"/>
+<line x1="385.0" y1="133" x2="389.0" y2="121" stroke="#ffffff" stroke-width="2"/>
+<text x="399.0" y="131" fill="#1f2328" font-size="10.5">297 s</text>
+<text x="158" y="169.0" fill="#1f2328" font-size="12" text-anchor="end">small · Debian → Mac</text>
+<path d="M170.0,148.0h52.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-52.7z" fill="#2a78d6"/>
+<text x="231.7" y="157" fill="#1f2328" font-size="10.5">40.5 s</text>
+<path d="M170.0,160.0h28.2a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-28.2z" fill="#eb6834"/>
+<text x="207.2" y="169" fill="#1f2328" font-size="10.5">23.0 s</text>
+<path d="M170.0,172.0h220.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-220.0z" fill="#1baf7a"/>
+<line x1="380.0" y1="183" x2="384.0" y2="171" stroke="#ffffff" stroke-width="2"/>
+<line x1="385.0" y1="183" x2="389.0" y2="171" stroke="#ffffff" stroke-width="2"/>
+<text x="399.0" y="181" fill="#1f2328" font-size="10.5">752 s</text>
+<text x="158" y="219.0" fill="#1f2328" font-size="12" text-anchor="end">mixed · Mac → Debian</text>
+<path d="M170.0,198.0h27.8a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-27.8z" fill="#2a78d6"/>
+<text x="206.8" y="207" fill="#1f2328" font-size="10.5">22.7 s</text>
+<path d="M170.0,210.0h28.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-28.6z" fill="#eb6834"/>
+<text x="207.6" y="219" fill="#1f2328" font-size="10.5">23.3 s</text>
+<path d="M170.0,222.0h126.2a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-126.2z" fill="#1baf7a"/>
+<text x="305.2" y="231" fill="#1f2328" font-size="10.5">93.0 s</text>
+<text x="158" y="269.0" fill="#1f2328" font-size="12" text-anchor="end">mixed · Debian → Mac</text>
+<path d="M170.0,248.0h27.8a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-27.8z" fill="#2a78d6"/>
+<text x="206.8" y="257" fill="#1f2328" font-size="10.5">22.7 s</text>
+<path d="M170.0,260.0h27.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-27.1z" fill="#eb6834"/>
+<text x="206.1" y="269" fill="#1f2328" font-size="10.5">22.2 s</text>
+<path d="M170.0,272.0h197.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-197.6z" fill="#1baf7a"/>
+<text x="376.6" y="281" fill="#1f2328" font-size="10.5">144 s</text>
+<text x="158" y="319.0" fill="#1f2328" font-size="12" text-anchor="end">large · Debian → Mac</text>
+<path d="M170.0,298.0h79.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-79.0z" fill="#2a78d6"/>
+<text x="258.0" y="307" fill="#1f2328" font-size="10.5">59.3 s</text>
+<path d="M170.0,310.0h80.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-80.6z" fill="#eb6834"/>
+<text x="259.6" y="319" fill="#1f2328" font-size="10.5">60.4 s</text>
+<path d="M170.0,322.0h83.5a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-83.5z" fill="#1baf7a"/>
+<text x="262.5" y="331" fill="#1f2328" font-size="10.5">62.5 s</text>
+<text x="472.0" y="34" fill="#59636e" font-size="12" font-weight="600">CPU, both ends</text>
+<line x1="472.0" y1="44" x2="472.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="472.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">0</text>
+<line x1="528.0" y1="44" x2="528.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="528.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">40</text>
+<line x1="584.0" y1="44" x2="584.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="584.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">80</text>
+<line x1="640.0" y1="44" x2="640.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="640.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">120</text>
+<line x1="696.0" y1="44" x2="696.0" y2="336" stroke="#e1e0d9" stroke-width="1"/>
+<text x="696.0" y="350" fill="#59636e" font-size="11" text-anchor="middle">160</text>
+<line x1="472.0" y1="44" x2="472.0" y2="336" stroke="#c3c2b7" stroke-width="1"/>
+<path d="M472.0,48.0h84.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-84.6z" fill="#2a78d6"/>
+<text x="565.6" y="57" fill="#1f2328" font-size="10.5">63.3 s</text>
+<path d="M472.0,60.0h36.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-36.6z" fill="#eb6834"/>
+<text x="517.6" y="69" fill="#1f2328" font-size="10.5">29.0 s</text>
+<path d="M472.0,72.0h220.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-220.0z" fill="#1baf7a"/>
+<line x1="682.0" y1="83" x2="686.0" y2="71" stroke="#ffffff" stroke-width="2"/>
+<line x1="687.0" y1="83" x2="691.0" y2="71" stroke="#ffffff" stroke-width="2"/>
+<text x="701.0" y="81" fill="#1f2328" font-size="10.5">327 s</text>
+<path d="M472.0,98.0h89.9a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-89.9z" fill="#2a78d6"/>
+<text x="570.9" y="107" fill="#1f2328" font-size="10.5">67.1 s</text>
+<path d="M472.0,110.0h17.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-17.7z" fill="#eb6834"/>
+<text x="498.7" y="119" fill="#1f2328" font-size="10.5">15.5 s</text>
+<path d="M472.0,122.0h220.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-220.0z" fill="#1baf7a"/>
+<line x1="682.0" y1="133" x2="686.0" y2="121" stroke="#ffffff" stroke-width="2"/>
+<line x1="687.0" y1="133" x2="691.0" y2="121" stroke="#ffffff" stroke-width="2"/>
+<text x="701.0" y="131" fill="#1f2328" font-size="10.5">446 s</text>
+<path d="M472.0,148.0h97.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-97.1z" fill="#2a78d6"/>
+<text x="578.1" y="157" fill="#1f2328" font-size="10.5">72.2 s</text>
+<path d="M472.0,160.0h32.8a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-32.8z" fill="#eb6834"/>
+<text x="513.8" y="169" fill="#1f2328" font-size="10.5">26.3 s</text>
+<path d="M472.0,172.0h220.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-220.0z" fill="#1baf7a"/>
+<line x1="682.0" y1="183" x2="686.0" y2="171" stroke="#ffffff" stroke-width="2"/>
+<line x1="687.0" y1="183" x2="691.0" y2="171" stroke="#ffffff" stroke-width="2"/>
+<text x="701.0" y="181" fill="#1f2328" font-size="10.5">439 s</text>
+<path d="M472.0,198.0h41.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-41.1z" fill="#2a78d6"/>
+<text x="522.1" y="207" fill="#1f2328" font-size="10.5">32.2 s</text>
+<path d="M472.0,210.0h16.4a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-16.4z" fill="#eb6834"/>
+<text x="497.4" y="219" fill="#1f2328" font-size="10.5">14.6 s</text>
+<path d="M472.0,222.0h214.4a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-214.4z" fill="#1baf7a"/>
+<text x="695.4" y="231" fill="#1f2328" font-size="10.5">156 s</text>
+<path d="M472.0,248.0h45.4a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-45.4z" fill="#2a78d6"/>
+<text x="526.4" y="257" fill="#1f2328" font-size="10.5">35.3 s</text>
+<path d="M472.0,260.0h14.2a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-14.2z" fill="#eb6834"/>
+<text x="495.2" y="269" fill="#1f2328" font-size="10.5">13.0 s</text>
+<path d="M472.0,272.0h136.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-136.0z" fill="#1baf7a"/>
+<text x="617.0" y="281" fill="#1f2328" font-size="10.5">100 s</text>
+<path d="M472.0,298.0h81.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-81.7z" fill="#2a78d6"/>
+<text x="562.7" y="307" fill="#1f2328" font-size="10.5">61.2 s</text>
+<path d="M472.0,310.0h34.5a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-34.5z" fill="#eb6834"/>
+<text x="515.5" y="319" fill="#1f2328" font-size="10.5">27.5 s</text>
+<path d="M472.0,322.0h57.3a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-57.3z" fill="#1baf7a"/>
+<text x="538.3" y="331" fill="#1f2328" font-size="10.5">43.8 s</text>
+<text x="750" y="370" fill="#59636e" font-size="11" text-anchor="end">seconds · bars past 160 s are cut, labels show the full value</text>
+</svg>

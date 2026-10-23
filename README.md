@@ -21,6 +21,144 @@ flags to relay (A → B → C).
  watches the fs                             pulls, stays in sync
 ```
 
+## Performance
+
+local-mirror was compared with rsync and Syncthing on four generated datasets, over
+a LAN and on a single machine. All values in charts and tables are medians; LAN
+results come from 3 rounds per scenario, single-machine rounds are noted with each
+table. The full report, with method, per-round results and raw data, is in
+[bench/results/2026-10](bench/results/2026-10/README.md) (Chinese).
+
+- **Machines**: MacBook Air, Apple M4, APFS, Wi-Fi 6; Debian 13 mini PC, Intel N100,
+  ext4, 2.5 GbE. Measured LAN throughput about 800 Mbit/s.
+- **rsync**: `rsync -a --delete`, over ssh between machines, run once immediately
+  after each change. The interval before cron or a person would run it is not
+  included.
+- **Syncthing**: send-only to receive-only, `fsWatcherDelayS=1` (the minimum);
+  "Syncthing (default)" keeps the default of 10 s.
+- **Single change**: 30 per round, cycling create, modify and delete of a 1–16 KiB
+  file; timed from the end of the write on the source until the sink holds the
+  same content.
+- **CPU**: both ends combined. The sampling resolution is 0.01 s.
+- **Labels**: `loopback` runs both ends on the Mac; `Mac → Debian` and
+  `Debian → Mac` run over the LAN, source first.
+- **local-mirror version**: v2.12.0 (`b44f192` for small, same sync code), tiny
+  `2951137`. The first sync of v2.12.1 is compared at the end of this section.
+
+### Single change
+
+Time from the end of a write on the source until the sink holds the same content
+(p50), and the CPU each change costs on both ends together.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/change-latency-dark.svg">
+  <img src="assets/bench/change-latency-light.svg" width="760" alt="Single change p50 latency of local-mirror, rsync and Syncthing per dataset and direction">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/change-cpu-dark.svg">
+  <img src="assets/bench/change-cpu-light.svg" width="760" alt="CPU per single change of local-mirror, rsync and Syncthing per dataset and direction">
+</picture>
+
+### Create and delete 1,000 files
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/burst-dark.svg">
+  <img src="assets/bench/burst-light.svg" width="760" alt="Time to create and to delete 1,000 files with local-mirror, rsync and Syncthing">
+</picture>
+
+### First sync
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/first-sync-dark.svg">
+  <img src="assets/bench/first-sync-light.svg" width="760" alt="First sync time and CPU of local-mirror, rsync and Syncthing; Syncthing bars past 160 s are cut">
+</picture>
+
+Mac → Debian times for large are not shown: they were bound by the Wi-Fi uplink,
+whose throughput varied during the runs, and ranged from 44 to 228 s for the same
+tool. Per-round values are in the report.
+
+<details>
+<summary>Full tables</summary>
+
+#### LAN, Mac ↔ Debian
+
+Each cell is Mac → Debian / Debian → Mac. local-mirror v2.12.0 (small: `b44f192`,
+same sync code).
+
+**small**: 100,000 files, 1–16 KiB, 5,000 directories, 0.81 GiB
+
+| | local-mirror | rsync | Syncthing |
+|---|---|---|---|
+| First sync | 35.0 / 40.5 s | 13.0 / 23.0 s | 297 / 752 s |
+| First sync, CPU | 67.1 / 72.2 s | 15.5 / 26.3 s | 446 / 439 s |
+| Single change, p50 | 1.51 / 1.51 s | 3.26 / 2.85 s | 2.33 / 2.30 s |
+| Single change, p90 | 1.85 / 1.84 s | 3.48 / 3.07 s | 2.40 / 2.38 s |
+| Single change, CPU | 0.01 / 0.01 s | 1.76 / 1.42 s | 0.51 / 0.32 s |
+| Create 1,000 files | 2.05 / 2.64 s | 3.84 / 3.48 s | 4.45 / 7.29 s |
+| Delete 1,000 files | 1.17 / 1.87 s | 3.38 / 2.96 s | 7.07 / 13.98 s |
+
+**mixed**: 20,000 files, log-normal sizes (median 16 KiB, max 64 MiB), 1.47 GiB
+
+| | local-mirror | rsync | Syncthing |
+|---|---|---|---|
+| First sync | 22.7 / 22.7 s | 23.3 / 22.2 s | 93.0 / 144 s |
+| First sync, CPU | 32.2 / 35.3 s | 14.6 / 13.0 s | 156 / 100 s |
+| Single change, p50 | 1.51 / 1.48 s | 1.06 / 1.00 s | 2.31 / 2.29 s |
+| Single change, p90 | 1.78 / 1.83 s | 1.17 / 1.06 s | 2.39 / 2.37 s |
+| Single change, CPU | 0.01 / 0.01 s | 0.43 / 0.36 s | 0.11 / 0.09 s |
+| Create 1,000 files | 2.60 / 2.35 s | 1.90 / 1.78 s | 10.7 / 6.98 s |
+| Delete 1,000 files | 1.58 / 1.75 s | 1.14 / 1.03 s | 3.97 / 5.59 s |
+
+**large**: 4 files of 1 GiB, first sync only
+
+| | local-mirror | rsync | Syncthing |
+|---|---|---|---|
+| First sync, Debian → Mac | 59.3 s | 60.4 s | 62.5 s |
+| First sync CPU, Debian → Mac | 61.2 s | 27.5 s | 43.8 s |
+| First sync CPU, Mac → Debian | 61.3 s | 29.8 s | 49.2 s |
+
+#### Single machine (Mac, loopback)
+
+rsync copies locally without ssh. local-mirror `b44f192`, 1 round (30 changes); its
+idle figure is from `b394743`. rsync and Syncthing: 3 rounds, measured earlier on
+the same machine and dataset.
+
+**small**
+
+| | local-mirror | rsync | Syncthing | Syncthing (default) |
+|---|---|---|---|---|
+| First sync | 41.1 s | 21.5 s | 726 s | 693 s |
+| First sync, CPU | 63.3 s | 29.0 s | 327 s | 317 s |
+| Single change, p50 | 1.44 s | 0.60 s | 2.32 s | 7.72 s |
+| Single change, CPU | 0.01 s | 0.97 s | 0.26 s | 0.47 s |
+| Create 1,000 files | 2.18 s | 0.90 s | 6.57 s | 11.6 s |
+| Delete 1,000 files | 1.52 s | 0.70 s | 7.55 s | 16.7 s |
+| Idle 5 min, CPU | 0.04 s | 1.01 s per no-op run | 0.41 s | 9.90 s |
+
+**tiny**: 500 files, 1–16 KiB, 25 directories. local-mirror `2951137`. Single change:
+30 changes per tool; create and delete: 3 rounds.
+
+| | local-mirror | rsync | Syncthing | Syncthing (default) |
+|---|---|---|---|---|
+| Single change, p50 | 1.44 s | not measured | 2.31 s | 7.74 s |
+| Create 1,000 files | 1.99 s | 0.35 s | 6.40 s | 11.3 s |
+| Delete 1,000 files | 1.52 s | 0.15 s | 2.19 s | 13.2 s |
+
+</details>
+
+### First sync in v2.12.1
+
+v2.12.1 reduced the per-file cost of the first sync. small, Mac loopback, 3 rounds
+each, alternating old and new builds:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/first-sync-v2.12.1-dark.svg">
+  <img src="assets/bench/first-sync-v2.12.1-light.svg" width="760" alt="First sync of 100,000 small files: 40.8 s and 65.3 s CPU in v2.12.0, 30.8 s and 40.2 s CPU in v2.12.1">
+</picture>
+
+The LAN results above were measured before this release.
+
 ## Install
 
 ```bash

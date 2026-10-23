@@ -20,6 +20,136 @@
  监听文件变化                               持续拉取，保持同步
 ```
 
+## 性能
+
+在四个生成的数据集上，分别于局域网与单机环境中，将 local-mirror 与 rsync、Syncthing
+进行对比。图表中均为中位数；局域网各场景运行 3 轮，单机的轮数在各表前注明。完整报告
+（方法、逐轮结果与原始数据）见 [bench/results/2026-10](bench/results/2026-10/README.md)。
+
+- **机器**：MacBook Air，Apple M4，APFS，Wi-Fi 6；Debian 13 小主机，Intel N100，ext4，
+  2.5 GbE。局域网实测吞吐约 800 Mbit/s。
+- **rsync**：`rsync -a --delete`，跨机器时经 ssh，每次变更后立即执行一次。cron 或人工
+  触发前的等待时间不计入。
+- **Syncthing**：发送端 send-only，接收端 receive-only，`fsWatcherDelayS=1`（最小值）；
+  「Syncthing（默认）」使用默认值 10 秒。
+- **单个变更**：每轮 30 个，依次为新建、修改、删除一个 1–16 KiB 的文件；计时从发送端写入
+  完成起，至接收端内容一致为止。
+- **CPU**：两端合计，采样分辨率为 0.01 秒。
+- **标签**：`loopback` 表示两端都在 Mac 上；`Mac → Debian` 与 `Debian → Mac` 经局域网，
+  前者为发送端。
+- **local-mirror 版本**：v2.12.0（small 为 `b44f192`，同步代码相同），tiny 为 `2951137`。
+  v2.12.1 的首次同步对比见本节末尾。
+
+### 单个变更
+
+从发送端写入完成到接收端内容一致的时间（p50），以及每个变更在两端合计消耗的 CPU。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/change-latency-dark.svg">
+  <img src="assets/bench/change-latency-light.svg" width="760" alt="local-mirror、rsync 与 Syncthing 在各数据集与方向上的单个变更 p50 延迟">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/change-cpu-dark.svg">
+  <img src="assets/bench/change-cpu-light.svg" width="760" alt="local-mirror、rsync 与 Syncthing 在各数据集与方向上每个变更的 CPU">
+</picture>
+
+### 新建与删除 1,000 个文件
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/burst-dark.svg">
+  <img src="assets/bench/burst-light.svg" width="760" alt="local-mirror、rsync 与 Syncthing 新建与删除 1,000 个文件的耗时">
+</picture>
+
+### 首次同步
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/first-sync-dark.svg">
+  <img src="assets/bench/first-sync-light.svg" width="760" alt="local-mirror、rsync 与 Syncthing 的首次同步耗时与 CPU；Syncthing 超过 160 秒的柱被截断">
+</picture>
+
+large 的 Mac → Debian 方向耗时未列出：该方向受 Wi-Fi 上行吞吐限制，测试期间吞吐波动较大，
+同一工具的耗时在 44 至 228 秒之间。逐轮数据见报告。
+
+<details>
+<summary>完整数据表</summary>
+
+#### 局域网，Mac ↔ Debian
+
+每格为 Mac → Debian / Debian → Mac。local-mirror 为 v2.12.0（small 为 `b44f192`，同步
+代码相同）。
+
+**small**：100,000 个文件，1–16 KiB，5,000 个目录，0.81 GiB
+
+| | local-mirror | rsync | Syncthing |
+|---|---|---|---|
+| 首次同步 | 35.0 / 40.5 s | 13.0 / 23.0 s | 297 / 752 s |
+| 首次同步 CPU | 67.1 / 72.2 s | 15.5 / 26.3 s | 446 / 439 s |
+| 单个变更 p50 | 1.51 / 1.51 s | 3.26 / 2.85 s | 2.33 / 2.30 s |
+| 单个变更 p90 | 1.85 / 1.84 s | 3.48 / 3.07 s | 2.40 / 2.38 s |
+| 单个变更 CPU | 0.01 / 0.01 s | 1.76 / 1.42 s | 0.51 / 0.32 s |
+| 新建 1,000 个文件 | 2.05 / 2.64 s | 3.84 / 3.48 s | 4.45 / 7.29 s |
+| 删除 1,000 个文件 | 1.17 / 1.87 s | 3.38 / 2.96 s | 7.07 / 13.98 s |
+
+**mixed**：20,000 个文件，大小呈对数正态分布（中位 16 KiB，最大 64 MiB），1.47 GiB
+
+| | local-mirror | rsync | Syncthing |
+|---|---|---|---|
+| 首次同步 | 22.7 / 22.7 s | 23.3 / 22.2 s | 93.0 / 144 s |
+| 首次同步 CPU | 32.2 / 35.3 s | 14.6 / 13.0 s | 156 / 100 s |
+| 单个变更 p50 | 1.51 / 1.48 s | 1.06 / 1.00 s | 2.31 / 2.29 s |
+| 单个变更 p90 | 1.78 / 1.83 s | 1.17 / 1.06 s | 2.39 / 2.37 s |
+| 单个变更 CPU | 0.01 / 0.01 s | 0.43 / 0.36 s | 0.11 / 0.09 s |
+| 新建 1,000 个文件 | 2.60 / 2.35 s | 1.90 / 1.78 s | 10.7 / 6.98 s |
+| 删除 1,000 个文件 | 1.58 / 1.75 s | 1.14 / 1.03 s | 3.97 / 5.59 s |
+
+**large**：4 个 1 GiB 的文件，仅测首次同步
+
+| | local-mirror | rsync | Syncthing |
+|---|---|---|---|
+| 首次同步，Debian → Mac | 59.3 s | 60.4 s | 62.5 s |
+| 首次同步 CPU，Debian → Mac | 61.2 s | 27.5 s | 43.8 s |
+| 首次同步 CPU，Mac → Debian | 61.3 s | 29.8 s | 49.2 s |
+
+#### 单机（Mac，本机回环）
+
+rsync 为本地复制，不经 ssh。local-mirror 为 `b44f192`，1 轮（30 个变更），空闲开销取自
+`b394743`。rsync 与 Syncthing 为 3 轮，此前在同一机器、同一数据集上测得。
+
+**small**
+
+| | local-mirror | rsync | Syncthing | Syncthing（默认） |
+|---|---|---|---|---|
+| 首次同步 | 41.1 s | 21.5 s | 726 s | 693 s |
+| 首次同步 CPU | 63.3 s | 29.0 s | 327 s | 317 s |
+| 单个变更 p50 | 1.44 s | 0.60 s | 2.32 s | 7.72 s |
+| 单个变更 CPU | 0.01 s | 0.97 s | 0.26 s | 0.47 s |
+| 新建 1,000 个文件 | 2.18 s | 0.90 s | 6.57 s | 11.6 s |
+| 删除 1,000 个文件 | 1.52 s | 0.70 s | 7.55 s | 16.7 s |
+| 空闲 5 分钟 CPU | 0.04 s | 每次空跑 1.01 s | 0.41 s | 9.90 s |
+
+**tiny**：500 个文件，1–16 KiB，25 个目录。local-mirror 为 `2951137`。单个变更为每个工具
+30 个变更，新建与删除为 3 轮。
+
+| | local-mirror | rsync | Syncthing | Syncthing（默认） |
+|---|---|---|---|---|
+| 单个变更 p50 | 1.44 s | 未测 | 2.31 s | 7.74 s |
+| 新建 1,000 个文件 | 1.99 s | 0.35 s | 6.40 s | 11.3 s |
+| 删除 1,000 个文件 | 1.52 s | 0.15 s | 2.19 s | 13.2 s |
+
+</details>
+
+### v2.12.1 的首次同步
+
+v2.12.1 降低了首次同步中每个文件的固定开销。small，Mac 本机回环，新旧版本交替各运行 3 轮：
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/bench/first-sync-v2.12.1-dark.svg">
+  <img src="assets/bench/first-sync-v2.12.1-light.svg" width="760" alt="10 万个小文件的首次同步：v2.12.0 耗时 40.8 秒、CPU 65.3 秒，v2.12.1 耗时 30.8 秒、CPU 40.2 秒">
+</picture>
+
+上文局域网的结果均在此版本之前测得。
+
 ## 安装
 
 ```bash

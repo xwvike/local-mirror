@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="378" viewBox="0 0 760 378" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect x="170" y="7" width="10" height="10" rx="2" fill="#3987e5"/>
+<text x="185" y="16" fill="#f0f6fc" font-size="12">local-mirror</text>
+<rect x="293.4" y="7" width="10" height="10" rx="2" fill="#d95926"/>
+<text x="308.4" y="16" fill="#f0f6fc" font-size="12">rsync</text>
+<rect x="366.4" y="7" width="10" height="10" rx="2" fill="#199e70"/>
+<text x="381.4" y="16" fill="#f0f6fc" font-size="12">Syncthing</text>
+<text x="170.0" y="34" fill="#9198a1" font-size="12" font-weight="600">Create 1,000 files</text>
+<line x1="170.0" y1="44" x2="170.0" y2="336" stroke="#2c2c2a" stroke-width="1"/>
+<text x="170.0" y="350" fill="#9198a1" font-size="11" text-anchor="middle">0</text>
+<line x1="244.7" y1="44" x2="244.7" y2="336" stroke="#2c2c2a" stroke-width="1"/>
+<text x="244.7" y="350" fill="#9198a1" font-size="11" text-anchor="middle">5</text>
+<line x1="319.3" y1="44" x2="319.3" y2="336" stroke="#2c2c2a" stroke-width="1"/>
+<text x="319.3" y="350" fill="#9198a1" font-size="11" text-anchor="middle">10</text>
+<line x1="394.0" y1="44" x2="394.0" y2="336" stroke="#2c2c2a" stroke-width="1"/>
+<text x="394.0" y="350" fill="#9198a1" font-size="11" text-anchor="middle">15</text>
+<line x1="170.0" y1="44" x2="170.0" y2="336" stroke="#383835" stroke-width="1"/>
+<text x="158" y="69.0" fill="#f0f6fc" font-size="12" text-anchor="end">tiny · loopback</text>
+<path d="M170.0,48.0h25.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-25.7z" fill="#3987e5"/>
+<text x="204.7" y="57" fill="#f0f6fc" font-size="10.5">1.99 s</text>
+<path d="M170.0,60.0h1.2a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-1.2z" fill="#d95926"/>
+<text x="180.2" y="69" fill="#f0f6fc" font-size="10.5">0.35 s</text>
+<path d="M170.0,72.0h91.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-91.6z" fill="#199e70"/>
+<text x="270.6" y="81" fill="#f0f6fc" font-size="10.5">6.40 s</text>
+<text x="158" y="119.0" fill="#f0f6fc" font-size="12" text-anchor="end">small · loopback</text>
+<path d="M170.0,98.0h28.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-28.6z" fill="#3987e5"/>
+<text x="207.6" y="107" fill="#f0f6fc" font-size="10.5">2.18 s</text>
+<path d="M170.0,110.0h9.4a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-9.4z" fill="#d95926"/>
+<text x="188.4" y="119" fill="#f0f6fc" font-size="10.5">0.90 s</text>
+<path d="M170.0,122.0h94.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-94.1z" fill="#199e70"/>
+<text x="273.1" y="131" fill="#f0f6fc" font-size="10.5">6.57 s</text>
+<text x="158" y="169.0" fill="#f0f6fc" font-size="12" text-anchor="end">small · Mac → Debian</text>
+<path d="M170.0,148.0h26.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-26.6z" fill="#3987e5"/>
+<text x="205.6" y="157" fill="#f0f6fc" font-size="10.5">2.05 s</text>
+<path d="M170.0,160.0h53.3a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-53.3z" fill="#d95926"/>
+<text x="232.3" y="169" fill="#f0f6fc" font-size="10.5">3.84 s</text>
+<path d="M170.0,172.0h62.5a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-62.5z" fill="#199e70"/>
+<text x="241.5" y="181" fill="#f0f6fc" font-size="10.5">4.45 s</text>
+<text x="158" y="219.0" fill="#f0f6fc" font-size="12" text-anchor="end">small · Debian → Mac</text>
+<path d="M170.0,198.0h35.4a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-35.4z" fill="#3987e5"/>
+<text x="214.4" y="207" fill="#f0f6fc" font-size="10.5">2.64 s</text>
+<path d="M170.0,210.0h48.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-48.0z" fill="#d95926"/>
+<text x="227.0" y="219" fill="#f0f6fc" font-size="10.5">3.48 s</text>
+<path d="M170.0,222.0h104.9a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-104.9z" fill="#199e70"/>
+<text x="283.9" y="231" fill="#f0f6fc" font-size="10.5">7.29 s</text>
+<text x="158" y="269.0" fill="#f0f6fc" font-size="12" text-anchor="end">mixed · Mac → Debian</text>
+<path d="M170.0,248.0h34.8a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-34.8z" fill="#3987e5"/>
+<text x="213.8" y="257" fill="#f0f6fc" font-size="10.5">2.60 s</text>
+<path d="M170.0,260.0h24.4a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-24.4z" fill="#d95926"/>
+<text x="203.4" y="269" fill="#f0f6fc" font-size="10.5">1.90 s</text>
+<path d="M170.0,272.0h155.8a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-155.8z" fill="#199e70"/>
+<text x="334.8" y="281" fill="#f0f6fc" font-size="10.5">10.7 s</text>
+<text x="158" y="319.0" fill="#f0f6fc" font-size="12" text-anchor="end">mixed · Debian → Mac</text>
+<path d="M170.0,298.0h31.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-31.1z" fill="#3987e5"/>
+<text x="210.1" y="307" fill="#f0f6fc" font-size="10.5">2.35 s</text>
+<path d="M170.0,310.0h22.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-22.6z" fill="#d95926"/>
+<text x="201.6" y="319" fill="#f0f6fc" font-size="10.5">1.78 s</text>
+<path d="M170.0,322.0h100.2a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-100.2z" fill="#199e70"/>
+<text x="279.2" y="331" fill="#f0f6fc" font-size="10.5">6.98 s</text>
+<text x="472.0" y="34" fill="#9198a1" font-size="12" font-weight="600">Delete 1,000 files</text>
+<line x1="472.0" y1="44" x2="472.0" y2="336" stroke="#2c2c2a" stroke-width="1"/>
+<text x="472.0" y="350" fill="#9198a1" font-size="11" text-anchor="middle">0</text>
+<line x1="546.7" y1="44" x2="546.7" y2="336" stroke="#2c2c2a" stroke-width="1"/>
+<text x="546.7" y="350" fill="#9198a1" font-size="11" text-anchor="middle">5</text>
+<line x1="621.3" y1="44" x2="621.3" y2="336" stroke="#2c2c2a" stroke-width="1"/>
+<text x="621.3" y="350" fill="#9198a1" font-size="11" text-anchor="middle">10</text>
+<line x1="696.0" y1="44" x2="696.0" y2="336" stroke="#2c2c2a" stroke-width="1"/>
+<text x="696.0" y="350" fill="#9198a1" font-size="11" text-anchor="middle">15</text>
+<line x1="472.0" y1="44" x2="472.0" y2="336" stroke="#383835" stroke-width="1"/>
+<path d="M472.0,48.0h18.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-18.7z" fill="#3987e5"/>
+<text x="499.7" y="57" fill="#f0f6fc" font-size="10.5">1.52 s</text>
+<path d="M472.0,60.0h0.0a2.240000000000009,2.240000000000009 0 0 1 2.240000000000009,2.240000000000009v5.5a2.240000000000009,2.240000000000009 0 0 1 -2.240000000000009,2.240000000000009h-0.0z" fill="#d95926"/>
+<text x="479.2" y="69" fill="#f0f6fc" font-size="10.5">0.15 s</text>
+<path d="M472.0,72.0h28.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-28.7z" fill="#199e70"/>
+<text x="509.7" y="81" fill="#f0f6fc" font-size="10.5">2.19 s</text>
+<path d="M472.0,98.0h18.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-18.7z" fill="#3987e5"/>
+<text x="499.7" y="107" fill="#f0f6fc" font-size="10.5">1.52 s</text>
+<path d="M472.0,110.0h6.5a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-6.5z" fill="#d95926"/>
+<text x="487.5" y="119" fill="#f0f6fc" font-size="10.5">0.70 s</text>
+<path d="M472.0,122.0h108.7a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-108.7z" fill="#199e70"/>
+<text x="589.7" y="131" fill="#f0f6fc" font-size="10.5">7.55 s</text>
+<path d="M472.0,148.0h13.5a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-13.5z" fill="#3987e5"/>
+<text x="494.5" y="157" fill="#f0f6fc" font-size="10.5">1.17 s</text>
+<path d="M472.0,160.0h46.5a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-46.5z" fill="#d95926"/>
+<text x="527.5" y="169" fill="#f0f6fc" font-size="10.5">3.38 s</text>
+<path d="M472.0,172.0h101.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-101.6z" fill="#199e70"/>
+<text x="582.6" y="181" fill="#f0f6fc" font-size="10.5">7.07 s</text>
+<path d="M472.0,198.0h23.9a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-23.9z" fill="#3987e5"/>
+<text x="504.9" y="207" fill="#f0f6fc" font-size="10.5">1.87 s</text>
+<path d="M472.0,210.0h40.2a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-40.2z" fill="#d95926"/>
+<text x="521.2" y="219" fill="#f0f6fc" font-size="10.5">2.96 s</text>
+<path d="M472.0,222.0h204.8a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-204.8z" fill="#199e70"/>
+<text x="685.8" y="231" fill="#f0f6fc" font-size="10.5">13.98 s</text>
+<path d="M472.0,248.0h19.6a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-19.6z" fill="#3987e5"/>
+<text x="500.6" y="257" fill="#f0f6fc" font-size="10.5">1.58 s</text>
+<path d="M472.0,260.0h13.0a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-13.0z" fill="#d95926"/>
+<text x="494.0" y="269" fill="#f0f6fc" font-size="10.5">1.14 s</text>
+<path d="M472.0,272.0h55.3a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-55.3z" fill="#199e70"/>
+<text x="536.3" y="281" fill="#f0f6fc" font-size="10.5">3.97 s</text>
+<path d="M472.0,298.0h22.1a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-22.1z" fill="#3987e5"/>
+<text x="503.1" y="307" fill="#f0f6fc" font-size="10.5">1.75 s</text>
+<path d="M472.0,310.0h11.4a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-11.4z" fill="#d95926"/>
+<text x="492.4" y="319" fill="#f0f6fc" font-size="10.5">1.03 s</text>
+<path d="M472.0,322.0h79.5a4,4 0 0 1 4,4v2.0a4,4 0 0 1 -4,4h-79.5z" fill="#199e70"/>
+<text x="560.5" y="331" fill="#f0f6fc" font-size="10.5">5.59 s</text>
+<text x="750" y="370" fill="#9198a1" font-size="11" text-anchor="end">seconds</text>
+</svg>
