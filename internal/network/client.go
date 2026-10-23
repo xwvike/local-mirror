@@ -499,6 +499,22 @@ func loadPartialState(partialPath, metaPath string) (uint64, *partialMeta) {
 	return uint64(info.Size()), &meta
 }
 
+// resumeMinSize 小于它的文件不记分片元数据：中断后从头重传至多多传 1 MiB，
+// 却能让每个小文件省掉元数据的写入与删除（首次同步里这是接收端最大的一项开销）。
+// 没有元数据的分片不会被当作可续传，下次接收时直接覆盖
+const resumeMinSize = 1 << 20
+
+// createPartial 新建分片。残留的旧分片（上次中断、未记元数据的小文件）连同元数据一起删掉再建：
+// O_TRUNC 会沿用旧分片的权限。没有残留时只付一次 open
+func createPartial(partialPath, metaPath string, perm os.FileMode) (*os.File, error) {
+	file, err := os.OpenFile(partialPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if !os.IsExist(err) {
+		return file, err
+	}
+	discardPartial(partialPath, metaPath)
+	return os.OpenFile(partialPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+}
+
 func discardPartial(partialPath, metaPath string) {
 	os.Remove(partialPath)
 	os.Remove(metaPath)
@@ -646,6 +662,8 @@ func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 		return "", drainAfter(conn, fmt.Errorf("failed to create directory for file: %w", err))
 	}
 
+	// hasMeta 本次会话在磁盘上有没有分片元数据：续传的分片本来就有，新建的只有大文件才记
+	hasMeta := resume || fs.Size >= resumeMinSize
 	var file *os.File
 	var err error
 	if resume {
@@ -655,10 +673,8 @@ func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 		if perm != 0 {
 			createPerm = 0600
 		}
-		// 先删再建：O_TRUNC 会沿用残留分片的旧权限
-		os.Remove(partialPath)
-		file, err = os.OpenFile(partialPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, createPerm)
-		if err == nil {
+		file, err = createPartial(partialPath, metaPath, createPerm)
+		if err == nil && hasMeta {
 			// 先落 meta 再收数据：中断发生在任何时刻，分片都能被下次识别
 			meta := partialMeta{Hash: fs.StartHash, Size: fs.Size}
 			if fs.Bulk {
@@ -773,7 +789,9 @@ func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 			if err := placeFile(partialPath, fullPath); err != nil {
 				return "", fmt.Errorf("error renaming partial file to %s: %w", fullPath, err)
 			}
-			os.Remove(metaPath)
+			if hasMeta {
+				os.Remove(metaPath)
+			}
 			transferSpeed := float64(fs.Size-offset) / time.Since(startTime).Seconds()
 			log.Infof("File transfer complete, file path: %s, file size: %d bytes, transfer speed: %.2f MB/s",
 				fullPath,
