@@ -19,7 +19,6 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/zeebo/blake3"
 )
 
 // localHandshake 构造本端握手消息（客户端首次握手与重连重验证共用）。
@@ -698,7 +697,8 @@ func receiveFile(conn net.Conn, fs fileSession) (string, error) {
 	// 5.2 流式哈希：边收边喂进 hasher，收完直接得整文件内容哈希，省掉「收完再全量回读」那一遍。
 	// 续传时先把已有前缀 [0,offset) 读进 hasher，再流式收剩余——仍比「写盘 + 全量回读」少一遍。
 	// 最终比对的仍是整文件哈希（完整性校验一点不打折）
-	hasher := blake3.New()
+	hasher := utils.GetHasher()
+	defer utils.PutHasher(hasher)
 	if resume {
 		if herr := hashResumePrefix(hasher, partialPath, offset); herr != nil {
 			return "", drainAfter(conn, fmt.Errorf("resume prefix of %s: %w", filePath, herr))

@@ -16,10 +16,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/zeebo/blake3"
 )
 
 // treePageMaxEntries 目录树响应单页条目上限。每条目 JSON 约 250 字节，
@@ -350,6 +350,19 @@ func openServeFile(reqPath string, offset uint64) (*servedFile, func(), error) {
 	return &servedFile{file: file, info: fileInfo, hash: fileHash, fullPath: fullPath, offset: offset, node: node}, release, nil
 }
 
+// fileBufPool 发送文件数据的分块缓冲。每个文件一个 64 KB（默认）的缓冲，十万个小文件就是
+// 几个 GB 的分配，故复用；encodeFileData 已把数据拷进消息体，缓冲放回池里后被覆盖也无妨
+var fileBufPool sync.Pool
+
+// getFileBuf 取一块 config.FileBufferSize 大小的缓冲（大小不符的旧缓冲直接丢弃，只在测试里改过 -f 时出现）
+func getFileBuf() *[]byte {
+	if b, ok := fileBufPool.Get().(*[]byte); ok && uint64(len(*b)) == *config.FileBufferSize {
+		return b
+	}
+	b := make([]byte, *config.FileBufferSize)
+	return &b
+}
+
 // sendFileData 发送一个会话的文件数据。session.file 的关闭由调用方
 // （handleFileRequest / pushFile）的 defer 负责，这里不重复 Close
 func (s *fileServer) sendFileData(conn net.Conn, session *session) error {
@@ -360,7 +373,8 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session) error {
 	// 入口那个（可能被 meta-trust 复用的）起始哈希。这样即便起始哈希偶尔陈旧，收到的字节与
 	// 这里算出的哈希也永远自洽——汇端必匹配，杜绝「陈旧哈希→汇端拒收→重试」的活锁。
 	// 续传：文件已 Seek 到 offset，先回读前缀 [0,offset) 喂入 hasher，保证覆盖整文件
-	hasher := blake3.New()
+	hasher := utils.GetHasher()
+	defer utils.PutHasher(hasher)
 	if session.Offset > 0 {
 		if _, err := session.file.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("error seeking to hash resume prefix of %s", rel)
@@ -373,16 +387,17 @@ func (s *fileServer) sendFileData(conn net.Conn, session *session) error {
 		}
 	}
 
-	fileBuf := make([]byte, *config.FileBufferSize)
+	fileBuf := getFileBuf()
+	defer fileBufPool.Put(fileBuf)
 	var sent uint64
 	for {
-		n, err := session.file.Read(fileBuf)
+		n, err := session.file.Read(*fileBuf)
 		if n > 0 {
-			hasher.Write(fileBuf[:n]) // 5.2：边发边喂哈希（在 fileBuf 被下轮 Read 覆盖前）
+			hasher.Write((*fileBuf)[:n]) // 5.2：边发边喂哈希（在 fileBuf 被下轮 Read 覆盖前）
 			dataMsg := FileDataMessage{
 				SessionID:  session.ID,
 				DataLength: uint32(n),
-				Data:       fileBuf[:n],
+				Data:       (*fileBuf)[:n],
 			}
 			if err := sendMessage(conn, MsgTypeFileData, encodeFileData(dataMsg)); err != nil {
 				return fmt.Errorf("%w, error sending file data for %s", appError.ErrConnection, rel)

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/zeebo/blake3"
 )
@@ -56,13 +57,33 @@ func CalcBlake3(path string) ([32]byte, error) {
 	}
 	defer f.Close()
 
-	hash := blake3.New()
-	if _, err := io.Copy(hash, f); err != nil {
+	hash := GetHasher()
+	defer PutHasher(hash)
+	buf := readBufPool.Get().(*[]byte)
+	defer readBufPool.Put(buf)
+	// 包一层藏起 *os.File 的 WriteTo：否则 io.CopyBuffer 走 WriteTo，内部每次另分配 32 KB，传进去的 buf 用不上
+	if _, err := io.CopyBuffer(hash, struct{ io.Reader }{f}, *buf); err != nil {
 		return result, err
 	}
 
 	copy(result[:], hash.Sum(nil))
 	return result, nil
+}
+
+// 建树与传输时每个文件都要一个 BLAKE3 hasher（约 8 KB）和读缓冲，十万个小文件就是几个 GB 的
+// 分配，GC 能吃掉发送端两成 CPU。两者都放进池里复用
+var (
+	hasherPool  = sync.Pool{New: func() any { return blake3.New() }}
+	readBufPool = sync.Pool{New: func() any { b := make([]byte, 32<<10); return &b }}
+)
+
+// GetHasher 从池里取一个空白的 BLAKE3 hasher，用完交给 PutHasher
+func GetHasher() *blake3.Hasher { return hasherPool.Get().(*blake3.Hasher) }
+
+// PutHasher 重置 h 并放回池里；之后不得再用 h
+func PutHasher(h *blake3.Hasher) {
+	h.Reset()
+	hasherPool.Put(h)
 }
 
 // HashString 计算字符串的 blake3 摘要（取前 16 字节的十六进制），
